@@ -12,7 +12,7 @@
     "not conflict."
   ],
   "requirements": {
-    "CORE-001": "open",
+    "CORE-001": "landed",
     "CORE-002": "open",
     "CORE-003": "open",
     "KEY-001": "open",
