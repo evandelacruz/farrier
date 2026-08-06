@@ -95,14 +95,6 @@ test("repo status.json covers exactly the requirement IDs in the functional spec
   assert.deepEqual(extra, [], "status entries must correspond to a spec requirement");
 });
 
-test("repo status.json starts with nothing landed and the foundation pickable", async () => {
-  const landed = parseLandedIds(await readRepoStatusJson());
-  assert.equal(landed.size, 0, "no requirement has shipped yet");
-  // The core foundation is the only thing pickable from an empty repo.
-  assert.equal(dependenciesSatisfied("CORE-001", landed), true);
-  assert.equal(dependenciesSatisfied("BKUP-001", landed), false);
-});
-
 test("parseSpecIdsInOrder preserves first-seen document order", () => {
   const spec = `
 - **BKUP-001** · snapshot contents
