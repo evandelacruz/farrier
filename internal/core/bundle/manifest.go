@@ -46,10 +46,9 @@ type DriverRef struct {
 	Config map[string]any `yaml:"config,omitempty"`
 }
 
-// DriverConfig is the manifest's driver section: keystore is required, DNS
-// and blob are declared per the bundle's chosen adapters. DNS may be left
-// unconfigured (DNS-003): operations then print the record change instead of
-// applying it.
+// DriverConfig is the manifest's driver section: keystore and blob are
+// required, DNS is optional. DNS may be left unconfigured (DNS-003):
+// operations then print the record change instead of applying it.
 type DriverConfig struct {
 	Keystore DriverRef `yaml:"keystore"`
 	DNS      DriverRef `yaml:"dns,omitempty"`

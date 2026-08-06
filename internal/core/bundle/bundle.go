@@ -80,6 +80,15 @@ func readComposeDir(dir string) (map[string][]byte, error) {
 // Save writes the bundle to dir: the manifest to dir/farrier.yaml and each
 // Compose file under dir/compose/. It validates the manifest first and
 // refuses to write an incomplete bundle.
+//
+// Compose files are staged in a temporary directory and swapped in with a
+// single rename, so a re-save (e.g. upgrade bumping pinned digests) never
+// leaves compose/ half-written. The swap itself — removing the old compose/
+// and renaming the staged one into place — is two syscalls and is the only
+// part that isn't atomic; a crash between them would leave compose/ missing
+// until the next Save. Full multi-file transactional atomicity (also
+// covering the manifest write) is out of scope at CORE-001 config-write
+// scope and can be revisited if upgrade needs a stronger guarantee.
 func (b *Bundle) Save(dir string) error {
 	if err := b.Manifest.Validate(); err != nil {
 		return err
@@ -88,20 +97,18 @@ func (b *Bundle) Save(dir string) error {
 		return fmt.Errorf("bundle: at least one rendered Compose file is required")
 	}
 
-	composeDir := filepath.Join(dir, ComposeDir)
-	if err := os.RemoveAll(composeDir); err != nil {
-		return fmt.Errorf("bundle: clear %s: %w", ComposeDir, err)
-	}
-	if err := os.MkdirAll(composeDir, 0o755); err != nil {
-		return fmt.Errorf("bundle: create %s: %w", ComposeDir, err)
-	}
-
 	raw, err := yaml.Marshal(&b.Manifest)
 	if err != nil {
 		return fmt.Errorf("bundle: encode manifest: %w", err)
 	}
-	if err := writeFile(filepath.Join(dir, ManifestFile), raw); err != nil {
-		return err
+
+	composeDir := filepath.Join(dir, ComposeDir)
+	stagingDir := composeDir + ".tmp"
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return fmt.Errorf("bundle: clear %s: %w", stagingDir, err)
+	}
+	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
+		return fmt.Errorf("bundle: create %s: %w", stagingDir, err)
 	}
 
 	names := make([]string, 0, len(b.Compose))
@@ -110,15 +117,32 @@ func (b *Bundle) Save(dir string) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := writeFile(filepath.Join(composeDir, name), b.Compose[name]); err != nil {
+		if err := writeFile(filepath.Join(stagingDir, name), b.Compose[name]); err != nil {
 			return err
 		}
+	}
+
+	if err := os.RemoveAll(composeDir); err != nil {
+		return fmt.Errorf("bundle: clear %s: %w", ComposeDir, err)
+	}
+	if err := os.Rename(stagingDir, composeDir); err != nil {
+		return fmt.Errorf("bundle: install %s: %w", ComposeDir, err)
+	}
+
+	if err := writeFile(filepath.Join(dir, ManifestFile), raw); err != nil {
+		return err
 	}
 	return nil
 }
 
+// writeFile writes content to a temp file next to path and renames it into
+// place, so a reader never observes a partially written file.
 func writeFile(path string, content []byte) error {
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, content, 0o644); err != nil {
+		return fmt.Errorf("bundle: write %s: %w", path, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("bundle: write %s: %w", path, err)
 	}
 	return nil

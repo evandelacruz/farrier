@@ -157,6 +157,18 @@ func TestSaveRemovesStaleComposeFiles(t *testing.T) {
 	}
 }
 
+// TestSaveLeavesNoStagingDir proves the compose/ staging directory used to
+// make the swap-in atomic doesn't leak into the bundle directory.
+func TestSaveLeavesNoStagingDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := validBundle().Save(dir); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ComposeDir+".tmp")); !os.IsNotExist(err) {
+		t.Fatalf("staging dir still present after Save, err = %v", err)
+	}
+}
+
 // TestPortability proves the CORE-001 requirement directly: a bundle saved
 // to one directory, then physically copied byte-for-byte to a wholly
 // different directory (standing in for "another machine"), loads back to an
