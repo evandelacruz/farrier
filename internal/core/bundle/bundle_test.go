@@ -110,6 +110,53 @@ func TestLoadRejectsMissingCompose(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsEmptyComposeDir(t *testing.T) {
+	dir := t.TempDir()
+	raw, err := yaml.Marshal(&validBundle().Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ManifestFile), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ComposeDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(dir); err == nil {
+		t.Fatal("Load() = nil, want error for empty compose/ directory")
+	}
+}
+
+// TestSaveRemovesStaleComposeFiles proves a re-save doesn't leave behind
+// compose files from a previous save that are no longer in b.Compose — the
+// case that matters for upgrade, which re-renders compose files on every
+// pinned-digest bump.
+func TestSaveRemovesStaleComposeFiles(t *testing.T) {
+	dir := t.TempDir()
+	b := validBundle()
+	b.Compose["old.yml"] = []byte("services:\n  old: {}\n")
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+
+	b.Compose = map[string][]byte{"docker-compose.yml": []byte("services: {}\n")}
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save() = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ComposeDir, "old.yml")); !os.IsNotExist(err) {
+		t.Fatalf("old.yml still present after re-save, err = %v", err)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Compose, b.Compose) {
+		t.Fatalf("loaded compose = %+v, want %+v", loaded.Compose, b.Compose)
+	}
+}
+
 // TestPortability proves the CORE-001 requirement directly: a bundle saved
 // to one directory, then physically copied byte-for-byte to a wholly
 // different directory (standing in for "another machine"), loads back to an

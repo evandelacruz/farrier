@@ -89,6 +89,9 @@ func (b *Bundle) Save(dir string) error {
 	}
 
 	composeDir := filepath.Join(dir, ComposeDir)
+	if err := os.RemoveAll(composeDir); err != nil {
+		return fmt.Errorf("bundle: clear %s: %w", ComposeDir, err)
+	}
 	if err := os.MkdirAll(composeDir, 0o755); err != nil {
 		return fmt.Errorf("bundle: create %s: %w", ComposeDir, err)
 	}
