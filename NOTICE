@@ -1,0 +1,13 @@
+Farrier
+Copyright 2026 Evan Delacruz
+
+This product includes software developed as part of the Farrier project
+(https://github.com/evandelacruz/farrier).
+
+Farrier orchestrates the following independently licensed open-source
+components, which it deploys as containers and does not modify or link against:
+
+  Forgejo                 GPL-3.0-or-later   https://forgejo.org
+  Forgejo Actions runner  MIT                https://code.forgejo.org/forgejo/runner
+  Caddy                   Apache-2.0         https://caddyserver.com
+  SQLite                  Public domain      https://sqlite.org

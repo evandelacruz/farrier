@@ -1,0 +1,32 @@
+{
+  "name": "@farrier/fleet",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "farrier-fleet": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test --test-reporter=dot 'dist/**/*.test.js'",
+    "fleet": "tsx src/cli.ts run",
+    "plan": "tsx src/cli.ts plan"
+  },
+  "dependencies": {
+    "@farrier/conductor": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,13 @@
+# Go
+/farrier
+*.exe
+*.test
+*.out
+
+# Node (agent tooling)
+node_modules/
+dist/
+
+# Local
+.DS_Store
+.env

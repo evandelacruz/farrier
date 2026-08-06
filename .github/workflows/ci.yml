@@ -1,0 +1,84 @@
+name: CI
+
+# Runs when a change is trying to reach `main`, and not before.
+#
+# `pull_request` fires on the merge commit GitHub builds from the PR head and
+# the base branch, so this tests what `main` would actually become — not what
+# the branch looks like in isolation. That is the check to make required in
+# branch protection; a red run then blocks the merge.
+#
+# `push` on main is the backstop for anything that lands without a PR.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Supersede in-flight runs for the same ref. A PR that gets three pushes needs
+# only the last one verified, and the earlier runs are answering a question
+# nobody is waiting on any more.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: go build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Skips cleanly until the Go module exists, so this workflow is correct
+      # from the first commit rather than something to remember to switch on.
+      - name: Detect Go module
+        id: detect
+        run: |
+          if [ -f go.mod ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No go.mod yet — skipping the Go job."
+          fi
+
+      - name: Build
+        if: steps.detect.outputs.present == 'true'
+        run: go build ./...
+
+      - name: Vet
+        if: steps.detect.outputs.present == 'true'
+        run: go vet ./...
+
+      - name: Test
+        if: steps.detect.outputs.present == 'true'
+        run: go test -race ./...
+
+  tools:
+    name: agent tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The conductor is a workspace dependency of fleet, so its declarations
+      # must exist before fleet typechecks.
+      - run: pnpm --filter @farrier/conductor build
+
+      - run: pnpm -r typecheck
+
+      - run: pnpm -r test
