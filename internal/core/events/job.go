@@ -140,7 +140,7 @@ func (j *Job) Subscribe() (<-chan Event, func()) {
 		j.mu.Unlock()
 		sub.close()
 		go forward(sub, out)
-		return out, func() {}
+		return out, sub.abandon
 	}
 
 	id := j.nextSub
@@ -154,7 +154,7 @@ func (j *Job) Subscribe() (<-chan Event, func()) {
 		j.mu.Lock()
 		delete(j.subs, id)
 		j.mu.Unlock()
-		sub.close()
+		sub.abandon()
 	}
 	return out, cancel
 }
@@ -168,14 +168,19 @@ func isTerminal(state State) bool {
 // slow or stalled reader: forward, not Emit, does the (possibly blocking)
 // channel send.
 type subscriber struct {
-	mu     sync.Mutex
-	cond   *sync.Cond
-	queue  []Event
-	closed bool
+	mu       sync.Mutex
+	cond     *sync.Cond
+	queue    []Event
+	closed   bool
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 func newSubscriber(backlog []Event) *subscriber {
-	s := &subscriber{queue: append([]Event(nil), backlog...)}
+	s := &subscriber{
+		queue: append([]Event(nil), backlog...),
+		done:  make(chan struct{}),
+	}
 	s.cond = sync.NewCond(&s.mu)
 	return s
 }
@@ -187,14 +192,26 @@ func (s *subscriber) push(ev Event) {
 	s.mu.Unlock()
 }
 
-// close marks the subscriber done. forward drains any queued events first,
-// then returns. Safe to call more than once (Job.Subscribe's cancel func
-// and a job-terminal event can each call it).
+// close marks the subscriber done because the job reached its terminal
+// event. forward drains any queued events — delivering each to the still
+// (by contract) listening caller — then returns. Safe to call more than
+// once.
 func (s *subscriber) close() {
 	s.mu.Lock()
 	s.closed = true
 	s.cond.Broadcast()
 	s.mu.Unlock()
+}
+
+// abandon marks the subscriber done because the caller is walking away —
+// Job.Subscribe's cancel func — rather than because the job finished. Unlike
+// close, it also unblocks forward if it's already mid-send on out: cancel
+// means the caller has stopped reading, so a send that's currently blocked
+// must be abandoned rather than left to leak the goroutine for the life of
+// the Job. Safe to call more than once.
+func (s *subscriber) abandon() {
+	s.close()
+	s.doneOnce.Do(func() { close(s.done) })
 }
 
 func forward(s *subscriber, out chan<- Event) {
@@ -211,7 +228,11 @@ func forward(s *subscriber, out chan<- Event) {
 		ev := s.queue[0]
 		s.queue = s.queue[1:]
 		s.mu.Unlock()
-		out <- ev
+		select {
+		case out <- ev:
+		case <-s.done:
+			return
+		}
 	}
 }
 

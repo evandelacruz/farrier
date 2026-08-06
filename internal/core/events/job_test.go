@@ -211,6 +211,28 @@ func TestCancelStopsDeliveryWithoutBlockingEmit(t *testing.T) {
 	}
 }
 
+func TestCancelUnblocksMidDeliverySend(t *testing.T) {
+	j := NewJob()
+	ch, cancel := j.Subscribe()
+
+	// Emit an event and give the forwarding goroutine time to dequeue it
+	// and block on the unbuffered send to ch, which nothing reads. Without
+	// the fix, cancel here would never unblock that send, forward would
+	// never reach its deferred close(out), and this test would time out.
+	j.Started("up", "starting")
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected channel to close after cancel, got a value instead")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forward goroutine leaked: channel never closed after cancel with an unread pending send")
+	}
+}
+
 func TestIDsAreUnique(t *testing.T) {
 	seen := make(map[string]bool)
 	for i := 0; i < 1000; i++ {
