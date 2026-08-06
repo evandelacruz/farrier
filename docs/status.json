@@ -13,7 +13,7 @@
   ],
   "requirements": {
     "CORE-001": "landed",
-    "CORE-002": "open",
+    "CORE-002": "landed",
     "CORE-003": "open",
     "KEY-001": "open",
     "KEY-002": "open",
