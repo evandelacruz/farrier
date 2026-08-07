@@ -43,17 +43,28 @@ compose/              rendered Docker Compose definitions
 - Versions are pinned by image digest, not tag.
 - Key material is referenced by keystore driver config, never stored.
 
-## Bundle creation (INIT-001)
+## Bundle creation (INIT-001, INIT-002)
 
 `internal/core/initialize.Run` builds and writes a bundle: it validates the
-domain and the keystore target, resolves every component's image reference
-to a digest via `internal/core/registry`, renders Compose (ORCH-002), and
-saves the bundle (CORE-001). Every step emits a CORE-002 job event, so `farrier
+domain and the keystore target, proves control of the domain's DNS zone via
+an ACME DNS-01 challenge, resolves every component's image reference to a
+digest via `internal/core/registry`, renders Compose (ORCH-002), and saves
+the bundle (CORE-001). Every step emits a CORE-002 job event, so `farrier
 init` and a future dashboard render the same progress.
 
 - **Required:** domain, a keystore target (driver + config), a blob target
-  (driver + config) — Manifest.Validate requires all three before a bundle
-  can be saved.
+  (driver + config), an ACME DNS-01 provider name — Manifest.Validate
+  requires the first three before a bundle can be saved; the DNS-01
+  provider is Run's own precondition for the zone-control proof.
+- **Zone-control proof (INIT-002):** Run generates a fresh ACME account key
+  and runs a full ACME DNS-01 exchange through `internal/core/acme.Issue`
+  (ACME-001) against the named lego DNS-01 provider — independent of the
+  bundle's own DNS driver (`internal/core/dns`). The provider reads its
+  credentials from the process environment, the way the operator already
+  runs any lego-based tool; Run neither reads nor sets them. Failure aborts
+  `init` before any image resolution or bundle write, naming the reason.
+  The certificate obtained during the proof is not persisted — durable
+  key material, including certificates, is INIT-003's job.
 - **Images:** `forgejo` and `caddy` default to their `:latest` tag on their
   canonical registry (`codeberg.org/forgejo/forgejo`, `docker.io/library/caddy`)
   and can be overridden per component. Every reference, default or override,
@@ -61,10 +72,9 @@ init` and a future dashboard render the same progress.
   registry package speaks the standard OCI/Docker distribution API
   (anonymous Bearer challenge included), so this works against any
   registry, not just the two shipped defaults.
-- **Not yet implemented:** ACME DNS-01 zone-control proof (INIT-002) and
-  key-material generation (INIT-003). Both land as later additions to the
-  same `init` command; until INIT-003 lands, a bundle's keystore target has
-  no keys in it yet.
+- **Not yet implemented:** key-material generation (INIT-003) — a later
+  addition to the same `init` command. Until it lands, a bundle's keystore
+  target has no keys in it yet.
 
 ## State export interfaces
 

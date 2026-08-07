@@ -1,22 +1,28 @@
 // Package initialize implements INIT-001: building a bundle from a DNS name
-// and a keystore target. It is the core logic behind the `init` CLI command
-// — cmd/farrier's init command parses flags and calls Run; every real
-// decision (validation, image-digest resolution, manifest assembly) lives
-// here so a future API frontend (API-001) can call the same function and
-// get the same CORE-002 event stream.
+// and a keystore target, and INIT-002: proving control of that domain's DNS
+// zone via an ACME DNS-01 challenge before the bundle is written. It is the
+// core logic behind the `init` CLI command — cmd/farrier's init command
+// parses flags and calls Run; every real decision (validation, zone-control
+// proof, image-digest resolution, manifest assembly) lives here so a future
+// API frontend (API-001) can call the same function and get the same
+// CORE-002 event stream.
 //
-// Zone-control proof (INIT-002) and key-material generation (INIT-003) are
-// separate requirement IDs and land as later additions to this package —
-// Run does not perform either yet, so the manifest it writes has no keys
-// resolvable through its keystore driver until INIT-003 lands.
+// Key-material generation (INIT-003) is a separate requirement ID and lands
+// as a later addition to this package — Run does not perform it yet, so the
+// manifest it writes has no keys resolvable through its keystore driver
+// until INIT-003 lands.
 package initialize
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
@@ -26,9 +32,10 @@ import (
 
 // Step names emitted through the job's event stream (CORE-002).
 const (
-	StepValidate      = "validate"
-	StepResolveImages = "resolve-images"
-	StepWrite         = "write"
+	StepValidate         = "validate"
+	StepProveZoneControl = "prove-zone-control"
+	StepResolveImages    = "resolve-images"
+	StepWrite            = "write"
 )
 
 // DefaultImageRefs are the images init pins when the caller doesn't
@@ -56,6 +63,36 @@ type Resolver interface {
 	Resolve(ctx context.Context, ref string) (string, error)
 }
 
+// Prover proves control of domain's DNS zone via an ACME DNS-01 challenge
+// (INIT-002), returning the reason it couldn't when proof fails. Satisfied
+// by acmeProver, which backs it with a real ACME DNS-01 exchange (acme.Issue,
+// ACME-001); declared here so Run is testable without a real ACME server or
+// DNS provider.
+type Prover interface {
+	Prove(domain, dnsProvider, email string) error
+}
+
+// acmeProver is the production Prover: it runs a full ACME DNS-01 exchange
+// via acme.Issue, using an account key generated fresh for the proof. The
+// issued certificate itself is discarded — INIT-002 only needs the exchange
+// to succeed to know the operator controls the zone; persisting certificates
+// as bundle key material is INIT-003's job.
+type acmeProver struct{}
+
+func (acmeProver) Prove(domain, dnsProvider, email string) error {
+	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate acme account key: %w", err)
+	}
+	_, err = acme.Issue(acme.Config{
+		Domain:      domain,
+		Email:       email,
+		AccountKey:  accountKey,
+		DNSProvider: dnsProvider,
+	})
+	return err
+}
+
 // Params are init's inputs: the DNS name and keystore target INIT-001
 // requires, plus the blob target and image references Manifest.Validate
 // also requires before a bundle can be saved (bundle/manifest.go).
@@ -67,6 +104,18 @@ type Params struct {
 	Domain string
 	// Dir is the directory Run writes the bundle to.
 	Dir string
+
+	// ACMEDNSProvider is the lego-recognized DNS-01 provider name (e.g.
+	// "cloudflare", "rfc2136") Run proves zone control through (INIT-002).
+	// It is independent of Keystore and of the manifest's own DNS driver
+	// (bundle.DriverConfig.DNS): lego resolves the named provider from its
+	// own provider set and reads that provider's credentials from the
+	// process environment, the way the operator already runs any lego-based
+	// tool — Run neither reads nor sets them.
+	ACMEDNSProvider string
+	// ACMEEmail is the optional contact address registered on the ACME
+	// account Run creates to perform the proof.
+	ACMEEmail string
 
 	// Keystore is the "keystore target": driver name plus its non-secret
 	// config, exactly as the manifest's DriverConfig.Keystore carries it.
@@ -83,6 +132,9 @@ type Params struct {
 
 	// Resolver resolves image refs to digests; nil uses registry.Resolve.
 	Resolver Resolver
+	// Prover proves ACME DNS-01 zone control; nil uses a real ACME exchange
+	// (acmeProver).
+	Prover Prover
 }
 
 var domainPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
@@ -106,7 +158,16 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	if strings.TrimSpace(params.Blob.Driver) == "" {
 		return fail(job, StepValidate, fmt.Errorf("initialize: blob driver is required"))
 	}
+	if strings.TrimSpace(params.ACMEDNSProvider) == "" {
+		return fail(job, StepValidate, fmt.Errorf("initialize: acme dns-01 provider is required"))
+	}
 	job.Emit(StepValidate, events.StateSucceeded, "domain and driver targets are valid")
+
+	job.Started(StepProveZoneControl, fmt.Sprintf("proving control of %s via ACME DNS-01", params.Domain))
+	if err := proverOrDefault(params.Prover).Prove(params.Domain, params.ACMEDNSProvider, params.ACMEEmail); err != nil {
+		return fail(job, StepProveZoneControl, fmt.Errorf("initialize: prove control of %s: %w", params.Domain, err))
+	}
+	job.Emit(StepProveZoneControl, events.StateSucceeded, fmt.Sprintf("zone control proven for %s", params.Domain))
 
 	job.Started(StepResolveImages, "resolving image references to digests")
 	images, err := resolveImages(ctx, resolverOrDefault(params.Resolver), params.Images)
@@ -145,6 +206,13 @@ func resolverOrDefault(r Resolver) Resolver {
 		return r
 	}
 	return registry.Resolver{}
+}
+
+func proverOrDefault(p Prover) Prover {
+	if p != nil {
+		return p
+	}
+	return acmeProver{}
 }
 
 // resolveImages merges overrides onto DefaultImageRefs, checks every

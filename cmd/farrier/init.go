@@ -18,6 +18,8 @@ func runInit(args []string) int {
 	dir := fs.String("dir", ".", "directory to write the bundle to")
 	keystoreDriver := fs.String("keystore-driver", "", "keystore driver name, e.g. file or command (required)")
 	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
+	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required); reads that provider's credentials from the environment")
+	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
 	var keystoreConfig, blobConfig, images keyValueFlag
 	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
 	fs.Var(&blobConfig, "blob-config", "blob driver config as key=value (repeatable)")
@@ -39,13 +41,19 @@ func runInit(args []string) int {
 		fmt.Fprintln(os.Stderr, "farrier: init: -blob-driver is required")
 		return 2
 	}
+	if strings.TrimSpace(*acmeDNSProvider) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -acme-dns-provider is required")
+		return 2
+	}
 
 	params := initialize.Params{
-		Domain:   *domain,
-		Dir:      *dir,
-		Keystore: bundle.DriverRef{Driver: *keystoreDriver, Config: keystoreConfig.asAny()},
-		Blob:     bundle.DriverRef{Driver: *blobDriver, Config: blobConfig.asAny()},
-		Images:   images.asStrings(),
+		Domain:          *domain,
+		Dir:             *dir,
+		Keystore:        bundle.DriverRef{Driver: *keystoreDriver, Config: keystoreConfig.asAny()},
+		Blob:            bundle.DriverRef{Driver: *blobDriver, Config: blobConfig.asAny()},
+		ACMEDNSProvider: *acmeDNSProvider,
+		ACMEEmail:       *acmeEmail,
+		Images:          images.asStrings(),
 	}
 
 	job := events.NewJob()
