@@ -65,6 +65,31 @@ REST was untouched and GraphQL was gone. A pass that dies on rate limits has
 almost certainly spent GraphQL, so the fix is never "make fewer calls" in
 general — it is "make the GraphQL ones REST."
 
+Read the buckets with `GET /rate_limit`, which is free and does not count
+against either. Do it before blaming anything else for a failing pass:
+
+```bash
+curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://api.github.com/rate_limit | python3 -m json.tool
+```
+
+The 15000 REST ceiling is a GitHub App installation number. A PAT gets 5000.
+Either way GraphQL is still the scarcer bucket — it only changes the headroom.
+
+**Identifying a GraphQL tool.** The MCP server does not say which of its tools
+are GraphQL, and the names give nothing away. Two tells:
+
+- **The `search` bucket stays at 30/30 while `search_pull_requests` succeeds.**
+  A REST search would have decremented it, so the call went to GraphQL.
+- **The tool returns GraphQL node IDs** — `PRRT_…`, `PRRC_…`. REST returns
+  integers.
+
+Confirm by calling the REST equivalent with `curl` and seeing whether it 200s.
+That last step matters, because the 403s below are a property of *this*
+session's token rather than of GitHub: check runs, combined status, and
+`/search/issues` are all blocked here, and another repo or token may not be.
+Re-test before inheriting this table.
+
 Four MCP tools reach GraphQL. Two have REST equivalents and must use them:
 
 | Tool | Instead |
