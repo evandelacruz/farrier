@@ -17,11 +17,20 @@ const composeDir = "compose"
 // Converge ships b's rendered Compose files to remoteDir on the host
 // reached through t and runs `docker compose up -d --remove-orphans`
 // (ORCH-002). remoteDir/compose is replaced wholesale, via a staging
-// directory swapped in with mv — the same atomic-swap approach
+// directory swapped in with mv — the same staging-then-swap approach
 // bundle.Bundle.Save uses locally — so a converge always leaves the host
 // with exactly the files in b.Compose, no more and no less: a component
 // removed from the manifest since the last converge stops being shipped,
 // and --remove-orphans stops its container.
+//
+// The swap is not atomic, in the same way Save's is not: the install step
+// removes the old directory and then renames the staging one into place, so
+// a crash between the two leaves remoteDir/compose absent. Nothing reads it
+// in that window — Converge runs docker compose only after the swap, and a
+// host has one control plane — and the next converge re-ships the whole
+// definition, so the repair is to run it again. Making the replacement
+// genuinely atomic needs a different shape on both sides (a symlink flipped
+// with rename), which Save defers as out of scope at CORE-001.
 //
 // docker compose up -d is itself idempotent and recreates any service
 // whose definition changed, so Converge is safe to run against a host
