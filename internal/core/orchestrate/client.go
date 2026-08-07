@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,12 +107,62 @@ func (c *Client) Close() error {
 // Canceling ctx closes the session so the command's exit wait fails
 // instead of leaving the process running unattended on the host.
 func (c *Client) Run(ctx context.Context, command string, stdout, stderr io.Writer) error {
+	return c.run(ctx, command, nil, stdout, stderr)
+}
+
+// Output executes command on the host and returns its stdout. A nonzero
+// exit status is an error whose message carries stderr, so a caller that
+// discards the output still learns why the command failed.
+//
+// This is the shape Transport wants: Run streams to writers the caller
+// supplies, which suits CheckHost, while callers that just need the bytes
+// (Converge) would otherwise each build their own buffer.
+func (c *Client) Output(ctx context.Context, command string) ([]byte, error) {
+	var stdout, stderr bytes.Buffer
+	if err := c.run(ctx, command, nil, &stdout, &stderr); err != nil {
+		return nil, fmt.Errorf("%w%s", err, stderrSuffix(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// WriteFile writes content to remotePath on the host with mode as the final
+// permissions, creating parent directories as needed.
+//
+// The write is atomic from a reader's point of view: content lands in a
+// staging file alongside the target and is moved into place only once it is
+// complete, so a concurrent reader on the host sees either the previous file
+// or the whole new one, never a partial write. A failure anywhere in the
+// chain leaves the target untouched.
+//
+// Content travels over the session's stdin rather than being embedded in the
+// command, so it is never shell-quoted and never appears in the host's
+// process list.
+func (c *Client) WriteFile(ctx context.Context, remotePath string, content []byte, mode uint32) error {
+	dir := path.Dir(remotePath)
+	tmp := remotePath + ".tmp"
+	command := fmt.Sprintf("mkdir -p %s && cat > %s && chmod %s %s && mv %s %s",
+		shQuote(dir), shQuote(tmp), strconv.FormatUint(uint64(mode), 8),
+		shQuote(tmp), shQuote(tmp), shQuote(remotePath))
+
+	var stderr bytes.Buffer
+	if err := c.run(ctx, command, bytes.NewReader(content), nil, &stderr); err != nil {
+		return fmt.Errorf("orchestrate: %s: write %s: %w%s", c.target, remotePath, err, stderrSuffix(stderr.String()))
+	}
+	return nil
+}
+
+// run is the one place a session is opened, wired up, and waited on. Run,
+// Output, and WriteFile differ only in what they attach to it.
+func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) error {
 	session, err := c.conn.NewSession()
 	if err != nil {
 		return fmt.Errorf("orchestrate: %s: open session: %w", c.target, err)
 	}
 	defer session.Close()
 
+	if stdin != nil {
+		session.Stdin = stdin
+	}
 	if stdout != nil {
 		session.Stdout = stdout
 	}

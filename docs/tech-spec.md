@@ -40,6 +40,20 @@ compose/              rendered Docker Compose definitions
 - Versions are pinned by image digest, not tag.
 - Key material is referenced by keystore driver config, never stored.
 
+## State export interfaces
+
+Each of the four state kinds (spec.md "The four kinds of state") gets an
+export interface in `internal/core/state`, consumed by both `backup/` and
+the operator's own replication tooling.
+
+- **Git (STATE-001):** `GitExporter.Remotes` lists the bare repositories
+  under a Forgejo repository root — `<root>/<owner>/<repo>.git`, Forgejo's
+  own layout — and returns each as a `Remote{Name, URL}` ready for
+  `git remote add --mirror` / `git push --mirror`. `LocalGitExporter` walks
+  the root directly (the drill path, DRIL-001); `SSHGitExporter` lists it
+  over an already-connected `Runner` (`*orchestrate.Client` in production)
+  and returns `ssh://` URLs.
+
 ## Snapshot format
 
 One age-encrypted archive per backup:

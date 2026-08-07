@@ -13,8 +13,8 @@ func TestCommandDriverResolveUsesKeyNameEnvVar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != "forgejo_secret_key-secret" {
-		t.Fatalf("Resolve = %q, want %q", got, "forgejo_secret_key-secret")
+	if got.Reveal() != "forgejo_secret_key-secret" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "forgejo_secret_key-secret")
 	}
 }
 
@@ -24,8 +24,8 @@ func TestCommandDriverResolveTrimsTrailingNewline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != "hello" {
-		t.Fatalf("Resolve = %q, want %q", got, "hello")
+	if got.Reveal() != "hello" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "hello")
 	}
 }
 
@@ -44,6 +44,17 @@ func TestCommandDriverResolveCommandFailureErrorsWithStderr(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failmsg") {
 		t.Fatalf("Resolve error = %q, want it to contain stderr %q", err.Error(), "failmsg")
+	}
+}
+
+func TestCommandDriverResolveFailureDoesNotLeakPartialStdout(t *testing.T) {
+	d := CommandDriver{Command: "printf 'partial-secret-fragment'; echo failmsg >&2; exit 1"}
+	_, err := d.Resolve(context.Background(), "k")
+	if err == nil {
+		t.Fatal("Resolve: want error for nonzero exit, got nil")
+	}
+	if strings.Contains(err.Error(), "partial-secret-fragment") {
+		t.Fatalf("error %q leaks partially captured stdout", err.Error())
 	}
 }
 
@@ -79,7 +90,7 @@ func TestNewCommandDriverResolvesThroughFactory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != "from-factory" {
-		t.Fatalf("Resolve = %q, want %q", got, "from-factory")
+	if got.Reveal() != "from-factory" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "from-factory")
 	}
 }
