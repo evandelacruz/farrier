@@ -26,6 +26,10 @@ type composeService struct {
 	Restart       string            `yaml:"restart"`
 	Networks      []string          `yaml:"networks"`
 	Environment   map[string]string `yaml:"environment,omitempty"`
+	// Volumes is never set by Render itself — see its doc comment — but is
+	// declared here so WithBindMount's output round-trips through the same
+	// composeSpec shape the package's own tests decode with.
+	Volumes []string `yaml:"volumes,omitempty"`
 }
 
 type composeNetwork struct {

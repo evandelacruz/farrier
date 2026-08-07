@@ -24,6 +24,11 @@ const (
 	runUser  = "git"
 )
 
+// AppINIPath is the container-side path the official Forgejo image loads
+// its configuration from. A caller that deploys RenderAppINI's output
+// (UP-001) must mount the rendered file here.
+const AppINIPath = dataPath + "/conf/app.ini"
+
 // Secrets are the pieces of Forgejo's identity that let app.ini answer every
 // question the install wizard would otherwise ask. They are bundle key
 // material (spec.md "Identity" > "Key material"): generated once at init and

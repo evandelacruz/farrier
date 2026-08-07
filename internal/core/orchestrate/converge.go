@@ -71,12 +71,11 @@ func Converge(ctx context.Context, t Transport, remoteDir string, b *bundle.Bund
 		return fmt.Errorf("orchestrate: converge: install %s: %w", dir, err)
 	}
 
-	files := make([]string, len(names))
-	for i, name := range names {
-		files[i] = "-f " + shQuote(path.Join(composeDir, name))
+	prefix, err := ComposeCommand(remoteDir, b)
+	if err != nil {
+		return fmt.Errorf("orchestrate: converge: %w", err)
 	}
-	up := fmt.Sprintf("cd %s && docker compose --project-name farrier %s up -d --remove-orphans",
-		shQuote(remoteDir), strings.Join(files, " "))
+	up := prefix + " docker compose up -d --remove-orphans"
 	if _, err := t.Output(ctx, up); err != nil {
 		return fmt.Errorf("orchestrate: converge: docker compose up: %w", err)
 	}
