@@ -10,6 +10,7 @@ Go module, single binary output.
 cmd/farrier/          CLI entrypoint (thin: flag parsing → core calls)
 internal/core/        the engine — all logic lives here
   bundle/             manifest, bundle directory, version pins
+  initialize/         builds a bundle from a domain and driver targets (INIT-001)
   state/              the four state kinds and their export interfaces
   backup/             snapshot creation, encryption, verification
   restore/            snapshot verification, rebuild, identity install
@@ -20,6 +21,7 @@ internal/core/        the engine — all logic lives here
   dns/                DNS driver interface + shipped drivers
   keystore/           keystore driver interface + shipped drivers
   blob/               blob adapter interface + shipped adapters
+  registry/           resolves a container image reference to its digest (init's image pinning)
   events/             the job/progress event model
 internal/api/         loopback HTTP server, RPC endpoints, SSE
 web/                  dashboard (embedded into the binary via go:embed)
@@ -39,6 +41,29 @@ compose/              rendered Docker Compose definitions
 - Manifest format: YAML.
 - Versions are pinned by image digest, not tag.
 - Key material is referenced by keystore driver config, never stored.
+
+## Bundle creation (INIT-001)
+
+`internal/core/initialize.Run` builds and writes a bundle: it validates the
+domain and the keystore target, resolves every component's image reference
+to a digest via `internal/core/registry`, renders Compose (ORCH-002), and
+saves the bundle (CORE-001). Every step emits a CORE-002 job event, so `farrier
+init` and a future dashboard render the same progress.
+
+- **Required:** domain, a keystore target (driver + config), a blob target
+  (driver + config) — Manifest.Validate requires all three before a bundle
+  can be saved.
+- **Images:** `forgejo` and `caddy` default to their `:latest` tag on their
+  canonical registry (`codeberg.org/forgejo/forgejo`, `docker.io/library/caddy`)
+  and can be overridden per component. Every reference, default or override,
+  is resolved to `name@sha256:...` before it reaches the manifest — the
+  registry package speaks the standard OCI/Docker distribution API
+  (anonymous Bearer challenge included), so this works against any
+  registry, not just the two shipped defaults.
+- **Not yet implemented:** ACME DNS-01 zone-control proof (INIT-002) and
+  key-material generation (INIT-003). Both land as later additions to the
+  same `init` command; until INIT-003 lands, a bundle's keystore target has
+  no keys in it yet.
 
 ## State export interfaces
 
