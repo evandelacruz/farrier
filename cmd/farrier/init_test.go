@@ -54,7 +54,7 @@ func TestKeyValueFlagValueAllowsEmptyValue(t *testing.T) {
 
 func TestRunInitRequiresDomain(t *testing.T) {
 	code := withSilencedStderr(t, func() int {
-		return runInit([]string{"-keystore-driver", "file", "-blob-driver", "local"})
+		return runInit([]string{"-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"})
 	})
 	if code != 2 {
 		t.Errorf("runInit without -domain: exit code = %d, want 2", code)
@@ -63,7 +63,7 @@ func TestRunInitRequiresDomain(t *testing.T) {
 
 func TestRunInitRequiresKeystoreDriver(t *testing.T) {
 	code := withSilencedStderr(t, func() int {
-		return runInit([]string{"-domain", "example.com", "-blob-driver", "local"})
+		return runInit([]string{"-domain", "example.com", "-blob-driver", "local", "-acme-dns-provider", "manual"})
 	})
 	if code != 2 {
 		t.Errorf("runInit without -keystore-driver: exit code = %d, want 2", code)
@@ -72,10 +72,19 @@ func TestRunInitRequiresKeystoreDriver(t *testing.T) {
 
 func TestRunInitRequiresBlobDriver(t *testing.T) {
 	code := withSilencedStderr(t, func() int {
-		return runInit([]string{"-domain", "example.com", "-keystore-driver", "file"})
+		return runInit([]string{"-domain", "example.com", "-keystore-driver", "file", "-acme-dns-provider", "manual"})
 	})
 	if code != 2 {
 		t.Errorf("runInit without -blob-driver: exit code = %d, want 2", code)
+	}
+}
+
+func TestRunInitRequiresACMEDNSProvider(t *testing.T) {
+	code := withSilencedStderr(t, func() int {
+		return runInit([]string{"-domain", "example.com", "-keystore-driver", "file", "-blob-driver", "local"})
+	})
+	if code != 2 {
+		t.Errorf("runInit without -acme-dns-provider: exit code = %d, want 2", code)
 	}
 }
 

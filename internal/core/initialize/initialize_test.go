@@ -2,6 +2,7 @@ package initialize
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -31,25 +32,49 @@ func (f *fakeResolver) Resolve(ctx context.Context, ref string) (string, error) 
 	return fmt.Sprintf("%s@sha256:%s", name, strings.Repeat("a", 64)), nil
 }
 
+// fakeProver simulates ACME DNS-01 zone-control proof (INIT-002), so tests
+// can exercise Run's pass/fail paths without a real ACME server or DNS
+// provider.
+type fakeProver struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeProver) Prove(domain, dnsProvider, email string) error {
+	f.calls = append(f.calls, domain)
+	if f.err != nil {
+		return f.err
+	}
+	return nil
+}
+
 func validParams(t *testing.T, resolver Resolver) Params {
 	t.Helper()
 	return Params{
-		Domain:   "example.com",
-		Dir:      filepath.Join(t.TempDir(), "bundle"),
-		Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": t.TempDir()}},
-		Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
-		Resolver: resolver,
+		Domain:          "example.com",
+		Dir:             filepath.Join(t.TempDir(), "bundle"),
+		Keystore:        bundle.DriverRef{Driver: "file", Config: map[string]any{"path": t.TempDir()}},
+		Blob:            bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
+		ACMEDNSProvider: "manual",
+		Resolver:        resolver,
+		Prover:          &fakeProver{},
 	}
 }
 
 func TestRunWritesAValidBundle(t *testing.T) {
 	resolver := &fakeResolver{}
+	prover := &fakeProver{}
 	params := validParams(t, resolver)
+	params.Prover = prover
 	job := events.NewJob()
 
 	b, err := Run(context.Background(), job, params)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
+	}
+
+	if len(prover.calls) != 1 || prover.calls[0] != "example.com" {
+		t.Errorf("prover calls = %v, want one call for example.com", prover.calls)
 	}
 
 	if b.Manifest.Domain != "example.com" {
@@ -142,6 +167,61 @@ func TestRunUsesImageOverride(t *testing.T) {
 	}
 }
 
+func TestRunRejectsMissingACMEDNSProvider(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.ACMEDNSProvider = ""
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want error for missing acme dns-01 provider, got nil")
+	}
+	assertJobFailed(t, job)
+}
+
+func TestRunProvesZoneControlBeforeResolvingImages(t *testing.T) {
+	resolver := &fakeResolver{}
+	prover := &fakeProver{}
+	params := validParams(t, resolver)
+	params.Prover = prover
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(prover.calls) != 1 {
+		t.Fatalf("prover calls = %v, want exactly one", prover.calls)
+	}
+}
+
+func TestRunFailsWithReasonWhenZoneControlProofFails(t *testing.T) {
+	reason := errors.New("could not present dns-01 challenge")
+	prover := &fakeProver{err: reason}
+	params := validParams(t, &fakeResolver{})
+	params.Prover = prover
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error when zone-control proof fails, got nil")
+	}
+	if !strings.Contains(err.Error(), reason.Error()) {
+		t.Errorf("error = %v, want it to wrap the prover's reason %q", err, reason)
+	}
+	if !strings.Contains(err.Error(), params.Domain) {
+		t.Errorf("error = %v, want it to name the domain %q", err, params.Domain)
+	}
+	assertJobFailed(t, job)
+
+	var resolvedAnyImage bool
+	for _, ev := range job.Events() {
+		if ev.Step == StepResolveImages {
+			resolvedAnyImage = true
+		}
+	}
+	if resolvedAnyImage {
+		t.Error("Run resolved images after zone-control proof failed, want it to stop early")
+	}
+}
+
 func TestRunRejectsEmptyDomain(t *testing.T) {
 	params := validParams(t, &fakeResolver{})
 	params.Domain = ""
@@ -204,6 +284,21 @@ func TestRunPropagatesResolverError(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap the resolver error", err)
 	}
 	assertJobFailed(t, job)
+}
+
+// TestAcmeProverWiring exercises the real, non-fake Prover implementation
+// against an unrecognized DNS-01 provider name — lego rejects that during
+// provider lookup, before any network call, so this stays fast and
+// deterministic while still proving acmeProver wires domain/provider/email
+// through to acme.Issue correctly.
+func TestAcmeProverWiring(t *testing.T) {
+	err := acmeProver{}.Prove("forge.example.com", "not-a-real-provider", "ops@example.com")
+	if err == nil {
+		t.Fatal("Prove: want error for an unrecognized DNS provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "not-a-real-provider") {
+		t.Errorf("error %q does not name the bad provider", err)
+	}
 }
 
 func assertJobFailed(t *testing.T, job *events.Job) {
