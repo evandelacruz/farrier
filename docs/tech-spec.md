@@ -16,6 +16,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   acme/               cert issuance and renewal (lego)
+  driver/             exec-based driver protocol (JSON on stdin/stdout), shared by dns/, keystore/, blob/
   dns/                DNS driver interface + shipped drivers
   keystore/           keystore driver interface + shipped drivers
   blob/               blob adapter interface + shipped adapters
@@ -56,7 +57,7 @@ keys/                     bundle key material
 
 ## Driver interfaces
 
-All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol (JSON on stdin/stdout) so third parties ship drivers as standalone executables with no Go required.
+All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol for out-of-tree ones. The exec protocol itself is generic and lives once, in `internal/core/driver` (CORE-003): `driver.Exec` runs an executable once per call, writing `{"method", "params"}` as a `Request` to its stdin and reading `{"ok", "result", "error"}` back as a `Response` from its stdout — one process per call, no long-lived session. `driver.Exec` satisfies `driver.Invoker`, the seam each driver-type package wraps behind its own domain interface and its own method names.
 
 - **DNS:** `Set(record, value, ttl)`, `Delete(record)`. Shipped: `cloudflare`, `rfc2136`.
 - **Keystore:** `Resolve(keyName) → secret`. Shipped: `file`, `command`.
