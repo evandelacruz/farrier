@@ -178,7 +178,7 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	job.Started(StepGenerateKeys, "generating and storing bundle key material")
 	material, err := generateKeyMaterial(cert)
 	if err != nil {
-		return fail(job, StepGenerateKeys, fmt.Errorf("initialize: %w", err))
+		return fail(job, StepGenerateKeys, err)
 	}
 	if err := storeKeyMaterial(ctx, keystoreWriter, material); err != nil {
 		return fail(job, StepGenerateKeys, err)

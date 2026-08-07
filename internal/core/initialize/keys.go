@@ -142,9 +142,10 @@ func generateSSHHostKey() (private, public string, err error) {
 }
 
 // storeKeyMaterial stores every key/secret pair in material through
-// writer, in keyMaterialOrder, stopping at the first failure — key
-// generation is all-or-nothing, the same way zone-control proof and image
-// resolution already abort init before anything partial is written.
+// writer, in keyMaterialOrder, stopping at the first Store failure. Keys
+// already written before the failure remain on disk, so a retried init
+// hits the overwrite guard on the first of them — the operator must clear
+// the keystore directory before re-running init.
 func storeKeyMaterial(ctx context.Context, writer keystore.Writer, material map[string]keystore.Secret) error {
 	for _, name := range keyMaterialOrder {
 		secret, ok := material[name]
