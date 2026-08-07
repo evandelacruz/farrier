@@ -6,8 +6,8 @@
 // owns") both consume these interfaces rather than reaching into Forgejo's
 // storage directly.
 //
-// Git (STATE-001) is the first kind implemented; database, blobs, and key
-// material follow under their own requirement IDs.
+// Git (STATE-001) and database (STATE-002) are implemented here; blobs and
+// key material follow under their own requirement IDs.
 package state
 
 // Remote is one repository exposed as a mirrorable git remote: Name is its
