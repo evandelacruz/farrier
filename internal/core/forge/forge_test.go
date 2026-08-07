@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
 
@@ -27,10 +28,10 @@ func TestNewAdminAccount(t *testing.T) {
 	if a.Email != "admin@forge.example.com" {
 		t.Errorf("Email = %q, want %q", a.Email, "admin@forge.example.com")
 	}
-	if len(a.Password) != passwordLength {
-		t.Errorf("len(Password) = %d, want %d", len(a.Password), passwordLength)
+	if len(a.Password.Reveal()) != passwordLength {
+		t.Errorf("len(Password) = %d, want %d", len(a.Password.Reveal()), passwordLength)
 	}
-	for _, r := range a.Password {
+	for _, r := range a.Password.Reveal() {
 		if !strings.ContainsRune(passwordCharset, r) {
 			t.Fatalf("Password contains char %q outside charset", r)
 		}
@@ -77,7 +78,7 @@ func (f *fakeRunner) Run(ctx context.Context, command string, stdout, stderr io.
 }
 
 func TestBootstrapRunsAdminUserCreate(t *testing.T) {
-	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: "s3cret-pw"}
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
 	runner := &fakeRunner{}
 	job := events.NewJob()
 
@@ -92,7 +93,7 @@ func TestBootstrapRunsAdminUserCreate(t *testing.T) {
 }
 
 func TestBootstrapEmitsCredentialsExactlyOnce(t *testing.T) {
-	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: "s3cret-pw"}
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
 	runner := &fakeRunner{}
 	job := events.NewJob()
 
@@ -107,7 +108,7 @@ func TestBootstrapEmitsCredentialsExactlyOnce(t *testing.T) {
 	if got[0].State != events.StateStarted || got[0].Step != StepAdminBootstrap {
 		t.Errorf("event 0 = %+v, want step=%s state=started", got[0], StepAdminBootstrap)
 	}
-	if strings.Contains(got[0].Detail, account.Password) {
+	if strings.Contains(got[0].Detail, account.Password.Reveal()) {
 		t.Error("started event leaked the password")
 	}
 
@@ -118,7 +119,7 @@ func TestBootstrapEmitsCredentialsExactlyOnce(t *testing.T) {
 
 	occurrences := 0
 	for _, ev := range got {
-		occurrences += strings.Count(ev.Detail, account.Password)
+		occurrences += strings.Count(ev.Detail, account.Password.Reveal())
 	}
 	if occurrences != 1 {
 		t.Errorf("password appears %d times across the event stream, want exactly 1", occurrences)
@@ -133,7 +134,7 @@ func TestBootstrapEmitsCredentialsExactlyOnce(t *testing.T) {
 }
 
 func TestBootstrapFailureEmitsFailedStepAndReturnsError(t *testing.T) {
-	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: "s3cret-pw"}
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
 	runner := &fakeRunner{stderr: "user already exists", err: errors.New("exit status 1")}
 	job := events.NewJob()
 
@@ -153,11 +154,39 @@ func TestBootstrapFailureEmitsFailedStepAndReturnsError(t *testing.T) {
 	if !strings.Contains(last.Detail, "user already exists") {
 		t.Errorf("failed detail %q missing stderr", last.Detail)
 	}
-	if strings.Contains(last.Detail, account.Password) {
+	if strings.Contains(last.Detail, account.Password.Reveal()) {
 		t.Error("failed event leaked the password")
 	}
 	if job.Done() {
 		t.Error("Bootstrap ended the job on a step failure; it should leave the terminal event to the caller")
+	}
+}
+
+func TestBootstrapFailureWithEmptyStderrDoesNotLeakPassword(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	// err.Error() on the real orchestrate.Client embeds the full command —
+	// including the quoted password — so a fakeRunner error standing in for
+	// an infra failure (dropped SSH session, canceled context) must never
+	// reach the event stream or the returned error.
+	runErr := fmt.Errorf("orchestrate: run %q: context canceled", fmt.Sprintf("--password %s", quote(account.Password.Reveal())))
+	runner := &fakeRunner{err: runErr}
+	job := events.NewJob()
+
+	err := Bootstrap(context.Background(), runner, job, account)
+	if err == nil {
+		t.Fatal("Bootstrap succeeded, want error")
+	}
+	if strings.Contains(err.Error(), account.Password.Reveal()) {
+		t.Errorf("returned error leaked the password: %v", err)
+	}
+
+	got := job.Events()
+	last := got[len(got)-1]
+	if last.State != events.StateFailed {
+		t.Errorf("event state = %v, want failed", last.State)
+	}
+	if strings.Contains(last.Detail, account.Password.Reveal()) {
+		t.Errorf("failed event leaked the password: %q", last.Detail)
 	}
 }
 
@@ -170,14 +199,14 @@ func TestQuoteEscapesSingleQuotes(t *testing.T) {
 }
 
 func TestAdminAccountWithEmbeddedShellMetacharactersStaysQuoted(t *testing.T) {
-	account := AdminAccount{Username: "admin", Email: "admin@example.com", Password: `p$(whoami)'; rm -rf /`}
+	account := AdminAccount{Username: "admin", Email: "admin@example.com", Password: keystore.NewSecret(`p$(whoami)'; rm -rf /`)}
 	runner := &fakeRunner{}
 	job := events.NewJob()
 
 	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	want := fmt.Sprintf("--password %s", quote(account.Password))
+	want := fmt.Sprintf("--password %s", quote(account.Password.Reveal()))
 	if !strings.Contains(runner.gotCommand, want) {
 		t.Errorf("command = %q, want it to contain %q", runner.gotCommand, want)
 	}

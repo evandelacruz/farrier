@@ -31,17 +31,22 @@ func Bootstrap(ctx context.Context, runner Runner, job *events.Job, account Admi
 
 	var stderr bytes.Buffer
 	if err := runner.Run(ctx, createCommand(account), io.Discard, &stderr); err != nil {
-		detail := err.Error()
+		// err.Error() is never used here: orchestrate.Client embeds the full
+		// command — including the quoted password — in its error text, and
+		// that would leak the password into the event stream and caller
+		// logs on infra failures (empty stderr) such as a dropped SSH
+		// session or a canceled context.
+		detail := "command failed with no output"
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			detail = msg
 		}
 		job.Emit(StepAdminBootstrap, events.StateFailed, fmt.Sprintf("create admin account: %s", detail))
-		return fmt.Errorf("forge: create admin account: %w", err)
+		return fmt.Errorf("forge: create admin account: %s", detail)
 	}
 
 	job.Emit(StepAdminBootstrap, events.StateSucceeded, fmt.Sprintf(
 		"first admin account created — username: %s, email: %s, password: %s",
-		account.Username, account.Email, account.Password,
+		account.Username, account.Email, account.Password.Reveal(),
 	))
 	return nil
 }
@@ -54,7 +59,7 @@ func Bootstrap(ctx context.Context, runner Runner, job *events.Job, account Admi
 func createCommand(a AdminAccount) string {
 	return fmt.Sprintf(
 		"docker compose exec -T %s forgejo admin user create --username %s --email %s --password %s --admin --must-change-password=false",
-		Service, quote(a.Username), quote(a.Email), quote(a.Password),
+		Service, quote(a.Username), quote(a.Email), quote(a.Password.Reveal()),
 	)
 }
 

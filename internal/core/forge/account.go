@@ -8,6 +8,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"strings"
+
+	"github.com/evandelacruz/farrier/internal/core/keystore"
 )
 
 // Service is the Compose service name of the forgejo container, matching
@@ -26,11 +28,14 @@ const passwordCharset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 
 // AdminAccount is the forge's first admin account: a fixed username, an
 // email derived from the bundle domain, and a password Farrier generates
-// fresh for every deployment.
+// fresh for every deployment. Password is a keystore.Secret (KEY-003) so
+// the account never prints its password via an accidental %v, log line, or
+// JSON/YAML marshal — defense in depth even though the password isn't key
+// material by spec.
 type AdminAccount struct {
 	Username string
 	Email    string
-	Password string
+	Password keystore.Secret
 }
 
 // NewAdminAccount generates the first admin account for a forge at domain:
@@ -48,7 +53,7 @@ func NewAdminAccount(domain string) (AdminAccount, error) {
 	return AdminAccount{
 		Username: adminUsername,
 		Email:    "admin@" + domain,
-		Password: password,
+		Password: keystore.NewSecret(password),
 	}, nil
 }
 
