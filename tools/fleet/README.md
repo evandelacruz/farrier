@@ -143,12 +143,19 @@ considered and rejected as more machinery than a formal state is worth here.
 
 The reviewer Routine is bound to a `Pull request: Commits pushed` webhook, so a
 push reviews itself. **Pass `--no-reviews`**, or every push is reviewed twice
-and half the batch is spent on work that was already coming for free.
+and half the batch is spent on work that was already coming for free. The
+conductor skill requires the flag; do not omit it to "force" reviews into the
+plan.
+
+When the webhook misses (rate limit, orphaned pending review, no event), the
+conductor's **§3b** backfill fires the reviewer for any PR whose head has no
+verdict-carrying review and no `conductor:reviewing` lock. That is the
+self-heal — not putting reviews back into `plan`.
 
 That closes a loop: review requests changes → conductor fires a fixer → fixer
-pushes → webhook fires the next review. **The loop has no round cap.** It runs
-until the PR converges or Evan intervenes; the planner counts nothing and
-queues a fixer every pass for as long as something is open. Deciding that a
+pushes → webhook (or §3b) fires the next review. **The loop has no round cap.**
+It runs until the PR converges or Evan intervenes; the planner counts nothing
+and queues a fixer every pass for as long as something is open. Deciding that a
 disagreement is stuck is a human call — Evan is watching the sessions and can
 stop one whenever he wants, which is cheaper than a counter that parks a PR
 nobody asked it to park.

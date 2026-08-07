@@ -219,7 +219,8 @@ node tools/fleet/dist/cli.js plan \
   --repo-root <scratch>/main-wt \
   --n <n> \
   --prs <scratch>/prs.json \
-  --out <scratch>/run
+  --out <scratch>/run \
+  --no-reviews
 ```
 
 **Point `--repo-root` at the worktree; do not `cd` into it.** `--repo-root` is
@@ -242,26 +243,15 @@ git show origin/main:docs/status.json | grep -o '"<ID>": *[^,}]*'
 `landed` means the plan is stale — you are not on main, or the fetch did not
 take. Re-do the worktree rather than firing.
 
-**The conductor fires reviews. Do not pass `--no-reviews`.** A PR whose head
-commit has no review is queued as a `pr-review` assignment, and the conductor
-fires the reviewer Routine for it exactly as it fires implementers:
+**`--no-reviews` is required in this repo.** The reviewer Routine is bound to a
+`Pull request: Commits pushed` webhook, so every push already gets reviewed.
+Dropping the flag would review each push twice and spend half the batch on work
+that was already coming for free.
 
-```
-2. [pr-review] Review PR #8  (reviewer / sonnet)
-   PR: https://github.com/evandelacruz/farrier/pull/8
-   Why: no review at current head commit
-```
-
-A `Pull request: Commits pushed` webhook also fires reviews, so in principle
-every push is reviewed for free. In practice it has been unreliable — PRs have
-sat with zero reviews and no verdict label, which stalls them permanently: the
-routing table reads the verdict label, and nothing produces one without a
-review. Firing reviews from the plan is what makes the loop self-healing.
-
-The cost of the overlap is a duplicate review when the webhook does fire, which
-is cheap and visible — the reviewer recognizes an unchanged commit and says so.
-A stalled PR is not cheap. If the webhook is ever confirmed reliable again,
-`--no-reviews` is how you stop paying for both.
+Passing it does not mean reviews stop mattering to the plan: a PR whose head
+commit is unreviewed is still reported as skipped (`reviews-disabled`), so you
+can see the webhook keeping up (or not). When the webhook misses, §3b fires the
+reviewer — that is the self-heal. Do not put reviews back into the plan.
 
 Print the plan output verbatim. It names every assignment **and a reason for
 every PR it passed over** — that is the part Evan reads.
@@ -317,15 +307,14 @@ Read `<scratch>/run/dispatch.json`. For each item, in order:
    | `role` | Routine | Key |
    |---|---|---|
    | `implementer` | the Farrier implementer routine (opus) | `FARRIER_IMPLEMENTER_FIRE_KEY` |
-   | `reviewer` | the Farrier code-review routine (sonnet) | `FARRIER_REVIEWER_KEY` |
+   | `reviewer` | the Farrier code-review routine (sonnet) — webhook-driven; the conductor should not normally fire it from the plan | `FARRIER_REVIEWER_KEY` |
 
    If the routine for a role does not exist, **stop and say so.** Do not fall
    back to the other role, and do not do the work yourself.
 
    **Each routine has its own token, and they are not interchangeable.** The
    implementer key does not fire the reviewer routine — confirmed, not assumed.
-   Firing a `pr-review` assignment with the implementer key fails; there is no
-   fallback.
+   Firing a reviewer with the implementer key fails; there is no fallback.
 
    If a role's key is unset, run `env | grep -i -E 'fire|key'` before concluding
    it is missing — the two names above do not share a suffix, so a single
@@ -335,17 +324,103 @@ Read `<scratch>/run/dispatch.json`. For each item, in order:
 
 3. If firing fails, **release the lock you just took** before moving on.
    A lock with no agent behind it parks the PR until a human clears it.
+   Delete **`item.lockLabel`**, not a hardcoded name — a `pr-review` lock is
+   `conductor:reviewing`, and deleting `conductor:working` leaves the PR
+   stranded as "review in flight" forever:
 
    ```bash
    curl -sS -X DELETE -H "Accept: application/vnd.github+json" \
-     "https://api.github.com/repos/evandelacruz/farrier/issues/<n>/labels/conductor:working"
+     -H "Authorization: Bearer $GITHUB_TOKEN" \
+     "https://api.github.com/repos/evandelacruz/farrier/issues/<n>/labels/<lockLabel>"
    ```
+
+## 3b. Fire a review the webhook did not
+
+Reviews normally arrive on their own: pushing fires the reviewer Routine, which
+is why the plan runs with `--no-reviews`. When that path fails, though, nothing
+retries it — and **the only thing that re-triggers a review is another push**,
+which will never come, because the PR is waiting for the review.
+
+The failure is not rare. A reviewer that hits a GitHub rate limit is told to
+delete its pending review and exit, and one that leaves an orphaned pending
+review behind blocks every reviewer after it. Both leave a PR sitting with no
+verdict and nothing coming. That is the stall this repo has hit before.
+
+So after firing the plan, fire a reviewer for any PR where both of these hold:
+
+- no review at the head SHA **carries a verdict**, and
+- the PR carries no `conductor:reviewing` label.
+
+Both are facts, not elapsed-time guesses: nothing has judged the current code,
+and nothing is judging it. **There is deliberately no delay before firing.** If
+the webhook's reviewer is claiming the PR at the same moment, the loser hits
+*"User can only have one pending review per pull request"* and exits without
+writing anything — GitHub enforces that mutex server-side, which is a better
+guard than any interval would be, and it costs one session start.
+
+**"Carries a verdict" is the load-bearing part, and a review existing is not
+enough.** A reviewer posts its inline findings as a review with an empty body,
+then writes the summary and sets the verdict label. Kill it between those two
+steps — a rate limit is the usual way — and the PR is left with one or more
+reviews at the head SHA, every one of them empty, and no verdict anywhere.
+
+That state passes a "has it been reviewed" test and fails the only test that
+matters. So check the review **bodies**, not just their `commit_id`. A review
+whose body is empty is an inline-comment batch, not a judgement:
+
+```bash
+curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+  "https://api.github.com/repos/evandelacruz/farrier/pulls/<n>/reviews" \
+  | python3 -c "
+import json,sys
+for r in json.load(sys.stdin):
+    print(r['state'], r['commit_id'][:8], 'body' if (r['body'] or '').strip() else 'EMPTY')"
+```
+
+Then tell the reviewer you fire what it is walking into, so it reads the dead
+reviewer's inline comments instead of starting from nothing — those findings
+cost a full run and are usually still valid.
+
+Do not read a verdict label as "this has been reviewed" either. It describes
+whichever commit it was written against, so a PR that was pushed to and never
+re-reviewed still shows the old one. The head SHA is what settles it.
+
+Resolve the reviewer routine id with `list_triggers` (do not hardcode it).
+Firing it directly is the same thing a push does, minus the push:
+
+```bash
+curl -sS -X POST \
+  "https://api.anthropic.com/v1/claude_code/routines/<reviewer routine id>/fire" \
+  -H "Authorization: Bearer $FARRIER_REVIEWER_KEY" \
+  -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  --data @<payload>.json      # {"text": "Review PR #<n> in evandelacruz/farrier."}
+```
+
+**It needs its own token.** Routine tokens only fire the Routine that issued
+them, so `FARRIER_IMPLEMENTER_FIRE_KEY` returns *"Token is not authorized for
+this routine"* here. If `FARRIER_REVIEWER_KEY` is missing from the environment,
+**report these PRs in the summary instead of firing** — naming them is most of
+the value, and a human can flip the PR to draft and back to trigger a review by
+hand.
+
+**If a fired review produces nothing, suspect an orphaned pending review.** It
+is invisible to `GET /pulls/{n}/reviews`, and every reviewer is told to exit
+quietly when it finds one, so the symptom is silence. Confirm by attempting
+`pull_request_review_write` with method `create`: a failure saying *"User can
+only have one pending review per pull request"* is the orphan. Clear it with
+`delete_pending`.
+
+Do **not** probe speculatively. If the `create` succeeds there was no orphan,
+and you have just made a pending review you must remember to delete — the exact
+thing you were hunting.
 
 ## 4. Report
 
 One compact summary: what was fired (role, model, target), what was skipped and
-why, and any slot that could not be filled. Link the PRs. Then stop — do not
-poll for the workers, they notify on completion.
+why, §3b backfills, and any slot that could not be filled. Link the PRs. Then
+stop — do not poll for the workers, they notify on completion.
 
 ## Notes
 
@@ -366,12 +441,10 @@ poll for the workers, they notify on completion.
   later come from a separate identity (a human, or another vendor's bot), that
   takes over automatically and the labels stop mattering. Nothing to change.
 - Review and fix form a closed loop: a review requests changes, the conductor
-  fires a fixer, the fixer pushes, and the next pass sees an unreviewed head
-  commit and fires another review. The conductor closes that loop itself, so it
-  keeps turning whether or not the push webhook fires. **It runs unbounded** —
-  there is no round cap and nothing parks a PR for having been round-tripped
-  too many times. A PR that is not converging keeps drawing a fixer every pass
-  until Evan steps in.
+  fires a fixer, the fixer pushes, the push webhook fires another review. When
+  the webhook misses, §3b fires it. **It runs unbounded** — there is no round
+  cap and nothing parks a PR for having been round-tripped too many times. A PR
+  that is not converging keeps drawing a fixer every pass until Evan steps in.
 - **A fixer cannot answer a question only Evan can answer.** When a review's
   remaining blocker is a design decision — a doc conflict, a spec
   reinterpretation — firing a fixer at it spends an agent that has nothing to
