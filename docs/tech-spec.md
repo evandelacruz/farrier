@@ -65,9 +65,25 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
 
+### Keystore driver config
+
+- **`file`** (`config.path`): a local directory. `Resolve(keyName)` reads
+  `path/keyName` and returns its bytes verbatim — one file per piece of key
+  material.
+- **`command`** (`config.command`): one shell command, run via `sh -c`.
+  `Resolve(keyName)` sets `FARRIER_KEY_NAME` in the command's environment
+  and returns its trimmed stdout — one command branches on the env var to
+  serve every key the bundle needs.
+- Any other driver name resolves through the CORE-003 exec protocol:
+  `config.path` is the executable, `config.args` its fixed arguments;
+  method `resolve`, params `{"key": keyName}`, result `{"secret":
+  "<base64>"}`.
+
 ## Orchestration
 
-- Transport: SSH (Go `x/crypto/ssh`), authenticated by the operator's existing SSH agent or key file.
+- Transport: SSH (Go `x/crypto/ssh`), authenticated by the operator's existing SSH agent (`SSH_AUTH_SOCK`) or an explicit key file — no other auth path, no password prompts.
+- Host identity is checked against the operator's `known_hosts` (default `~/.ssh/known_hosts`); an unrecorded or mismatched host key fails the connection rather than prompting to trust it, since jobs run unattended.
+- Host readiness beyond SSH itself is a single check: Docker reachable over the same SSH session (`docker version`). Farrier requires nothing else of the host.
 - The CLI renders Compose files from the manifest, ships them to the host, and drives `docker compose` over the SSH session.
 - Host state is treated as disposable: `up` converges the host to the bundle definition idempotently; drift is overwritten.
 
