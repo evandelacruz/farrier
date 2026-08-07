@@ -83,6 +83,18 @@ func TestExecDriverResolveEmptySecretErrors(t *testing.T) {
 	}
 }
 
+func TestExecDriverResolveEmptyKeyNameErrors(t *testing.T) {
+	fake := &fakeInvoker{}
+	d := execDriver{invoker: fake}
+
+	if _, err := d.Resolve(context.Background(), ""); err == nil {
+		t.Fatal("Resolve: want error for empty key name, got nil")
+	}
+	if fake.gotMethod != "" {
+		t.Fatal("Resolve: invoker should not be called for an empty key name")
+	}
+}
+
 func TestNewExecDriverRequiresPath(t *testing.T) {
 	if _, err := New("onepassword", map[string]any{}); err == nil {
 		t.Fatal("New: want error for missing config.path, got nil")

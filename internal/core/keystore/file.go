@@ -27,7 +27,11 @@ func (d FileDriver) Resolve(ctx context.Context, keyName string) ([]byte, error)
 		return nil, fmt.Errorf("keystore: file: key name is required")
 	}
 
-	full := filepath.Join(d.Path, keyName)
+	base := filepath.Clean(d.Path)
+	full := filepath.Join(base, keyName)
+	if full != base && !strings.HasPrefix(full, base+string(os.PathSeparator)) {
+		return nil, fmt.Errorf("keystore: file: key name %q escapes configured path", keyName)
+	}
 	data, err := os.ReadFile(full)
 	if err != nil {
 		return nil, fmt.Errorf("keystore: file: resolve key %q: %w", keyName, err)

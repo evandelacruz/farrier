@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/driver"
 )
@@ -26,6 +27,10 @@ type execResolveResult struct {
 }
 
 func (d execDriver) Resolve(ctx context.Context, keyName string) ([]byte, error) {
+	if strings.TrimSpace(keyName) == "" {
+		return nil, fmt.Errorf("keystore: exec: key name is required")
+	}
+
 	var result execResolveResult
 	if err := d.invoker.Invoke(ctx, "resolve", execResolveParams{Key: keyName}, &result); err != nil {
 		return nil, fmt.Errorf("keystore: exec: resolve key %q: %w", keyName, err)

@@ -15,7 +15,7 @@
     "CORE-001": "landed",
     "CORE-002": "landed",
     "CORE-003": "landed",
-    "KEY-001": "landed",
+    "KEY-001": {"state":"partial","remaining":"file driver path semantics unresolved: spec.md says 'a path to a local key file' (singular); the implementation treats path as a directory, one file per key. Needs Evan's decision on which is correct, then spec.md and tech-spec.md reconciled."},
     "KEY-002": "landed",
     "KEY-003": "open",
     "BLOB-001": "open",

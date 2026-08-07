@@ -59,6 +59,23 @@ func TestFileDriverResolveEmptyFileErrors(t *testing.T) {
 	}
 }
 
+func TestFileDriverResolveRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	d := FileDriver{Path: dir}
+	rel, err := filepath.Rel(dir, filepath.Join(outside, "secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Resolve(context.Background(), rel); err == nil {
+		t.Fatal("Resolve: want error for key name escaping configured path, got nil")
+	}
+}
+
 func TestFileDriverResolveEmptyKeyNameErrors(t *testing.T) {
 	d := FileDriver{Path: t.TempDir()}
 	if _, err := d.Resolve(context.Background(), ""); err == nil {
