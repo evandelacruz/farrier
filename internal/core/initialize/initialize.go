@@ -180,6 +180,9 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	manifest := bundle.NewManifest(params.Domain, images, bundle.DriverConfig{
 		Keystore: params.Keystore,
 		Blob:     params.Blob,
+	}, bundle.ACMEConfig{
+		DNSProvider: params.ACMEDNSProvider,
+		Email:       params.ACMEEmail,
 	})
 	compose, err := orchestrate.Render(manifest)
 	if err != nil {
