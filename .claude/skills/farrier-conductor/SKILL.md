@@ -50,6 +50,35 @@ enabled for this session."* That also rules out `summarizeOpenPrs()` from
 `@farrier/conductor`, which is built on `gh api graphql` — it works on a laptop,
 not here.
 
+**The GraphQL budget is the scarce one, by a wide margin.** The two buckets are
+separate and sized differently — REST gets 15000/hr, GraphQL 5000 *points*/hr,
+where one query costs points by how many nodes it returns rather than one per
+call. Measured mid-session, on an account doing ordinary conductor and review
+work:
+
+```
+core       14952/15000   used 48
+graphql        0/5000    used 5000   ← exhausted
+```
+
+REST was untouched and GraphQL was gone. A pass that dies on rate limits has
+almost certainly spent GraphQL, so the fix is never "make fewer calls" in
+general — it is "make the GraphQL ones REST."
+
+Four MCP tools reach GraphQL. Two have REST equivalents and must use them:
+
+| Tool | Instead |
+|---|---|
+| `search_pull_requests` | **Never use it.** `GET /pulls?state=open` and filter client-side. `/search/issues` is 403 for this token, so the MCP tool can only be GraphQL. |
+| `pull_request_read` → `get_review_comments` | `GET /repos/{o}/{r}/pulls/{n}/comments` — every field except `isResolved` and the `PRRT_` thread id. Use the MCP tool **only** when about to resolve a thread. |
+| `pull_request_read` → `get_check_runs` | No REST path — `/commits/{sha}/check-runs` and `/status` both 403. Unavoidable, so call it only for PRs the routing table will act on, never for every open PR on every pass. |
+| `resolve_review_thread` | No REST equivalent exists anywhere in GitHub's API. Irreducible. |
+
+Everything else about a review is REST and should be: creating a review,
+submitting it with `COMMENT` / `APPROVE` / `REQUEST_CHANGES`, inline comments,
+replies (`POST /pulls/{n}/comments/{id}/replies`), labels, and every list or
+get.
+
 Calls, per PR (`curl` against `api.github.com`, or the equivalent MCP tool):
 
 | Field | Source |
