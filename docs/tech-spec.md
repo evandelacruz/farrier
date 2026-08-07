@@ -53,6 +53,16 @@ the operator's own replication tooling.
   the root directly (the drill path, DRIL-001); `SSHGitExporter` lists it
   over an already-connected `Runner` (`*orchestrate.Client` in production)
   and returns `ssh://` URLs.
+- **Database (STATE-002):** `DatabaseExporter.Snapshot` returns a stream
+  over a point-in-time copy of Forgejo's SQLite database, taken with the
+  `sqlite3` CLI's `.backup` meta-command — the shell-facing name for
+  SQLite's Online Backup API, so the source database is never paused.
+  `LocalDatabaseExporter` runs `sqlite3` directly against a database file
+  on disk (the drill path, DRIL-001). `SSHDatabaseExporter` runs it inside
+  the Forgejo container over an already-connected `Runner`, via
+  `docker exec` — ORCH-001 guarantees only Docker and SSH on the host, not
+  a bare `sqlite3` install, so the backup runs where `sqlite3` is actually
+  known to exist: inside the pinned Forgejo image.
 
 ## Snapshot format
 
