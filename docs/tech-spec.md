@@ -65,6 +65,20 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
 
+### Keystore driver config
+
+- **`file`** (`config.path`): a local directory. `Resolve(keyName)` reads
+  `path/keyName` and returns its bytes verbatim — one file per piece of key
+  material.
+- **`command`** (`config.command`): one shell command, run via `sh -c`.
+  `Resolve(keyName)` sets `FARRIER_KEY_NAME` in the command's environment
+  and returns its trimmed stdout — one command branches on the env var to
+  serve every key the bundle needs.
+- Any other driver name resolves through the CORE-003 exec protocol:
+  `config.path` is the executable, `config.args` its fixed arguments;
+  method `resolve`, params `{"key": keyName}`, result `{"secret":
+  "<base64>"}`.
+
 ## Orchestration
 
 - Transport: SSH (Go `x/crypto/ssh`), authenticated by the operator's existing SSH agent or key file.
