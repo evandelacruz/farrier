@@ -3,80 +3,72 @@ package keystore
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
-// keyNamePlaceholder is substituted with the requested key name in
-// CommandResolver's Args before the command runs, so one configured
-// command can resolve any number of named keys (e.g. `op read
-// op://vault/{{key}}`).
-const keyNamePlaceholder = "{{key}}"
+// waitDelay bounds how long Resolve waits for stdout/stderr to close after
+// the command exits or is killed. Without it, a configured command that
+// forks a grandchild (a pipeline, a backgrounded helper) can hold the
+// output pipe open indefinitely after the shell itself is gone, and
+// context cancellation would have no effect on when Resolve returns.
+const waitDelay = 2 * time.Second
 
-// keyNameEnvVar additionally carries the requested key name into the
-// command's environment, for commands that read it there instead of (or
-// in addition to) a placeholder argument.
+// keyNameEnvVar carries the keyName being resolved into the configured
+// command's environment, so one command can resolve every key the bundle
+// needs by branching on it.
 const keyNameEnvVar = "FARRIER_KEY_NAME"
 
-// CommandResolver is the "command" keystore driver (KEY-002): it resolves
-// key material from the stdout of any operator-specified command — one
-// interface that covers 1Password CLI, Vault, `pass`, sops, cloud secret
-// managers, and anything else the team already uses (spec.md "Bundle
-// config is shareable; keys resolve through drivers").
-//
-// The command's stdout is captured into memory and never forwarded to
-// this process's own stdout or surfaced in any error — only the resolved
-// Secret carries it onward. On failure, the error reports the command's
-// stderr (a human-readable diagnostic channel, not key material) but
-// never the stdout captured so far, which could hold a partially printed
-// secret.
-type CommandResolver struct {
-	// Command is the executable to run. A bare name (no path separator)
-	// resolves via PATH.
+// CommandDriver resolves key material from the stdout of an
+// operator-specified command (KEY-002) — one interface that covers
+// 1Password CLI, Vault, pass, sops, cloud secret managers, and anything
+// else the team already uses. Config: {"command": "<shell command>"}.
+type CommandDriver struct {
 	Command string
-	// Args are passed to Command. Any arg containing the literal
-	// "{{key}}" has it replaced with the requested key name.
-	Args []string
 }
 
-// NewCommand returns a CommandResolver that runs command with args.
-func NewCommand(command string, args ...string) (*CommandResolver, error) {
-	if strings.TrimSpace(command) == "" {
-		return nil, errors.New("keystore: command: command is required")
-	}
-	return &CommandResolver{Command: command, Args: args}, nil
-}
-
-// Resolve runs Command with Args (after key-name substitution) and returns
-// its captured stdout, trailing newline trimmed, as a Secret.
-func (r *CommandResolver) Resolve(ctx context.Context, keyName string) (Secret, error) {
+// Resolve runs Command through the shell with keyName in FARRIER_KEY_NAME
+// and returns its stdout, minus a single trailing newline, as a Secret —
+// the same trimming shell command substitution applies, so operators can
+// write ordinary `echo`/CLI-tool commands without worrying about a stray
+// newline corrupting the secret. Captured stdout is wrapped into a Secret
+// immediately and never appears in an error message; only stderr does,
+// for diagnostics (KEY-003).
+func (d CommandDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
 	if strings.TrimSpace(keyName) == "" {
-		return Secret{}, errors.New("keystore: command: key name is required")
+		return Secret{}, fmt.Errorf("keystore: command: key name is required")
 	}
 
-	args := make([]string, len(r.Args))
-	for i, a := range r.Args {
-		args[i] = strings.ReplaceAll(a, keyNamePlaceholder, keyName)
-	}
-
-	cmd := exec.CommandContext(ctx, r.Command, args...)
+	cmd := exec.CommandContext(ctx, "sh", "-c", d.Command)
 	cmd.Env = append(os.Environ(), keyNameEnvVar+"="+keyName)
-
+	cmd.WaitDelay = waitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return Secret{}, fmt.Errorf("keystore: command: resolve %q: %w", keyName, ctx.Err())
+			return Secret{}, fmt.Errorf("keystore: command: resolve key %q: %w", keyName, ctx.Err())
 		}
-		return Secret{}, fmt.Errorf("keystore: command: resolve %q: %s: %w%s", keyName, r.Command, err, stderrSuffix(stderr.String()))
+		return Secret{}, fmt.Errorf("keystore: command: resolve key %q: %w%s", keyName, err, stderrSuffix(stderr.String()))
 	}
 
-	return NewSecret(strings.TrimRight(stdout.String(), "\r\n")), nil
+	secret := bytes.TrimRight(stdout.Bytes(), "\r\n")
+	if len(secret) == 0 {
+		return Secret{}, fmt.Errorf("keystore: command: key %q produced no output", keyName)
+	}
+	return NewSecret(string(secret)), nil
+}
+
+func newCommandDriver(config map[string]any) (Driver, error) {
+	command, err := stringConfig(config, "command")
+	if err != nil {
+		return nil, fmt.Errorf("keystore: command: %w", err)
+	}
+	return CommandDriver{Command: command}, nil
 }
 
 func stderrSuffix(stderr string) string {

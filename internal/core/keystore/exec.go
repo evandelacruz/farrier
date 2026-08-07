@@ -2,26 +2,20 @@ package keystore
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/driver"
 )
 
-// ExecResolver is the out-of-tree keystore driver (CORE-003): it satisfies
-// Resolver by invoking a driver executable through the exec protocol
-// instead of resolving key material in-tree — the same posture used by
-// dns and blob (tech-spec.md "Driver interfaces").
-//
-// A resolved secret is small enough to travel in the exec protocol's JSON
-// envelope directly, unlike blob's Get/Put, which stage large content
-// through a local temp file instead.
-type ExecResolver struct {
-	Invoker driver.Invoker
-}
-
-// NewExec returns an ExecResolver that calls through invoker.
-func NewExec(invoker driver.Invoker) *ExecResolver {
-	return &ExecResolver{Invoker: invoker}
+// execDriver satisfies Driver for an out-of-tree keystore driver reached
+// through the CORE-003 exec protocol: one process per Resolve call,
+// method "resolve", params {"key": keyName}, result {"secret": <base64>}.
+// Base64 lets an executable return arbitrary binary key material (a
+// certificate, a host key) through JSON, which is text-only.
+type execDriver struct {
+	invoker driver.Invoker
 }
 
 type execResolveParams struct {
@@ -32,12 +26,45 @@ type execResolveResult struct {
 	Secret string `json:"secret"`
 }
 
-// Resolve invokes the "resolve" method and wraps its result as a Secret
-// immediately, so the raw value never exists outside of that wrapper.
-func (r *ExecResolver) Resolve(ctx context.Context, keyName string) (Secret, error) {
-	var res execResolveResult
-	if err := r.Invoker.Invoke(ctx, "resolve", execResolveParams{Key: keyName}, &res); err != nil {
-		return Secret{}, fmt.Errorf("keystore: exec: resolve %q: %w", keyName, err)
+func (d execDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
+	if strings.TrimSpace(keyName) == "" {
+		return Secret{}, fmt.Errorf("keystore: exec: key name is required")
 	}
-	return NewSecret(res.Secret), nil
+
+	var result execResolveResult
+	if err := d.invoker.Invoke(ctx, "resolve", execResolveParams{Key: keyName}, &result); err != nil {
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: %w", keyName, err)
+	}
+	secret, err := base64.StdEncoding.DecodeString(result.Secret)
+	if err != nil {
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: decode secret: %w", keyName, err)
+	}
+	if len(secret) == 0 {
+		return Secret{}, fmt.Errorf("keystore: exec: key %q resolved to empty secret", keyName)
+	}
+	return NewSecret(string(secret)), nil
+}
+
+func newExecDriver(driverName string, config map[string]any) (Driver, error) {
+	path, err := stringConfig(config, "path")
+	if err != nil {
+		return nil, fmt.Errorf("keystore: %s: %w (unrecognized driver name, treated as an out-of-tree exec driver)", driverName, err)
+	}
+
+	var args []string
+	if raw, ok := config["args"]; ok {
+		list, ok := raw.([]any)
+		if !ok {
+			return nil, fmt.Errorf("keystore: %s: config.args must be a list of strings", driverName)
+		}
+		for _, item := range list {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("keystore: %s: config.args must be a list of strings", driverName)
+			}
+			args = append(args, s)
+		}
+	}
+
+	return execDriver{invoker: driver.Exec{Path: path, Args: args}}, nil
 }

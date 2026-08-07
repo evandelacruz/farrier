@@ -2,58 +2,50 @@ package keystore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// FileResolver is the "file" keystore driver (KEY-001): it resolves key
-// material from a local path, keyName joined onto Dir. A trailing newline
-// on the file's content is trimmed, since key material is typically
-// written by an editor or `echo` that appends one.
-type FileResolver struct {
-	Dir string
+// FileDriver resolves key material by reading files from a local
+// directory (KEY-001): keyName is joined onto Path as a filename, so each
+// piece of key material is its own file on disk, named for what it holds
+// (e.g. Path/forgejo_secret_key). Config: {"path": "<directory>"}.
+type FileDriver struct {
+	Path string
 }
 
-// NewFile returns a FileResolver rooted at dir.
-func NewFile(dir string) (*FileResolver, error) {
-	if strings.TrimSpace(dir) == "" {
-		return nil, errors.New("keystore: file: dir is required")
-	}
-	return &FileResolver{Dir: dir}, nil
-}
-
-// Resolve reads keyName as a file under Dir.
-func (r *FileResolver) Resolve(ctx context.Context, keyName string) (Secret, error) {
+// Resolve reads Path/keyName and returns its contents verbatim — no
+// parsing, no trimming, so binary key material (certificates, host keys)
+// round-trips exactly.
+func (d FileDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
 	if err := ctx.Err(); err != nil {
 		return Secret{}, err
 	}
-	path, err := r.resolve(keyName)
-	if err != nil {
-		return Secret{}, err
+	if strings.TrimSpace(keyName) == "" {
+		return Secret{}, fmt.Errorf("keystore: file: key name is required")
 	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return Secret{}, fmt.Errorf("keystore: file: key %q not found", keyName)
-		}
-		return Secret{}, fmt.Errorf("keystore: file: read key %q: %w", keyName, err)
+
+	base := filepath.Clean(d.Path)
+	full := filepath.Join(base, keyName)
+	if full != base && !strings.HasPrefix(full, base+string(os.PathSeparator)) {
+		return Secret{}, fmt.Errorf("keystore: file: key name %q escapes configured path", keyName)
 	}
-	return NewSecret(strings.TrimRight(string(content), "\r\n")), nil
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return Secret{}, fmt.Errorf("keystore: file: resolve key %q: %w", keyName, err)
+	}
+	if len(data) == 0 {
+		return Secret{}, fmt.Errorf("keystore: file: key %q is empty at %s", keyName, full)
+	}
+	return NewSecret(string(data)), nil
 }
 
-// resolve turns keyName into a filesystem path under Dir, rejecting any
-// name that would escape it (an absolute path, or one containing a ".."
-// segment) — the same guard blob.LocalAdapter applies to object keys.
-func (r *FileResolver) resolve(keyName string) (string, error) {
-	if strings.TrimSpace(keyName) == "" {
-		return "", errors.New("keystore: file: key name is required")
+func newFileDriver(config map[string]any) (Driver, error) {
+	path, err := stringConfig(config, "path")
+	if err != nil {
+		return nil, fmt.Errorf("keystore: file: %w", err)
 	}
-	clean := filepath.Clean(filepath.FromSlash(keyName))
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("keystore: file: key %q escapes dir", keyName)
-	}
-	return filepath.Join(r.Dir, clean), nil
+	return FileDriver{Path: path}, nil
 }

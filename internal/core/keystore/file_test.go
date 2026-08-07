@@ -7,95 +7,118 @@ import (
 	"testing"
 )
 
-func TestFileResolveReadsKeyContent(t *testing.T) {
+func TestFileDriverResolve(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "secret-key"), []byte("s3cr3t\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "forgejo_secret_key"), []byte("supersecret"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	r, err := NewFile(dir)
-	if err != nil {
-		t.Fatalf("NewFile: %v", err)
-	}
-	got, err := r.Resolve(context.Background(), "secret-key")
+	d := FileDriver{Path: dir}
+	got, err := d.Resolve(context.Background(), "forgejo_secret_key")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if want := "s3cr3t"; got.Reveal() != want {
-		t.Fatalf("Reveal() = %q, want %q (trailing newline should be trimmed)", got.Reveal(), want)
+	if got.Reveal() != "supersecret" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "supersecret")
 	}
 }
 
-func TestFileResolveMissingKeyErrors(t *testing.T) {
+func TestFileDriverResolveBinaryContentRoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	r, err := NewFile(dir)
-	if err != nil {
-		t.Fatalf("NewFile: %v", err)
+	want := []byte{0x00, 0x01, 0xff, 0xfe, '\n', 0x00}
+	if err := os.WriteFile(filepath.Join(dir, "age_backup_key"), want, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.Resolve(context.Background(), "does-not-exist"); err == nil {
-		t.Fatal("Resolve: want error for missing key, got nil")
+
+	d := FileDriver{Path: dir}
+	got, err := d.Resolve(context.Background(), "age_backup_key")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Reveal() != string(want) {
+		t.Fatalf("Reveal() = %v, want %v", []byte(got.Reveal()), want)
 	}
 }
 
-func TestFileResolveRejectsPathTraversal(t *testing.T) {
-	dir := t.TempDir()
-	// A file outside dir that traversal would otherwise reach.
-	outside := filepath.Join(filepath.Dir(dir), "outside-secret")
-	if err := os.WriteFile(outside, []byte("leak"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	defer os.Remove(outside)
-
-	r, err := NewFile(dir)
-	if err != nil {
-		t.Fatalf("NewFile: %v", err)
-	}
-	if _, err := r.Resolve(context.Background(), "../outside-secret"); err == nil {
-		t.Fatal("Resolve: want error for path traversal, got nil")
+func TestFileDriverResolveMissingKeyErrors(t *testing.T) {
+	d := FileDriver{Path: t.TempDir()}
+	if _, err := d.Resolve(context.Background(), "does_not_exist"); err == nil {
+		t.Fatal("Resolve: want error for missing file, got nil")
 	}
 }
 
-func TestFileResolveRejectsAbsolutePath(t *testing.T) {
+func TestFileDriverResolveEmptyFileErrors(t *testing.T) {
 	dir := t.TempDir()
-	r, err := NewFile(dir)
-	if err != nil {
-		t.Fatalf("NewFile: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "empty_key"), nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.Resolve(context.Background(), "/etc/passwd"); err == nil {
-		t.Fatal("Resolve: want error for absolute path, got nil")
+
+	d := FileDriver{Path: dir}
+	if _, err := d.Resolve(context.Background(), "empty_key"); err == nil {
+		t.Fatal("Resolve: want error for empty file, got nil")
 	}
 }
 
-func TestFileResolveEmptyKeyNameErrors(t *testing.T) {
+func TestFileDriverResolveRejectsPathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	r, err := NewFile(dir)
-	if err != nil {
-		t.Fatalf("NewFile: %v", err)
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("nope"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := r.Resolve(context.Background(), ""); err == nil {
+
+	d := FileDriver{Path: dir}
+	rel, err := filepath.Rel(dir, filepath.Join(outside, "secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Resolve(context.Background(), rel); err == nil {
+		t.Fatal("Resolve: want error for key name escaping configured path, got nil")
+	}
+}
+
+func TestFileDriverResolveEmptyKeyNameErrors(t *testing.T) {
+	d := FileDriver{Path: t.TempDir()}
+	if _, err := d.Resolve(context.Background(), ""); err == nil {
 		t.Fatal("Resolve: want error for empty key name, got nil")
 	}
 }
 
-func TestNewFileRejectsEmptyDir(t *testing.T) {
-	if _, err := NewFile(""); err == nil {
-		t.Fatal("NewFile: want error for empty dir, got nil")
-	}
-}
-
-func TestFileResolveContextCanceled(t *testing.T) {
+func TestFileDriverResolveCanceledContextErrors(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "k"), []byte("v"), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	r, err := NewFile(dir)
-	if err != nil {
-		t.Fatalf("NewFile: %v", err)
+		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := r.Resolve(ctx, "k"); err == nil {
+
+	d := FileDriver{Path: dir}
+	if _, err := d.Resolve(ctx, "k"); err == nil {
 		t.Fatal("Resolve: want error for canceled context, got nil")
+	}
+}
+
+func TestNewFileDriverRequiresPath(t *testing.T) {
+	if _, err := New("file", map[string]any{}); err == nil {
+		t.Fatal("New: want error for missing config.path, got nil")
+	}
+}
+
+func TestNewFileDriverResolvesThroughFactory(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "k"), []byte("v"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := New("file", map[string]any{"path": dir})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	got, err := d.Resolve(context.Background(), "k")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Reveal() != "v" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "v")
 	}
 }

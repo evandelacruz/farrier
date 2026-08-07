@@ -1,73 +1,65 @@
-// Package keystore implements the KEY driver family: the abstraction key
-// material resolves through at runtime instead of living in the bundle
-// (spec.md "Bundle config is shareable; keys resolve through drivers").
+// Package keystore resolves key material at runtime through a driver: a
+// keyName in, a redacted Secret out. The manifest's keystore DriverRef
+// carries only a driver name and its non-secret config — a directory, a
+// command, an executable to run — never the secret itself (CORE-001).
 //
-// Resolver is the published Go interface every keystore driver satisfies.
-// Two ship in-tree: file (KEY-001), reading a local path, and command
-// (KEY-002), reading a configured command's stdout. ExecResolver satisfies
-// it too, reaching a third-party driver through the CORE-003 exec protocol
-// — the same posture used by dns and blob.
+// Two drivers ship in-tree: file (KEY-001) and command (KEY-002). Any
+// other driver name is reached through the CORE-003 exec protocol, so a
+// third party can add a keystore driver as a standalone executable
+// without linking Go — the same plugin posture as the dns and blob
+// packages.
 //
-// Secret is KEY-003's enforcement point. Every Resolver returns a Secret,
-// never a string, and Secret's zero-value String, GoString, MarshalJSON,
-// and MarshalYAML all redact — so a Secret that ends up in an event
-// Detail, a wrapped error, or a struct printed for debugging prints
-// "[redacted]" instead of the key material. Reveal is the one deliberate
-// escape hatch, used at the point the raw value is actually needed (e.g.
-// rendering Compose environment or Forgejo's app.ini).
+// Every Driver returns a Secret, never a bare string or []byte (KEY-003):
+// Secret's formatting and marshaling methods all redact, so key material
+// that ends up in an event Detail, a wrapped error, or a struct printed
+// for debugging prints "[redacted]" instead of leaking. Reveal is the one
+// deliberate escape hatch, used at the point the raw value is actually
+// needed (e.g. rendering Compose environment or Forgejo's app.ini).
 package keystore
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"strings"
+)
 
-// Resolver resolves named key material at runtime.
-type Resolver interface {
-	// Resolve returns the key material named by keyName.
+// Driver resolves one named piece of key material to its Secret.
+// Implementations must never log, cache to disk, or otherwise persist a
+// resolved secret anywhere outside memory (KEY-003).
+type Driver interface {
 	Resolve(ctx context.Context, keyName string) (Secret, error)
 }
 
-// redacted is what every Secret formatting path prints in place of the
-// underlying value.
-const redacted = "[redacted]"
-
-// Secret holds key material resolved by a Resolver. The zero value is a
-// valid, empty Secret.
-type Secret struct {
-	value string
+// New builds the Driver named by driverName from its non-secret config, as
+// carried by a bundle manifest's keystore DriverRef. "file" and "command"
+// are the shipped in-tree drivers (KEY-001, KEY-002); any other name is
+// treated as an out-of-tree driver executable reached through the
+// CORE-003 exec protocol, configured the same way driver.Exec itself is:
+// config.path is the executable, config.args its fixed arguments.
+func New(driverName string, config map[string]any) (Driver, error) {
+	switch driverName {
+	case "":
+		return nil, fmt.Errorf("keystore: driver name is required")
+	case "file":
+		return newFileDriver(config)
+	case "command":
+		return newCommandDriver(config)
+	default:
+		return newExecDriver(driverName, config)
+	}
 }
 
-// NewSecret wraps value as a Secret.
-func NewSecret(value string) Secret {
-	return Secret{value: value}
-}
-
-// Reveal returns the underlying key material. Callers use it only at the
-// point the raw value is actually needed — never to build a log line, an
-// event Detail, or an error message.
-func (s Secret) Reveal() string {
-	return s.value
-}
-
-// String implements fmt.Stringer, redacting the value so a Secret printed
-// via %v, %s, or an ordinary Println never surfaces key material — even
-// nested inside another struct's fields.
-func (s Secret) String() string {
-	return redacted
-}
-
-// GoString implements fmt.GoStringer, redacting the value under %#v.
-func (s Secret) GoString() string {
-	return redacted
-}
-
-// MarshalJSON redacts the value, so a Secret embedded in any struct
-// marshaled to JSON — for logging, an API response, or debugging output —
-// never carries the key material.
-func (s Secret) MarshalJSON() ([]byte, error) {
-	return []byte(`"` + redacted + `"`), nil
-}
-
-// MarshalYAML redacts the value, matching MarshalJSON for the YAML encoder
-// the bundle manifest uses (gopkg.in/yaml.v3).
-func (s Secret) MarshalYAML() (any, error) {
-	return redacted, nil
+// stringConfig reads a required, non-empty string field out of a driver's
+// config map, naming the field in any error so a bad manifest is
+// diagnosable without a debugger.
+func stringConfig(config map[string]any, field string) (string, error) {
+	raw, ok := config[field]
+	if !ok {
+		return "", fmt.Errorf("config.%s is required", field)
+	}
+	s, ok := raw.(string)
+	if !ok || strings.TrimSpace(s) == "" {
+		return "", fmt.Errorf("config.%s must be a non-empty string", field)
+	}
+	return s, nil
 }
