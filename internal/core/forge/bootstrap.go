@@ -1,0 +1,65 @@
+package forge
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/evandelacruz/farrier/internal/core/events"
+)
+
+// StepAdminBootstrap identifies the admin-bootstrap step in a deployment
+// job's event stream.
+const StepAdminBootstrap = "admin-bootstrap"
+
+// Runner executes a command on the forge host, streaming its output. It is
+// satisfied by *orchestrate.Client; kept as an interface here so forge
+// stays decoupled from the SSH transport and testable without one.
+type Runner interface {
+	Run(ctx context.Context, command string, stdout, stderr io.Writer) error
+}
+
+// Bootstrap creates account on the running forgejo service by running
+// `forgejo admin user create` through runner, then emits the account's
+// credentials exactly once through job's event stream (FORGE-002) — the
+// only place they are ever handed to the operator. Bootstrap does not emit
+// a job-terminal event; the caller's deployment flow owns that.
+func Bootstrap(ctx context.Context, runner Runner, job *events.Job, account AdminAccount) error {
+	job.Started(StepAdminBootstrap, "creating first admin account")
+
+	var stderr bytes.Buffer
+	if err := runner.Run(ctx, createCommand(account), io.Discard, &stderr); err != nil {
+		detail := err.Error()
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			detail = msg
+		}
+		job.Emit(StepAdminBootstrap, events.StateFailed, fmt.Sprintf("create admin account: %s", detail))
+		return fmt.Errorf("forge: create admin account: %w", err)
+	}
+
+	job.Emit(StepAdminBootstrap, events.StateSucceeded, fmt.Sprintf(
+		"first admin account created — username: %s, email: %s, password: %s",
+		account.Username, account.Email, account.Password,
+	))
+	return nil
+}
+
+// createCommand builds the `docker compose exec` invocation that creates
+// account inside the forgejo service. Every argument comes from
+// AdminAccount, whose fields are either a fixed constant or generated from
+// a shell-safe charset (NewAdminAccount) — quoted here regardless, so the
+// command stays safe even if a caller builds an AdminAccount by hand.
+func createCommand(a AdminAccount) string {
+	return fmt.Sprintf(
+		"docker compose exec -T %s forgejo admin user create --username %s --email %s --password %s --admin --must-change-password=false",
+		Service, quote(a.Username), quote(a.Email), quote(a.Password),
+	)
+}
+
+// quote wraps s in single quotes for a POSIX shell, escaping any single
+// quote it contains.
+func quote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
