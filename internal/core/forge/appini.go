@@ -115,9 +115,10 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
 	fmt.Fprintf(&b, "PATH = %s\n", lfsPath)
 	fmt.Fprintf(&b, "JWT_SECRET = %s\n\n", secrets.LFSJWTSecret)
 
-	// FORGE-003 (fork-PR approval gating) adds more [actions] fields via its
-	// own RenderActionsSection(); whichever of the two lands second must fold
-	// this block into that renderer instead of emitting [actions] twice.
+	// Enabling Actions is also the whole of FORGE-003. Forgejo's fork-PR
+	// approval gate is unconditional once Actions is on — it exposes no
+	// app.ini key, and no per-repository setting, to loosen or disable it —
+	// so there is no separate approval field to render here.
 	fmt.Fprintf(&b, "[actions]\n")
 	fmt.Fprintf(&b, "ENABLED = true\n\n")
 

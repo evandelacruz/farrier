@@ -86,6 +86,27 @@ func TestRenderAppINIServesPlaintextBehindCaddy(t *testing.T) {
 	}
 }
 
+// TestRenderAppINIEnablesActionsForForkPRApproval guards FORGE-003. Forgejo's
+// fork-PR approval gate is unconditional once Actions is enabled — there is no
+// app.ini key or per-repository setting that loosens it — so this one section
+// is the entire mechanism behind the CI trust boundary in spec.md. Rendering
+// [actions] exactly once also keeps the file valid: a duplicate section header
+// would silently shadow the first.
+func TestRenderAppINIEnablesActionsForForkPRApproval(t *testing.T) {
+	out, err := RenderAppINI(validManifest(), validSecrets())
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	text := string(out)
+
+	if !strings.Contains(text, "[actions]\nENABLED = true\n") {
+		t.Errorf("rendered app.ini does not enable Actions, so the fork-PR approval gate is off:\n%s", text)
+	}
+	if got := strings.Count(text, "[actions]"); got != 1 {
+		t.Errorf("rendered app.ini has %d [actions] sections, want exactly 1:\n%s", got, text)
+	}
+}
+
 func TestRenderAppINIRequiresValidManifest(t *testing.T) {
 	m := validManifest()
 	m.Domain = ""
