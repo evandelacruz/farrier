@@ -67,7 +67,9 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 
 ## Orchestration
 
-- Transport: SSH (Go `x/crypto/ssh`), authenticated by the operator's existing SSH agent or key file.
+- Transport: SSH (Go `x/crypto/ssh`), authenticated by the operator's existing SSH agent (`SSH_AUTH_SOCK`) or an explicit key file — no other auth path, no password prompts.
+- Host identity is checked against the operator's `known_hosts` (default `~/.ssh/known_hosts`); an unrecorded or mismatched host key fails the connection rather than prompting to trust it, since jobs run unattended.
+- Host readiness beyond SSH itself is a single check: Docker reachable over the same SSH session (`docker version`). Farrier requires nothing else of the host.
 - The CLI renders Compose files from the manifest, ships them to the host, and drives `docker compose` over the SSH session.
 - Host state is treated as disposable: `up` converges the host to the bundle definition idempotently; drift is overwritten.
 
