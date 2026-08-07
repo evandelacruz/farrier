@@ -30,7 +30,7 @@ Every component is fully open source: Forgejo (GPL-3.0+), Forgejo Actions runner
 ## Implementation
 
 - **Language:** Go. One static binary with zero runtime dependencies carries the core engine, CLI, embedded web dashboard, SSH client, and Docker orchestration. Forgejo is also Go, keeping upstream source readable in one language.
-- **ACME:** lego, in-process. Certificates are bundle key material, so the core issues and renews them; lego's DNS-01 support covers roughly one hundred DNS providers out of the box.
+- **ACME:** lego, in-process. Certificates are bundle key material, so the core issues and renews them; lego's DNS-01 support covers roughly one hundred DNS providers out of the box. That provider set is most of the binary — roughly 30 MB of the total, since it links every provider's SDK — and it is a deliberate trade. Certificate renewal runs unattended every sixty days, so it cannot degrade to manual the way a failover DNS flip can; bundling the set is what gives automatic renewal to operators whose provider Farrier ships no DNS driver for.
 - **Backup encryption:** age.
 
 ## Stateless vs. stateful
