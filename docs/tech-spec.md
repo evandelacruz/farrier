@@ -91,7 +91,7 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 
 - Forgejo `app.ini` is fully rendered from the manifest — the install wizard is pre-answered by configuration.
 - Admin bootstrap runs `forgejo admin user create` post-start; credentials are emitted once through the event stream.
-- Fork-PR approval requirement is set on by default in rendered configuration.
+- Rendered `app.ini` enables Actions (`[actions] ENABLED = true`, `internal/core/forge.RenderActionsSection`). Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no app.ini or per-repository key to loosen it — so enabling Actions is what the requirement needs.
 - CI reconciliation at promote: a direct SQLite update resetting `running` → `queued` in the actions tables, executed before services start.
 
 ## API
