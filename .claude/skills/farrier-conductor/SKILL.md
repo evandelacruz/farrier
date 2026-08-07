@@ -21,7 +21,8 @@ implement requirements yourself. Plan, fire, report, stop.
 
 ## 1. Gather open PRs
 
-There is no `gh` binary in a Claude Code session — use the GitHub MCP tools.
+There is no `gh` binary in a Claude Code session. Use `curl` against the REST
+API, falling back to the MCP tools only where REST cannot serve.
 Build a JSON array of `PrCommentSummary` objects, one per open PR:
 
 ```jsonc
@@ -50,6 +51,67 @@ enabled for this session."* That also rules out `summarizeOpenPrs()` from
 `@farrier/conductor`, which is built on `gh api graphql` — it works on a laptop,
 not here.
 
+**The GraphQL budget is the scarce one, by a wide margin.** The two buckets are
+separate and sized differently — REST gets 15000/hr, GraphQL 5000 *points*/hr,
+where one query costs points by how many nodes it returns rather than one per
+call. Measured mid-session, on an account doing ordinary conductor and review
+work:
+
+```
+core       14952/15000   used 48
+graphql        0/5000    used 5000   ← exhausted
+```
+
+REST was untouched and GraphQL was gone. A pass that dies on rate limits has
+almost certainly spent GraphQL, so the fix is never "make fewer calls" in
+general — it is "make the GraphQL ones REST."
+
+Read the buckets with `GET /rate_limit`, which is free and does not count
+against either. Do it before blaming anything else for a failing pass:
+
+```bash
+curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://api.github.com/rate_limit | python3 -m json.tool
+```
+
+The 15000 REST ceiling is a GitHub App installation number. A PAT gets 5000.
+Either way GraphQL is still the scarcer bucket — it only changes the headroom.
+
+**Identifying a GraphQL tool.** The MCP server does not say which of its tools
+are GraphQL, and the names give nothing away. Two tells:
+
+- **The `search` bucket stays at 30/30 while `search_pull_requests` succeeds.**
+  A REST search would have decremented it, so the call went to GraphQL.
+- **The tool returns GraphQL node IDs** — `PRRT_…`, `PRRC_…`. REST returns
+  integers.
+
+Confirm by calling the REST equivalent with `curl` and seeing whether it 200s.
+That last step matters. This skill previously asserted that check runs and
+combined status were 403 for the session token; a retest showed both return
+`200`, and the wrong claim had been routing the most frequent call in the pass
+through GraphQL for no reason.
+
+What is genuinely blocked is anything **not scoped to a repository**. The
+session proxy answers `/search/issues` with `403 This GitHub API path is not
+available: sessions are bound to their configured repositories.` That is the
+rule to reason from — `/repos/{o}/{r}/...` works, cross-repo and global
+endpoints do not — rather than a memorized list. Re-test before inheriting
+any of it.
+
+Four MCP tools reach GraphQL. Three have REST equivalents and must use them:
+
+| Tool | Instead |
+|---|---|
+| `search_pull_requests` | **Never use it.** `GET /pulls?state=open` and filter client-side. `/search/issues` is blocked by the session proxy (not repo-scoped), so the MCP tool can only be GraphQL. |
+| `pull_request_read` → `get_review_comments` | `GET /repos/{o}/{r}/pulls/{n}/comments` — every field except `isResolved` and the `PRRT_` thread id. Use the MCP tool **only** when about to resolve a thread. |
+| `pull_request_read` → `get_check_runs` | `GET /repos/{o}/{r}/commits/{sha}/check-runs` — returns `200` with the full run list. An earlier version of this skill claimed it 403s; it does not. |
+| `resolve_review_thread` | No REST equivalent exists anywhere in GitHub's API. Irreducible. |
+
+Everything else about a review is REST and should be: creating a review,
+submitting it with `COMMENT` / `APPROVE` / `REQUEST_CHANGES`, inline comments,
+replies (`POST /pulls/{n}/comments/{id}/replies`), labels, and every list or
+get.
+
 Calls, per PR (`curl` against `api.github.com`, or the equivalent MCP tool):
 
 | Field | Source |
@@ -57,7 +119,7 @@ Calls, per PR (`curl` against `api.github.com`, or the equivalent MCP tool):
 | number, title, url, headRefName, headSha, isDraft, labels, issueComments | `GET /repos/{o}/{r}/pulls?state=open` |
 | mergeable, mergeStateStatus, hasMergeConflict | `GET /repos/{o}/{r}/pulls/{n}` |
 | reviewedShas | `GET /repos/{o}/{r}/pulls/{n}/reviews` |
-| checksOk | `pull_request_read` with `method: "get_check_runs"` — **not** curl |
+| checksOk | `GET /repos/{o}/{r}/commits/{sha}/check-runs` |
 
 Normalization that is easy to get wrong:
 
@@ -94,16 +156,25 @@ Normalization that is easy to get wrong:
       and r.get("commit_id")
   })
   ```
-- **`checksOk` comes from check runs, and `curl` cannot read them.** Both
-  `GET /commits/{sha}/status` and `GET /commits/{sha}/check-runs` return
-  `403 Resource not accessible by integration` for the session's token. Use the
-  MCP tool instead — `pull_request_read` with `method: "get_check_runs"` —
-  which works. Getting this wrong is silent: a 403 parsed as "no checks" makes
-  every PR look like it has no CI, and a red build never queues a fixer.
+- **`checksOk` comes from check runs, over REST.**
 
-  `/status` is also the wrong endpoint on its own terms. GitHub Actions writes
-  **check runs**, not the legacy commit statuses `/status` reports, so that
-  call can return an empty result on a PR whose CI is genuinely red.
+  ```bash
+  curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/{o}/{r}/commits/{sha}/check-runs"
+  ```
+
+  This skill previously said the endpoint returns `403 Resource not accessible
+  by integration` and that the `get_check_runs` MCP tool was the only way. That
+  was wrong — retested and it returns `200` with the full run list — and it was
+  expensive to believe, because the MCP tool is GraphQL and this is the one
+  field gathered for every open PR on every pass. Use `curl`.
+
+  Use `/commits/{sha}/check-runs`, never `/commits/{sha}/status`. GitHub Actions
+  writes **check runs**, not the legacy commit statuses `/status` reports, so
+  `/status` returns `200` with an empty `statuses` array even on a PR whose CI
+  is genuinely red — the failure mode is silent, and it makes every PR look
+  like it has no CI so a red build never queues a fixer.
 
   Map the response like this:
 
