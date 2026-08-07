@@ -154,17 +154,24 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 - Rendered `app.ini` enables Actions (`[actions] ENABLED = true`, inlined in `internal/core/forge.RenderAppINI`). Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no app.ini or per-repository key to loosen it — so enabling Actions is what the requirement needs.
 - CI reconciliation at promote: a direct SQLite update resetting `running` → `queued` in the actions tables, executed before services start.
 
-## Deployment (`up`, UP-001)
+## Deployment (`up`, UP-001, UP-003)
 
 `internal/core/deploy.Up` is the sequencing over orchestrate and forge that a real deployment needs, given only an `ssh://user@host` target and a loaded bundle:
 
 1. Check Docker is reachable (ORCH-001's `CheckHost`).
-2. Resolve the bundle's key material through its keystore driver and render `app.ini` (FORGE-001), ship it to the host, and add a bind mount for it to the forgejo service's Compose definition (`orchestrate.WithBindMount`) — deploy-time content, never written into the bundle directory (KEY-003).
+2. Resolve the bundle's key material through its keystore driver and render `app.ini` (FORGE-001), ship it to the host, add a bind mount for it to the forgejo service's Compose definition (`orchestrate.WithBindMount`) — deploy-time content, never written into the bundle directory (KEY-003) — and set a checksum of that rendered `app.ini` as an environment variable on the same service (`orchestrate.WithEnv`).
 3. Converge the host to that Compose definition (ORCH-002).
 4. Wait for the forgejo container to accept `docker compose exec`, since `up -d` returning doesn't guarantee the entrypoint has finished.
 5. Provision the first admin account (FORGE-002).
 
 Every step reports through the job's CORE-002 event stream; `deploy.Up` owns the job's terminal event. `cmd/farrier up` is the CLI skin: it connects over SSH, calls `deploy.Up`, and prints the same events a dashboard would render over SSE.
+
+Re-running `up` against a host it has already deployed to is safe and converges the host to the current bundle definition (UP-003):
+
+- Steps 1 and 4 are read-only probes.
+- Step 2 always re-ships the current `app.ini` and re-derives its checksum. `docker compose up -d` (step 3) decides whether to recreate a service by diffing its resolved config — image, environment, volumes, labels — never the bytes of a file a bind mount happens to point at, so without the checksum a content-only `app.ini` change would ship to disk without the running container ever picking it up. Carrying the checksum as an environment variable puts that content into the diff `docker compose` already does.
+- Step 3 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
+- Step 5 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
 
 ## API
 

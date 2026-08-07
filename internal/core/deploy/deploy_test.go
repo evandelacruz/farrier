@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
 
 func init() {
@@ -25,10 +28,11 @@ type fakeHost struct {
 	files    map[string]string
 	commands []string
 
-	checkHostErr   error
-	writeFileErr   error
-	execFailures   int // number of leading `docker compose exec ... true` calls that fail
-	adminCreateErr error
+	checkHostErr      error
+	writeFileErr      error
+	execFailures      int // number of leading `docker compose exec ... true` calls that fail
+	adminCreateErr    error
+	adminCreateStderr string
 }
 
 func newFakeHost() *fakeHost {
@@ -67,6 +71,9 @@ func (f *fakeHost) Run(ctx context.Context, command string, stdout, stderr io.Wr
 		return nil
 	}
 	if strings.Contains(command, "admin user create") {
+		if f.adminCreateStderr != "" && stderr != nil {
+			stderr.Write([]byte(f.adminCreateStderr))
+		}
 		return f.adminCreateErr
 	}
 	return nil
@@ -201,6 +208,60 @@ func TestUpFailsWhenAdminCreateFails(t *testing.T) {
 
 	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"}); err == nil {
 		t.Fatal("Up: want error when admin bootstrap fails, got nil")
+	}
+}
+
+// TestUpSucceedsWhenAlreadyDeployed exercises UP-003 end to end: re-running
+// Up against a host it already deployed to must not fail just because the
+// admin account it provisioned last time is still there.
+func TestUpSucceedsWhenAlreadyDeployed(t *testing.T) {
+	host := newFakeHost()
+	host.adminCreateErr = errors.New("exit status 1")
+	host.adminCreateStderr = "Command error: user already exists [name: admin]"
+	job := events.NewJob()
+
+	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"})
+	if err != nil {
+		t.Fatalf("Up: %v, want nil on a host that's already bootstrapped", err)
+	}
+
+	evs := drain(job)
+	last := evs[len(evs)-1]
+	if last.State != events.StateSucceeded || last.Step != "" {
+		t.Errorf("last event = %+v, want a job-terminal success", last)
+	}
+}
+
+// TestUpEmbedsAppINIChecksumSoContentChangesForceRecreate exercises the
+// other half of UP-003: `docker compose up -d` recreates a service by
+// diffing its resolved config, never the bytes of a file a bind mount
+// happens to point at, so a manifest change that only alters app.ini's
+// content would otherwise ship to disk without the running container ever
+// picking it up. Up carries a checksum of the shipped app.ini as an
+// environment variable on the forgejo service precisely so that a
+// content-only change is visible to Converge's diff.
+func TestUpEmbedsAppINIChecksumSoContentChangesForceRecreate(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+
+	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	appINI, ok := host.files["/opt/farrier/forge/app.ini"]
+	if !ok {
+		t.Fatalf("app.ini not shipped, wrote: %v", keysOf(host.files))
+	}
+	sum := sha256.Sum256([]byte(appINI))
+	wantChecksum := hex.EncodeToString(sum[:])
+
+	composePath := "/opt/farrier/compose.tmp/" + orchestrate.ComposeFile
+	compose, ok := host.files[composePath]
+	if !ok {
+		t.Fatalf("compose file not shipped under %s, wrote: %v", composePath, keysOf(host.files))
+	}
+	if !strings.Contains(compose, appINIChecksumEnv) || !strings.Contains(compose, wantChecksum) {
+		t.Errorf("shipped compose missing %s=%s:\n%s", appINIChecksumEnv, wantChecksum, compose)
 	}
 }
 
