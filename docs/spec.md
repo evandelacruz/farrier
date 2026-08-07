@@ -81,7 +81,7 @@ Public repositories work on a Farrier instance and are not restricted. They are 
 
 ## CI trust boundary
 
-The instance is single-tenant: CI exists to run the team's own code, isolated at the container level. The one place outside code can reach CI is a fork pull request on a public repository, so fork-PR workflows require maintainer approval before running — Forgejo's setting for this defaults to on in the bundle. Private repositories, the target case, do not present this surface at all. Isolation against deliberately hostile code beyond container level is outside the design.
+The instance is single-tenant: CI exists to run the team's own code, isolated at the container level. The one place outside code can reach CI is a fork pull request on a public repository, so fork-PR workflows require maintainer approval before running — Forgejo enforces this unconditionally once Actions is enabled, which the bundle does by default. Private repositories, the target case, do not present this surface at all. Isolation against deliberately hostile code beyond container level is outside the design.
 
 ## Importing repositories
 
