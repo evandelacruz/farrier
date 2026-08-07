@@ -26,6 +26,11 @@ const composeDir = "compose"
 // docker compose up -d is itself idempotent and recreates any service
 // whose definition changed, so Converge is safe to run against a host
 // that's already converged, freshly provisioned, or has drifted.
+//
+// Host state is disposable (spec.md "Stateless vs. stateful"): Converge
+// never reads back what is already running before deciding what to do. It
+// always writes the full Compose definition and lets docker compose
+// reconcile, so the bundle alone determines the outcome.
 func Converge(ctx context.Context, t Transport, remoteDir string, b *bundle.Bundle) error {
 	if strings.TrimSpace(remoteDir) == "" {
 		return fmt.Errorf("orchestrate: converge: remote directory is required")
@@ -37,7 +42,7 @@ func Converge(ctx context.Context, t Transport, remoteDir string, b *bundle.Bund
 	dir := path.Join(remoteDir, composeDir)
 	staging := dir + ".tmp"
 
-	if _, err := t.Run(ctx, fmt.Sprintf("rm -rf %s && mkdir -p %s", shQuote(staging), shQuote(staging))); err != nil {
+	if _, err := t.Output(ctx, fmt.Sprintf("rm -rf %s && mkdir -p %s", shQuote(staging), shQuote(staging))); err != nil {
 		return fmt.Errorf("orchestrate: converge: stage %s: %w", staging, err)
 	}
 
@@ -53,7 +58,7 @@ func Converge(ctx context.Context, t Transport, remoteDir string, b *bundle.Bund
 		}
 	}
 
-	if _, err := t.Run(ctx, fmt.Sprintf("rm -rf %s && mv %s %s", shQuote(dir), shQuote(staging), shQuote(dir))); err != nil {
+	if _, err := t.Output(ctx, fmt.Sprintf("rm -rf %s && mv %s %s", shQuote(dir), shQuote(staging), shQuote(dir))); err != nil {
 		return fmt.Errorf("orchestrate: converge: install %s: %w", dir, err)
 	}
 
@@ -63,7 +68,7 @@ func Converge(ctx context.Context, t Transport, remoteDir string, b *bundle.Bund
 	}
 	up := fmt.Sprintf("cd %s && docker compose --project-name farrier %s up -d --remove-orphans",
 		shQuote(remoteDir), strings.Join(files, " "))
-	if _, err := t.Run(ctx, up); err != nil {
+	if _, err := t.Output(ctx, up); err != nil {
 		return fmt.Errorf("orchestrate: converge: docker compose up: %w", err)
 	}
 	return nil

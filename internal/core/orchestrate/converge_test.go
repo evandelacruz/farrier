@@ -11,7 +11,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 )
 
-// fakeTransport records every Run and WriteFile call in order, so tests can
+// fakeTransport records every Output and WriteFile call in order, so tests can
 // assert on the exact sequence Converge drives, without a real host.
 type fakeTransport struct {
 	commands []string
@@ -25,7 +25,7 @@ func newFakeTransport() *fakeTransport {
 	return &fakeTransport{files: make(map[string]string)}
 }
 
-func (f *fakeTransport) Run(ctx context.Context, command string) ([]byte, error) {
+func (f *fakeTransport) Output(ctx context.Context, command string) ([]byte, error) {
 	f.commands = append(f.commands, command)
 	if f.runErr != nil {
 		return nil, f.runErr
