@@ -40,7 +40,7 @@ Build a JSON array of `PrCommentSummary` objects, one per open PR:
   "issueComments": 0,
   "checksOk": null,                // true | false | null (null = no CI, or still running)
   "labels": [],
-  "reviewedShas": []
+  "reviewedShas": []             // real reviews only — see the filter below
 }
 ```
 
@@ -71,6 +71,29 @@ Normalization that is easy to get wrong:
   nothing tells the conductor a PR has blocking findings.
 - **`reviewedShas` excludes `PENDING` reviews.** A pending review is an unsent
   draft — counting it would mask the PR out of the review queue.
+- **`reviewedShas` also excludes reviews with an empty body.** When a fixer
+  replies to a review thread, GitHub wraps those replies in a review object of
+  its own — `state: "COMMENTED"`, `body: ""`, `commit_id` set to the head the
+  fixer just pushed. It is the fixer talking, not a reviewer, but it is
+  indistinguishable from a real review by state and SHA alone.
+
+  Counting it is the worst kind of wrong, because it strands the PR in a state
+  no later pass can escape: the new head looks reviewed, so nothing queues a
+  review, while the stale `conductor:changes-requested` label still says the PR
+  has blocking findings. Too reviewed to queue, too rejected to merge — and
+  nothing in the plan output looks off.
+
+  Filter on the body. The reviewer routine always submits with a comment, so a
+  genuine review has one; a replies-only wrapper never does:
+
+  ```python
+  reviewedShas = sorted({
+      r["commit_id"] for r in reviews
+      if r.get("state") != "PENDING"
+      and (r.get("body") or "").strip()
+      and r.get("commit_id")
+  })
+  ```
 - **`checksOk` comes from check runs, and `curl` cannot read them.** Both
   `GET /commits/{sha}/status` and `GET /commits/{sha}/check-runs` return
   `403 Resource not accessible by integration` for the session's token. Use the
