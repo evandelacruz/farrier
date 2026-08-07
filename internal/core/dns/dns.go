@@ -3,7 +3,10 @@
 // removes it. Two drivers ship in-tree — cloudflare (DNS-001) and rfc2136
 // (DNS-002) — plus ExecDriver, which reaches a third-party driver through
 // the CORE-003 exec protocol instead of an in-tree implementation, the same
-// plugin posture used by the keystore and blob packages.
+// plugin posture used by the keystore and blob packages. PrintDriver
+// (DNS-003) satisfies Driver for a bundle with no DNS driver configured,
+// reporting the exact record change through the shared event stream instead
+// of failing.
 //
 // A driver's config (Cloudflare's API token, RFC 2136's TSIG secret) is
 // secret, so — like blob's S3Config — it is never read from a bundle
