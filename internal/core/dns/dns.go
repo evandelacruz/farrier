@@ -26,10 +26,18 @@ import (
 	"time"
 )
 
-// Driver sets and deletes DNS records for a bundle's domain. Every bundle
-// record is created with a 60-second TTL (DNS-004), though ttl is a
-// parameter here rather than a constant so callers stay free to use a
-// different value for records outside that policy.
+// BundleTTL is the TTL every bundle DNS record is created with (DNS-004):
+// short enough that a DNS flip during promotion (spec.md "Failover")
+// propagates within the promotion downtime window. Callers that create or
+// update a bundle's own records — the domain at init, the flip at
+// promotion — use SetBundleRecord rather than calling a Driver's Set
+// directly, so the policy is enforced once instead of at every call site.
+const BundleTTL = 60 * time.Second
+
+// Driver sets and deletes DNS records for a bundle's domain. Set takes ttl
+// as a parameter rather than hard-coding BundleTTL so the interface also
+// serves records outside that policy; SetBundleRecord is the enforced path
+// for bundle records themselves.
 type Driver interface {
 	// Set upserts record: if a record by that name already exists it is
 	// replaced (value, type, and ttl), regardless of its previous type;
@@ -41,6 +49,15 @@ type Driver interface {
 	// flip) call Delete idempotently during failover without first
 	// checking what, if anything, is there.
 	Delete(ctx context.Context, record string) error
+}
+
+// SetBundleRecord upserts record on d at BundleTTL (DNS-004). This is the
+// path every caller creating or updating a bundle's own DNS record — the
+// domain at init, the standby's record during a promotion DNS flip — must
+// use instead of d.Set directly, so the 60-second policy holds regardless
+// of which driver is configured.
+func SetBundleRecord(ctx context.Context, d Driver, record, value string) error {
+	return d.Set(ctx, record, value, BundleTTL)
 }
 
 // recordType infers the DNS record type Set should write for value: an A
