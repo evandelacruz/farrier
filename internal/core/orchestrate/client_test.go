@@ -3,6 +3,7 @@ package orchestrate
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -150,6 +151,44 @@ func TestConnectNoAuthConfiguredFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
 		t.Fatalf("Connect error = %v, want mention of SSH_AUTH_SOCK", err)
+	}
+}
+
+func TestRunContextCancellation(t *testing.T) {
+	keyPath, clientSigner := writeTestKeyFile(t)
+
+	// handle blocks until the test ends, so the exec never completes on
+	// its own — Run must return because ctx is canceled, not because the
+	// command finished.
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	addr, hostPub := startFakeSSHServer(t, clientSigner.PublicKey(), func(command string) fakeResponse {
+		<-block
+		return fakeResponse{exitCode: 0}
+	})
+	knownHosts := writeKnownHosts(t, addr, hostPub)
+
+	connectCtx, cancelConnect := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelConnect()
+	client, err := Connect(connectCtx, fmt.Sprintf("ssh://tester@%s", addr), Options{KeyFile: keyPath, KnownHostsFile: knownHosts})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer client.Close()
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	cancelRun()
+
+	done := make(chan error, 1)
+	go func() { done <- client.Run(runCtx, "sleep forever", nil, nil) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return promptly after context cancellation")
 	}
 }
 
