@@ -50,6 +50,7 @@ func TestRenderAppINIAnswersEveryWizardField(t *testing.T) {
 	text := string(out)
 
 	want := []string{
+		"PROTOCOL = http\n",
 		"DOMAIN = forge.example.com",
 		"ROOT_URL = https://forge.example.com/",
 		"SSH_DOMAIN = forge.example.com",
@@ -65,6 +66,23 @@ func TestRenderAppINIAnswersEveryWizardField(t *testing.T) {
 		if !strings.Contains(text, w) {
 			t.Errorf("rendered app.ini missing %q:\n%s", w, text)
 		}
+	}
+}
+
+// TestRenderAppINIServesPlaintextBehindCaddy guards against PROTOCOL = https:
+// Caddy terminates TLS and proxies to Forgejo over plaintext, so Forgejo
+// binding its own TLS server (no cert available) breaks the deployment.
+func TestRenderAppINIServesPlaintextBehindCaddy(t *testing.T) {
+	out, err := RenderAppINI(validManifest(), validSecrets())
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	text := string(out)
+	if strings.Contains(text, "PROTOCOL = https") {
+		t.Fatalf("rendered app.ini binds Forgejo's own TLS server:\n%s", text)
+	}
+	if !strings.Contains(text, "PROTOCOL = http\n") {
+		t.Fatalf("rendered app.ini does not serve plaintext behind Caddy:\n%s", text)
 	}
 }
 

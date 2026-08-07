@@ -88,7 +88,9 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
 	fmt.Fprintf(&b, "RUN_USER = %s\n\n", runUser)
 
 	fmt.Fprintf(&b, "[server]\n")
-	fmt.Fprintf(&b, "PROTOCOL = https\n")
+	// http, not https: Caddy terminates TLS (spec.md "What it's built on") and
+	// proxies to Forgejo in plaintext. ROOT_URL below is the external https URL.
+	fmt.Fprintf(&b, "PROTOCOL = http\n")
 	fmt.Fprintf(&b, "DOMAIN = %s\n", domain)
 	fmt.Fprintf(&b, "ROOT_URL = %s\n", rootURL)
 	fmt.Fprintf(&b, "HTTP_PORT = %d\n", httpPort)
@@ -113,6 +115,9 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
 	fmt.Fprintf(&b, "PATH = %s\n", lfsPath)
 	fmt.Fprintf(&b, "JWT_SECRET = %s\n\n", secrets.LFSJWTSecret)
 
+	// FORGE-003 (fork-PR approval gating) adds more [actions] fields via its
+	// own RenderActionsSection(); whichever of the two lands second must fold
+	// this block into that renderer instead of emitting [actions] twice.
 	fmt.Fprintf(&b, "[actions]\n")
 	fmt.Fprintf(&b, "ENABLED = true\n\n")
 
