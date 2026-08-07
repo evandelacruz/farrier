@@ -56,7 +56,7 @@ func TestLocalPutOverwritesWhole(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	if err := a.Put(ctx, "k", bytes.NewReader([]byte("first-version-longer")), 21); err != nil {
+	if err := a.Put(ctx, "k", bytes.NewReader([]byte("first-version-longer")), 20); err != nil {
 		t.Fatalf("Put 1: %v", err)
 	}
 	if err := a.Put(ctx, "k", bytes.NewReader([]byte("v2")), 2); err != nil {

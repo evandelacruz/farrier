@@ -3,8 +3,9 @@
 //
 // Adapter is the published Go interface every adapter satisfies. Two ship
 // in-tree: local (BLOB-001), backed by a filesystem path, and s3
-// (BLOB-002), backed by any S3-compatible endpoint. The interface is
-// published so operators can add their own beyond these two.
+// (BLOB-002), backed by any S3-compatible endpoint. ExecAdapter satisfies
+// it too, reaching a third-party adapter through the CORE-003 exec
+// protocol instead of an in-tree implementation.
 package blob
 
 import (
