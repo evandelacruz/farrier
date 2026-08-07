@@ -11,3 +11,8 @@ dist/
 # Local
 .DS_Store
 .env
+
+# Per-machine Claude Code settings. Holds local paths and permission grants
+# that are specific to one operator's machine; the shared config is
+# .claude/settings.json.
+.claude/settings.local.json

@@ -40,7 +40,7 @@ Build a JSON array of `PrCommentSummary` objects, one per open PR:
   "issueComments": 0,
   "checksOk": null,                // true | false | null (null = no CI, or still running)
   "labels": [],
-  "reviewedShas": []
+  "reviewedShas": []             // real reviews only — see the filter below
 }
 ```
 
@@ -71,6 +71,29 @@ Normalization that is easy to get wrong:
   nothing tells the conductor a PR has blocking findings.
 - **`reviewedShas` excludes `PENDING` reviews.** A pending review is an unsent
   draft — counting it would mask the PR out of the review queue.
+- **`reviewedShas` also excludes reviews with an empty body.** When a fixer
+  replies to a review thread, GitHub wraps those replies in a review object of
+  its own — `state: "COMMENTED"`, `body: ""`, `commit_id` set to the head the
+  fixer just pushed. It is the fixer talking, not a reviewer, but it is
+  indistinguishable from a real review by state and SHA alone.
+
+  Counting it is the worst kind of wrong, because it strands the PR in a state
+  no later pass can escape: the new head looks reviewed, so nothing queues a
+  review, while the stale `conductor:changes-requested` label still says the PR
+  has blocking findings. Too reviewed to queue, too rejected to merge — and
+  nothing in the plan output looks off.
+
+  Filter on the body. The reviewer routine always submits with a comment, so a
+  genuine review has one; a replies-only wrapper never does:
+
+  ```python
+  reviewedShas = sorted({
+      r["commit_id"] for r in reviews
+      if r.get("state") != "PENDING"
+      and (r.get("body") or "").strip()
+      and r.get("commit_id")
+  })
+  ```
 - **`checksOk` comes from check runs, and `curl` cannot read them.** Both
   `GET /commits/{sha}/status` and `GET /commits/{sha}/check-runs` return
   `403 Resource not accessible by integration` for the session's token. Use the
@@ -125,8 +148,7 @@ node tools/fleet/dist/cli.js plan \
   --repo-root <scratch>/main-wt \
   --n <n> \
   --prs <scratch>/prs.json \
-  --out <scratch>/run \
-  --no-reviews
+  --out <scratch>/run
 ```
 
 **Point `--repo-root` at the worktree; do not `cd` into it.** `--repo-root` is
@@ -149,14 +171,26 @@ git show origin/main:docs/status.json | grep -o '"<ID>": *[^,}]*'
 `landed` means the plan is stale — you are not on main, or the fetch did not
 take. Re-do the worktree rather than firing.
 
-**`--no-reviews` is required in this repo.** The reviewer Routine is bound to a
-`Pull request: Commits pushed` webhook, so every push already gets reviewed.
-Dropping the flag would review each push twice and spend half the batch on work
-that was already coming for free.
+**The conductor fires reviews. Do not pass `--no-reviews`.** A PR whose head
+commit has no review is queued as a `pr-review` assignment, and the conductor
+fires the reviewer Routine for it exactly as it fires implementers:
 
-Passing it does not mean reviews stop mattering to the plan: a PR whose head
-commit is unreviewed is still reported as skipped, so you can see the webhook
-keeping up (or not).
+```
+2. [pr-review] Review PR #8  (reviewer / sonnet)
+   PR: https://github.com/evandelacruz/farrier/pull/8
+   Why: no review at current head commit
+```
+
+A `Pull request: Commits pushed` webhook also fires reviews, so in principle
+every push is reviewed for free. In practice it has been unreliable — PRs have
+sat with zero reviews and no verdict label, which stalls them permanently: the
+routing table reads the verdict label, and nothing produces one without a
+review. Firing reviews from the plan is what makes the loop self-healing.
+
+The cost of the overlap is a duplicate review when the webhook does fire, which
+is cheap and visible — the reviewer recognizes an unchanged commit and says so.
+A stalled PR is not cheap. If the webhook is ever confirmed reliable again,
+`--no-reviews` is how you stop paying for both.
 
 Print the plan output verbatim. It names every assignment **and a reason for
 every PR it passed over** — that is the part Evan reads.
@@ -187,7 +221,7 @@ Read `<scratch>/run/dispatch.json`. For each item, in order:
    ```bash
    curl -sS -X POST \
      "https://api.anthropic.com/v1/claude_code/routines/<routine id>/fire" \
-     -H "Authorization: Bearer $FARRIER_IMPLEMENTER_FIRE_KEY" \
+     -H "Authorization: Bearer <the key for item.role — see the table below>" \
      -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
      -H "anthropic-version: 2023-06-01" \
      -H "Content-Type: application/json" \
@@ -209,19 +243,24 @@ Read `<scratch>/run/dispatch.json`. For each item, in order:
    Resolve the routine id by name with `list_triggers` rather than hardcoding
    it — Evan edits these:
 
-   | `role` | Routine |
-   |---|---|
-   | `implementer` | the Farrier implementer routine (opus) |
-   | `reviewer` | the Farrier code-review routine (sonnet) — webhook-driven; the conductor should not normally fire it |
+   | `role` | Routine | Key |
+   |---|---|---|
+   | `implementer` | the Farrier implementer routine (opus) | `FARRIER_IMPLEMENTER_FIRE_KEY` |
+   | `reviewer` | the Farrier code-review routine (sonnet) | `FARRIER_REVIEWER_KEY` |
 
    If the routine for a role does not exist, **stop and say so.** Do not fall
    back to the other role, and do not do the work yourself.
 
-   Each routine has its **own** token, scoped to firing that one routine. If
-   `FARRIER_IMPLEMENTER_FIRE_KEY` is unset, check `env | grep -i fire` for a
-   differently-named variable before concluding it is missing — and remember
-   environment changes only reach **new** sessions, so a key added mid-session
-   is not visible until the next one.
+   **Each routine has its own token, and they are not interchangeable.** The
+   implementer key does not fire the reviewer routine — confirmed, not assumed.
+   Firing a `pr-review` assignment with the implementer key fails; there is no
+   fallback.
+
+   If a role's key is unset, run `env | grep -i -E 'fire|key'` before concluding
+   it is missing — the two names above do not share a suffix, so a single
+   pattern will not find both. Environment changes only reach **new** sessions,
+   so a key added mid-session is invisible until the next one; say so rather
+   than reporting the key as absent.
 
 3. If firing fails, **release the lock you just took** before moving on.
    A lock with no agent behind it parks the PR until a human clears it.
@@ -256,7 +295,17 @@ poll for the workers, they notify on completion.
   later come from a separate identity (a human, or another vendor's bot), that
   takes over automatically and the labels stop mattering. Nothing to change.
 - Review and fix form a closed loop: a review requests changes, the conductor
-  fires a fixer, the fixer pushes, the push webhook fires another review. That
-  is the intent, and **it runs unbounded** — there is no round cap and nothing
-  parks a PR for having been round-tripped too many times. A PR that is not
-  converging keeps drawing a fixer every pass until Evan steps in.
+  fires a fixer, the fixer pushes, and the next pass sees an unreviewed head
+  commit and fires another review. The conductor closes that loop itself, so it
+  keeps turning whether or not the push webhook fires. **It runs unbounded** —
+  there is no round cap and nothing parks a PR for having been round-tripped
+  too many times. A PR that is not converging keeps drawing a fixer every pass
+  until Evan steps in.
+- **A fixer cannot answer a question only Evan can answer.** When a review's
+  remaining blocker is a design decision — a doc conflict, a spec
+  reinterpretation — firing a fixer at it spends an agent that has nothing to
+  change, and the next review re-raises it. Surface the question to Evan
+  instead, and once he answers, record it **on the review thread** and resolve
+  the thread. An answer posted only as a PR comment does not clear the blocker:
+  reviews key on the open thread, so the PR keeps drawing "needs Evan's call"
+  verdicts until the thread itself is closed.

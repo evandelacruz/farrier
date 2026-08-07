@@ -43,8 +43,8 @@ func TestExecDriverResolveDecodesBase64Secret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != "hunter2" {
-		t.Fatalf("Resolve = %q, want %q", got, "hunter2")
+	if got.Reveal() != "hunter2" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "hunter2")
 	}
 	if fake.gotMethod != "resolve" {
 		t.Fatalf("method = %q, want %q", fake.gotMethod, "resolve")

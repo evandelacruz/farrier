@@ -19,27 +19,27 @@ type FileDriver struct {
 // Resolve reads Path/keyName and returns its contents verbatim — no
 // parsing, no trimming, so binary key material (certificates, host keys)
 // round-trips exactly.
-func (d FileDriver) Resolve(ctx context.Context, keyName string) ([]byte, error) {
+func (d FileDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return Secret{}, err
 	}
 	if strings.TrimSpace(keyName) == "" {
-		return nil, fmt.Errorf("keystore: file: key name is required")
+		return Secret{}, fmt.Errorf("keystore: file: key name is required")
 	}
 
 	base := filepath.Clean(d.Path)
 	full := filepath.Join(base, keyName)
 	if full != base && !strings.HasPrefix(full, base+string(os.PathSeparator)) {
-		return nil, fmt.Errorf("keystore: file: key name %q escapes configured path", keyName)
+		return Secret{}, fmt.Errorf("keystore: file: key name %q escapes configured path", keyName)
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
-		return nil, fmt.Errorf("keystore: file: resolve key %q: %w", keyName, err)
+		return Secret{}, fmt.Errorf("keystore: file: resolve key %q: %w", keyName, err)
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("keystore: file: key %q is empty at %s", keyName, full)
+		return Secret{}, fmt.Errorf("keystore: file: key %q is empty at %s", keyName, full)
 	}
-	return data, nil
+	return NewSecret(string(data)), nil
 }
 
 func newFileDriver(config map[string]any) (Driver, error) {
