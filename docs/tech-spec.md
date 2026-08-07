@@ -16,6 +16,7 @@ internal/core/        the engine — all logic lives here
   restore/            snapshot verification, rebuild, identity install
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
+  deploy/             `up` sequencing: check host, ship config, converge, bootstrap admin
   acme/               cert issuance and renewal (lego)
   driver/             exec-based driver protocol (JSON on stdin/stdout), shared by dns/, keystore/, blob/
   dns/                DNS driver interface + shipped drivers
@@ -140,8 +141,20 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 
 - Forgejo `app.ini` is fully rendered from the manifest — the install wizard is pre-answered by configuration.
 - Admin bootstrap runs `forgejo admin user create` post-start; credentials are emitted once through the event stream.
-- Rendered `app.ini` enables Actions (`[actions] ENABLED = true`, `internal/core/forge.RenderActionsSection`). Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no app.ini or per-repository key to loosen it — so enabling Actions is what the requirement needs.
+- Rendered `app.ini` enables Actions (`[actions] ENABLED = true`, inlined in `internal/core/forge.RenderAppINI`). Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no app.ini or per-repository key to loosen it — so enabling Actions is what the requirement needs.
 - CI reconciliation at promote: a direct SQLite update resetting `running` → `queued` in the actions tables, executed before services start.
+
+## Deployment (`up`, UP-001)
+
+`internal/core/deploy.Up` is the sequencing over orchestrate and forge that a real deployment needs, given only an `ssh://user@host` target and a loaded bundle:
+
+1. Check Docker is reachable (ORCH-001's `CheckHost`).
+2. Resolve the bundle's key material through its keystore driver and render `app.ini` (FORGE-001), ship it to the host, and add a bind mount for it to the forgejo service's Compose definition (`orchestrate.WithBindMount`) — deploy-time content, never written into the bundle directory (KEY-003).
+3. Converge the host to that Compose definition (ORCH-002).
+4. Wait for the forgejo container to accept `docker compose exec`, since `up -d` returning doesn't guarantee the entrypoint has finished.
+5. Provision the first admin account (FORGE-002).
+
+Every step reports through the job's CORE-002 event stream; `deploy.Up` owns the job's terminal event. `cmd/farrier up` is the CLI skin: it connects over SSH, calls `deploy.Up`, and prints the same events a dashboard would render over SSE.
 
 ## API
 
