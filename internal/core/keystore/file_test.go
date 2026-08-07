@@ -18,8 +18,8 @@ func TestFileDriverResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != "supersecret" {
-		t.Fatalf("Resolve = %q, want %q", got, "supersecret")
+	if got.Reveal() != "supersecret" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "supersecret")
 	}
 }
 
@@ -35,8 +35,8 @@ func TestFileDriverResolveBinaryContentRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != string(want) {
-		t.Fatalf("Resolve = %v, want %v", got, want)
+	if got.Reveal() != string(want) {
+		t.Fatalf("Reveal() = %v, want %v", []byte(got.Reveal()), want)
 	}
 }
 
@@ -118,7 +118,7 @@ func TestNewFileDriverResolvesThroughFactory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if string(got) != "v" {
-		t.Fatalf("Resolve = %q, want %q", got, "v")
+	if got.Reveal() != "v" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "v")
 	}
 }

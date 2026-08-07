@@ -26,23 +26,23 @@ type execResolveResult struct {
 	Secret string `json:"secret"`
 }
 
-func (d execDriver) Resolve(ctx context.Context, keyName string) ([]byte, error) {
+func (d execDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
 	if strings.TrimSpace(keyName) == "" {
-		return nil, fmt.Errorf("keystore: exec: key name is required")
+		return Secret{}, fmt.Errorf("keystore: exec: key name is required")
 	}
 
 	var result execResolveResult
 	if err := d.invoker.Invoke(ctx, "resolve", execResolveParams{Key: keyName}, &result); err != nil {
-		return nil, fmt.Errorf("keystore: exec: resolve key %q: %w", keyName, err)
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: %w", keyName, err)
 	}
 	secret, err := base64.StdEncoding.DecodeString(result.Secret)
 	if err != nil {
-		return nil, fmt.Errorf("keystore: exec: resolve key %q: decode secret: %w", keyName, err)
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: decode secret: %w", keyName, err)
 	}
 	if len(secret) == 0 {
-		return nil, fmt.Errorf("keystore: exec: key %q resolved to empty secret", keyName)
+		return Secret{}, fmt.Errorf("keystore: exec: key %q resolved to empty secret", keyName)
 	}
-	return secret, nil
+	return NewSecret(string(secret)), nil
 }
 
 func newExecDriver(driverName string, config map[string]any) (Driver, error) {

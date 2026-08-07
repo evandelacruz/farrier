@@ -31,13 +31,15 @@ type CommandDriver struct {
 }
 
 // Resolve runs Command through the shell with keyName in FARRIER_KEY_NAME
-// and returns its stdout, minus a single trailing newline — the same
-// trimming shell command substitution applies, so operators can write
-// ordinary `echo`/CLI-tool commands without worrying about a stray
-// newline corrupting the secret.
-func (d CommandDriver) Resolve(ctx context.Context, keyName string) ([]byte, error) {
+// and returns its stdout, minus a single trailing newline, as a Secret —
+// the same trimming shell command substitution applies, so operators can
+// write ordinary `echo`/CLI-tool commands without worrying about a stray
+// newline corrupting the secret. Captured stdout is wrapped into a Secret
+// immediately and never appears in an error message; only stderr does,
+// for diagnostics (KEY-003).
+func (d CommandDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
 	if strings.TrimSpace(keyName) == "" {
-		return nil, fmt.Errorf("keystore: command: key name is required")
+		return Secret{}, fmt.Errorf("keystore: command: key name is required")
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", d.Command)
@@ -49,16 +51,16 @@ func (d CommandDriver) Resolve(ctx context.Context, keyName string) ([]byte, err
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("keystore: command: resolve key %q: %w", keyName, ctx.Err())
+			return Secret{}, fmt.Errorf("keystore: command: resolve key %q: %w", keyName, ctx.Err())
 		}
-		return nil, fmt.Errorf("keystore: command: resolve key %q: %w%s", keyName, err, stderrSuffix(stderr.String()))
+		return Secret{}, fmt.Errorf("keystore: command: resolve key %q: %w%s", keyName, err, stderrSuffix(stderr.String()))
 	}
 
 	secret := bytes.TrimRight(stdout.Bytes(), "\r\n")
 	if len(secret) == 0 {
-		return nil, fmt.Errorf("keystore: command: key %q produced no output", keyName)
+		return Secret{}, fmt.Errorf("keystore: command: key %q produced no output", keyName)
 	}
-	return secret, nil
+	return NewSecret(string(secret)), nil
 }
 
 func newCommandDriver(config map[string]any) (Driver, error) {
