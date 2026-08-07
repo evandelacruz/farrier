@@ -4,6 +4,32 @@
 
 A CLI and local web dashboard that stand up a portable, self-hosted software forge — git hosting, pull requests, code review, secrets, and CI/CD with runners — as a provider-agnostic bundle. One command brings it up. One command backs it up. One command restores it onto a fresh host anywhere.
 
+## Quick start
+
+You bring a Linux host with Docker and SSH, a DNS name you control, and a place to keep keys. Farrier owns the rest:
+
+```bash
+# Create the bundle — proves zone control, generates key material
+farrier init forge.example.com
+
+# Deploy onto a host — forge live at your domain when it finishes
+farrier up ssh://user@host
+
+# Encrypted, verified snapshot (directory or S3-compatible URI)
+farrier backup --to ./backups
+# farrier backup --to s3://my-bucket/farrier
+```
+
+Day-to-day work stays in Forgejo's UI at your domain. Portability — status, drills, promote — stays on your machine (`farrier status`, `farrier drill`, `farrier promote`, or `farrier ui`). Full command set: [docs/spec.md](docs/spec.md).
+
+Build from source with Go (version in `go.mod`):
+
+```bash
+git clone https://github.com/evandelacruz/farrier.git
+cd farrier
+go build ./...
+```
+
 ## The problem
 
 Your development pipeline runs on infrastructure you don't control. When your forge or CI provider has an outage, you wait. You can't ship, can't merge, can't deploy, and there is nothing you can do about it except refresh a status page. Self-hosting solves the control problem but replaces it with a new one: your forge is now welded to one machine at one provider, and moving it is a weekend of undocumented archaeology.
@@ -37,4 +63,4 @@ Apache 2.0 — use it, fork it, ship it commercially. It requires attribution: k
 
 ## Status
 
-Pre-implementation. See [docs/spec.md](docs/spec.md) for the design reference.
+Core engine, drivers, and orchestration are landing; operator commands (`init`, `up`, `backup`, …) are still open. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).
