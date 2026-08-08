@@ -17,8 +17,9 @@ import (
 // commands maps a subcommand name to its runner. Each runner owns its own
 // flag parsing and returns the process exit code.
 var commands = map[string]func(args []string) int{
-	"init": runInit,
-	"up":   runUp,
+	"init":   runInit,
+	"up":     runUp,
+	"import": runImport,
 }
 
 func main() {

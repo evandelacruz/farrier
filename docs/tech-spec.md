@@ -17,6 +17,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, converge, bootstrap admin
+  importrepo/         repository migration from GitHub/GitLab via Forgejo's migrate API (IMPT-001)
   acme/               cert issuance and renewal (lego)
   driver/             exec-based driver protocol (JSON on stdin/stdout), shared by dns/, keystore/, blob/
   dns/                DNS driver interface + shipped drivers
@@ -176,6 +177,32 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 5. Provision the first admin account (FORGE-002).
 
 Every step reports through the job's CORE-002 event stream; `deploy.Up` owns the job's terminal event. `cmd/farrier up` is the CLI skin: it connects over SSH, calls `deploy.Up`, and prints the same events a dashboard would render over SSE.
+
+## Repository import (IMPT-001)
+
+`internal/core/importrepo.Run` wraps Forgejo's own repository migration
+API rather than reimplementing git/LFS transfer (spec.md "Importing
+repositories"): given a source URL and a source access token, it calls
+`POST /api/v1/repos/migrate` against the bundle's own forge (`https://` +
+the manifest's domain — the address `up` leaves serving HTTPS, UP-002),
+using Forgejo's stable `MigrateRepoOptions` wire format.
+
+- **Inputs:** the destination forge's API token, the source repository's
+  clone URL, and the source token. Source service (`github` or `gitlab`)
+  is inferred from the URL's host unless given explicitly; destination
+  owner and repository name default to the API token's own account and
+  the URL's last path segment.
+- **What migrates:** code, full history, and LFS objects (`lfs: true`),
+  the default branch (carried automatically by a git migration), no
+  continuous mirror (`mirror: false` — IMPT-002 adds that). Issues, pull
+  requests, wiki, milestones, labels, and releases are left at their zero
+  value so none of that migrates; that history stays on the source forge.
+- **Not yet implemented:** continuous mirror sync (IMPT-002) and
+  multi-repository batch reporting with all-or-nothing per-repository
+  registration (IMPT-003) — later additions to the same command.
+- `cmd/farrier import` is the CLI skin: it loads the bundle for its
+  domain, calls `importrepo.Run`, and prints the same job event stream a
+  dashboard would render over SSE.
 
 ## API
 
