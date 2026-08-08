@@ -72,7 +72,8 @@ type Params struct {
 	PushHold PushHold
 
 	// PushHoldCeiling bounds how long that window may run before Run gives
-	// up and releases anyway. Zero uses defaultPushHoldCeiling.
+	// up and releases anyway, and separately bounds the release call
+	// itself against wedging. Zero uses defaultPushHoldCeiling.
 	PushHoldCeiling time.Duration
 }
 
@@ -103,12 +104,12 @@ func Run(ctx context.Context, job *events.Job, params Params) (*Manifest, error)
 
 	dbComponent, refComponents, remotes, err := captureUnderHold(ctx, job, params)
 	if err != nil {
-		// captureUnderHold has already emitted the one step event that
-		// attributes this failure (StepPushHold for an Engage/Release
-		// error, StepDatabase or StepRecordRefs for a capture error under
-		// the hold) — failJob only marks the job terminal, so a failure
-		// here still produces exactly one failed step in the CORE-002
-		// stream.
+		// captureUnderHold has already emitted every step event that
+		// attributes this failure — one (an Engage error, or a capture
+		// error under the hold with a clean release) or, when the
+		// capture underneath failed and the release also failed, two
+		// distinct failed steps — so failJob only marks the job
+		// terminal and adds nothing further to the CORE-002 stream.
 		return failJob(job, err)
 	}
 	// captureUnderHold already emitted StepPushHold's terminal event
@@ -208,27 +209,41 @@ func captureUnderHold(ctx context.Context, job *events.Job, params Params) (dbCo
 		// Release unconditionally, on a context detached from ctx's own
 		// cancellation (and from the ceiling above) — a caller that
 		// cancels ctx, or a ceiling that expires, must not also be able
-		// to block the release that has to follow it.
-		releaseErr := params.PushHold.Release(context.WithoutCancel(ctx))
+		// to block the release that has to follow it. The release gets
+		// its own timeout off the same ceiling, so a wedged release
+		// (SSH or docker exec hanging while reaching Caddy) can't hold
+		// pushes rejected indefinitely either.
+		releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), params.pushHoldCeiling())
+		defer releaseCancel()
+		releaseErr := params.PushHold.Release(releaseCtx)
+
+		// StepPushHold's terminal event is decided by Release alone —
+		// succeeded if it returned nil, failed otherwise — and always
+		// emitted here, before any branching on the capture error err.
+		// That keeps every exit path covered: whether the capture
+		// underneath succeeded or failed, and whether the release
+		// itself succeeded or failed, StepPushHold always reaches a
+		// terminal event and never sits at "started" forever.
 		if releaseErr == nil {
-			// The hold itself behaved correctly — it engaged and
-			// released cleanly — regardless of whether the capture
-			// underneath failed, so StepPushHold always reaches this
-			// terminal event and never sits at "started" forever.
 			job.Emit(StepPushHold, events.StateSucceeded, "pushes released")
 			return
 		}
 		releaseErr = fmt.Errorf("backup: release push hold: %w", releaseErr)
+		job.Emit(StepPushHold, events.StateFailed, releaseErr.Error())
+
 		if err != nil {
 			// The capture underneath already emitted its own failed step
-			// (StepDatabase or StepRecordRefs) — the release failure is
-			// folded into that same error, not attributed to a step of
-			// its own, so this still produces exactly one failed step.
+			// (StepDatabase or StepRecordRefs) — fold the release
+			// failure into that same error rather than overwrite it, so
+			// the returned error carries both. StepPushHold's own failed
+			// event above still makes this two distinct failed steps,
+			// which is correct: a capture failure and a release failure
+			// are two genuinely different things going wrong, not one
+			// failure reported twice.
 			err = fmt.Errorf("%w (also failed to release push hold: %v)", err, releaseErr)
 			return
 		}
 		err = releaseErr
-		job.Emit(StepPushHold, events.StateFailed, err.Error())
 	}()
 
 	job.Started(StepDatabase, "capturing database")
@@ -262,8 +277,8 @@ func fail(job *events.Job, step string, err error) (*Manifest, error) {
 }
 
 // failJob marks job terminally failed without emitting an additional step
-// event — for a caller whose failure path has already attributed exactly
-// one step itself (captureUnderHold).
+// event — for a caller whose failure path has already attributed every
+// step of its own (captureUnderHold).
 func failJob(job *events.Job, err error) (*Manifest, error) {
 	job.Failed(err.Error())
 	return nil, err
