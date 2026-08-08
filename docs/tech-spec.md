@@ -17,6 +17,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, issue TLS cert, converge, bootstrap admin
+  importer/           `import` sequencing: calls Forgejo's migration API, with optional mirror sync (IMPT-001, IMPT-002)
   acme/               cert issuance and renewal (lego)
   caddy/              Caddy config rendering: the Caddyfile that terminates TLS with a core-issued certificate
   driver/             exec-based driver protocol (JSON on stdin/stdout), shared by dns/, keystore/, blob/
@@ -245,6 +246,19 @@ Re-running `up` against a host it has already deployed to converges the host to 
 - Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
 
 **Known gap:** step 3 is not yet re-run-safe. `configureTLS` re-issues a certificate from a fresh ACME account on every call, which risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week) after a handful of re-runs. The read side to close this exists: the certificate `init` persists (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and the renewal-aware `acme.EnsureValid` (ACME-002) that can decide against that persisted certificate whether a new one is actually due. What's missing is the write side — a renewed certificate has to be persisted back to the keystore, or the next `up` re-issues again — and `keystore.Writer.Store` refuses to overwrite a key that already has content by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity"). Whether, and how, a renewal-eligible key like the TLS certificate gets a distinct update path without loosening that guarantee for keys that must never rotate silently is an open decision, not made in this PR. UP-003 stays `partial` in `docs/status.json` until it is.
+
+## Importing repositories (`import`, IMPT-001, IMPT-002)
+
+`internal/core/importer.Run` calls Forgejo's own migration endpoint, `POST /api/v1/repos/migrate`, on the target instance's API — no git transport is reimplemented:
+
+1. Resolve the source service (`github` or `gitlab`) from the source URL's host, or take it from an explicit override for self-hosted sources the host doesn't name.
+2. Derive the target repository name from the source URL's last path segment unless one is given explicitly.
+3. Call `POST /api/v1/repos/migrate` with `clone_addr`, `auth_token` (the source token), `repo_owner`, `repo_name`, `lfs: true` (IMPT-001's LFS objects), and `private`. Issue, pull-request, wiki, and release history are always requested `false` — spec.md "Importing repositories" leaves that history on the source forge unconditionally, so it is never a caller option.
+4. When `Mirror` is set (IMPT-002), the same request also carries `mirror: true` and, if given, `mirror_interval` — Forgejo re-pulls the source on that cadence with no further Farrier involvement.
+
+The default branch travels automatically as part of the git migration; there is no separate step for it. `Run` owns the job's terminal event the way `deploy.Up` does. `cmd/farrier import` is the CLI skin: `-target` addresses the Farrier instance and `-source` the origin, `-owner`/`-name` set the repository's home on the target, and `-mirror`/`-mirror-interval` opt into continuous sync. The two API tokens are never CLI flags — `FARRIER_TARGET_TOKEN` and `FARRIER_SOURCE_TOKEN` in the process environment, read the same way `init`'s ACME DNS-01 provider reads its own credentials (see "Bundle creation" above), so neither token is ever visible in `ps` output or shell history.
+
+IMPT-003 (per-repository batch reporting and no partially-registered repository on failure) is not implemented yet; today's `import` migrates one repository per invocation and reports that one outcome.
 
 ## API
 
