@@ -45,32 +45,57 @@ compose/              rendered Docker Compose definitions
 - Versions are pinned by image digest, not tag.
 - Key material is referenced by keystore driver config, never stored.
 
-## Bundle creation (INIT-001, INIT-002)
+## Bundle creation (INIT-001, INIT-002, INIT-003)
 
 `internal/core/initialize.Run` builds and writes a bundle: it validates the
 domain and the keystore target, proves control of the domain's DNS zone via
-an ACME DNS-01 challenge, resolves every component's image reference to a
-digest via `internal/core/registry`, renders Compose (ORCH-002), and saves
-the bundle (CORE-001). Every step emits a CORE-002 job event, so `farrier
-init` and a future dashboard render the same progress.
+an ACME DNS-01 challenge, generates and stores every piece of bundle key
+material, resolves every component's image reference to a digest via
+`internal/core/registry`, renders Compose (ORCH-002), and saves the bundle
+(CORE-001). Every step emits a CORE-002 job event, so `farrier init` and a
+future dashboard render the same progress.
 
 - **Required:** domain, a keystore target (driver + config), a blob target
   (driver + config), an ACME DNS-01 provider name — Manifest.Validate
   requires the first three before a bundle can be saved; the DNS-01
-  provider is Run's own precondition for the zone-control proof.
+  provider is Run's own precondition for the zone-control proof. The
+  keystore target's driver must also implement `keystore.Writer` (below) —
+  validate fails immediately, before any ACME exchange, when it doesn't.
 - **Zone-control proof (INIT-002):** Run generates a fresh ACME account key
   and runs a full ACME DNS-01 exchange through `internal/core/acme.Issue`
   (ACME-001) against the named lego DNS-01 provider — independent of the
   bundle's own DNS driver (`internal/core/dns`). The provider reads its
   credentials from the process environment, the way the operator already
   runs any lego-based tool; Run neither reads nor sets them. Failure aborts
-  `init` before any image resolution or bundle write, naming the reason.
-  The certificate obtained during the proof is not persisted — durable
-  key material, including certificates, is INIT-003's job. The DNS-01
-  provider name and contact email are persisted, though: they land in the
-  manifest's `Manifest.ACME` (`bundle.ACMEConfig`), so `up` (UP-002) and
-  future renewal can reissue certificates through the same provider without
-  asking the operator again.
+  `init` before any key generation, image resolution, or bundle write,
+  naming the reason.
+- **Key-material generation (INIT-003):** a successful proof exchange also
+  yields a real certificate for the domain — Run persists it instead of
+  issuing a second one, so `init` runs exactly one ACME DNS-01 exchange
+  against the operator's provider. `internal/core/initialize.generateKeyMaterial`
+  builds the rest: 32 random bytes (base64, unpadded, URL-safe) each for
+  Forgejo's `SECRET_KEY`, `INTERNAL_TOKEN`, and LFS JWT secret (the names
+  `forge.KeySecretKey`, `forge.KeyInternalToken`, `forge.KeyLFSJWTSecret`
+  own, since `forge` is what resolves and consumes them at deploy time), a
+  fresh ed25519 SSH host key pair (OpenSSH PEM private key, authorized-keys
+  public key), and a fresh age identity (`filippo.io/age`) for backup
+  encryption. Every piece is stored through the keystore driver's `Store`
+  method, in a fixed order, aborting the whole `init` on the first failure —
+  key generation is all-or-nothing, the same as zone-control proof.
+- **Keystore write support:** `keystore.Writer` (`Store(ctx, keyName,
+  secret) error`) is the write side of a keystore `Driver`, additive to the
+  read-only interface tech-spec's Driver interfaces section documents.
+  `FileDriver` implements it — its storage is an unambiguous directory on
+  disk, so `Store` just writes `path/keyName` (creating `path` if needed)
+  and refuses to overwrite a key that already has content, so a second
+  `init` run against an already-populated keystore target fails loudly
+  instead of silently rotating bundle identity. `CommandDriver`
+  deliberately does not implement `Writer`: KEY-002 defines it as reading
+  the stdout of an operator-specified command, with no generic notion of
+  "write a secret here." `initialize.Run` discovers write support with a
+  type assertion and fails, naming the driver, when it's missing —
+  `init` against a command-backed keystore requires the operator to
+  provision key material there some other way first.
 - **Images:** `forgejo` and `caddy` default to their `:latest` tag on their
   canonical registry (`codeberg.org/forgejo/forgejo`, `docker.io/library/caddy`)
   and can be overridden per component. Every reference, default or override,
@@ -78,9 +103,6 @@ init` and a future dashboard render the same progress.
   registry package speaks the standard OCI/Docker distribution API
   (anonymous Bearer challenge included), so this works against any
   registry, not just the two shipped defaults.
-- **Not yet implemented:** key-material generation (INIT-003) — a later
-  addition to the same `init` command. Until it lands, a bundle's keystore
-  target has no keys in it yet.
 
 ## State export interfaces
 
@@ -105,6 +127,17 @@ the operator's own replication tooling.
   `docker exec` — ORCH-001 guarantees only Docker and SSH on the host, not
   a bare `sqlite3` install, so the backup runs where `sqlite3` is actually
   known to exist: inside the pinned Forgejo image.
+- **Key material (STATE-004):** `KeyExporter.Names` enumerates the fixed
+  set of key names a bundle carries — the three Forgejo secrets
+  (`forge.KeySecretKey`, `forge.KeyInternalToken`, `forge.KeyLFSJWTSecret`),
+  the TLS certificate chain and its private key, and the SSH host key —
+  since none of the shipped keystore drivers (file, command, exec) can list
+  what they hold; `KeyExporter.Resolve` reads one of those names from a
+  `keystore.Driver`. `KeystoreKeyExporter` is the one implementation: every
+  keystore driver already resolves by name, so no Local/SSH split is
+  needed the way git and database exporters have. The age backup key is
+  not part of this set — it encrypts the backup rather than travels inside
+  one, and the operator holds it directly (spec.md "Key custody").
 
 ## Snapshot format
 
@@ -126,7 +159,9 @@ keys/                     bundle key material
 All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol for out-of-tree ones. The exec protocol itself is generic and lives once, in `internal/core/driver` (CORE-003): `driver.Exec` runs an executable once per call, writing `{"method", "params"}` as a `Request` to its stdin and reading `{"ok", "result", "error"}` back as a `Response` from its stdout — one process per call, no long-lived session. `driver.Exec` satisfies `driver.Invoker`, the seam each driver-type package wraps behind its own domain interface and its own method names.
 
 - **DNS:** `Set(record, value, ttl)`, `Delete(record)`. Shipped: `cloudflare`, `rfc2136`.
-- **Keystore:** `Resolve(keyName) → secret`. Shipped: `file`, `command`.
+- **Keystore:** `Resolve(keyName) → secret`, every driver; `Store(keyName,
+  secret) → error` on `file` only (INIT-003's generated key material has
+  nowhere else defined to land). Shipped: `file`, `command`.
 - **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`.
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
@@ -135,7 +170,8 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 
 - **`file`** (`config.path`): a local directory. `Resolve(keyName)` reads
   `path/keyName` and returns its bytes verbatim — one file per piece of key
-  material.
+  material. `Store(keyName, secret)` writes the same file, creating `path`
+  if needed, and refuses to overwrite a key that already has content.
 - **`command`** (`config.command`): one shell command, run via `sh -c`.
   `Resolve(keyName)` sets `FARRIER_KEY_NAME` in the command's environment
   and returns its trimmed stdout — one command branches on the env var to
