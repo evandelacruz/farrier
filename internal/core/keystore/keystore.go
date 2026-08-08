@@ -19,13 +19,28 @@ package keystore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
 
+// ErrNotFound is the sentinel a Driver's Resolve must wrap (via %w, so
+// errors.Is sees it) when — and only when — it has positively determined
+// that keyName has no key material yet. Any other Resolve error (a
+// permission error, an I/O error, a timeout or malformed response from a
+// CORE-003 exec driver) means resolution itself failed and must not be
+// mistaken for "nothing here yet, safe to write": guardedDriver.Store
+// (guard.go) relies on exactly this distinction to stay fail-closed for
+// non-rotating key material, and inferring it from an error string or
+// treating every error alike would silently defeat that guarantee.
+var ErrNotFound = errors.New("keystore: key not found")
+
 // Driver resolves one named piece of key material to its Secret.
 // Implementations must never log, cache to disk, or otherwise persist a
-// resolved secret anywhere outside memory (KEY-003).
+// resolved secret anywhere outside memory (KEY-003). Resolve must return
+// an error satisfying errors.Is(err, ErrNotFound) when keyName is
+// positively absent, and a different (non-ErrNotFound) error for any other
+// failure — see ErrNotFound.
 type Driver interface {
 	Resolve(ctx context.Context, keyName string) (Secret, error)
 }

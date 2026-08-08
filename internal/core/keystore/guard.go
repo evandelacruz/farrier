@@ -2,6 +2,7 @@ package keystore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -24,10 +25,22 @@ type guardedDriver struct {
 // nobody has declared to non-rotating, so newly added key material is
 // protected from the start rather than opting in; a key material this
 // blocks the first time (nothing yet at keyName) succeeds normally.
+//
+// A Resolve error is only ever treated as "safe to write" when it
+// satisfies errors.Is(err, ErrNotFound) — a positive "nothing here yet."
+// Any other Resolve error (permission denied, an I/O error, a timeout or
+// malformed response from a CORE-003 exec driver) means the check itself
+// failed, not that the key is absent, so Store refuses and reports rather
+// than falling through to a write that could silently overwrite
+// non-rotating key material (SECRET_KEY, INTERNAL_TOKEN, the SSH host
+// key, ...).
 func (g guardedDriver) Store(ctx context.Context, keyName string, secret Secret) error {
 	if !Rotates(keyName) {
-		if _, err := g.Driver.Resolve(ctx, keyName); err == nil {
+		switch _, err := g.Driver.Resolve(ctx, keyName); {
+		case err == nil:
 			return fmt.Errorf("keystore: key %q already exists and is not declared rotating, refusing to overwrite", keyName)
+		case !errors.Is(err, ErrNotFound):
+			return fmt.Errorf("keystore: key %q: could not confirm no existing value before store: %w", keyName, err)
 		}
 	}
 	return g.writer.Store(ctx, keyName, secret)

@@ -29,6 +29,9 @@ func (d FileDriver) Resolve(ctx context.Context, keyName string) (Secret, error)
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return Secret{}, fmt.Errorf("keystore: file: key %q not found at %s: %w", keyName, full, ErrNotFound)
+		}
 		return Secret{}, fmt.Errorf("keystore: file: resolve key %q: %w", keyName, err)
 	}
 	if len(data) == 0 {

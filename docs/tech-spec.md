@@ -109,11 +109,18 @@ future dashboard render the same progress.
   (spec.md "Identity" > "Key material"). For every other name — including
   one nobody has registered — it checks whether `Resolve` already finds
   content at `keyName` and refuses to overwrite if so; a rotating name is
-  always allowed to overwrite. This is why a second `init` run against an
-  already-populated keystore target still fails loudly on the first key it
-  tries to store (`forge.KeySecretKey` first, `keyMaterialOrder`) instead
-  of silently rotating bundle identity — the same property the old
-  `FileDriver`-local guard gave, now enforced centrally.
+  always allowed to overwrite. The check is fail-closed on the `Resolve`
+  call itself: `Driver.Resolve` must return an error satisfying
+  `errors.Is(err, keystore.ErrNotFound)` when it has positively determined
+  `keyName` is absent, and any other error — permission denied, an I/O
+  error, a timeout or malformed response from a CORE-003 exec driver —
+  means the check failed, not that the key is missing, so `Store` refuses
+  and reports rather than treating an indeterminate failure as "safe to
+  write." This is why a second `init` run against an already-populated
+  keystore target still fails loudly on the first key it tries to store
+  (`forge.KeySecretKey` first, `keyMaterialOrder`) instead of silently
+  rotating bundle identity — the same property the old `FileDriver`-local
+  guard gave, now enforced centrally.
 - **Images:** `forgejo` and `caddy` default to their `:latest` tag on their
   canonical registry (`codeberg.org/forgejo/forgejo`, `docker.io/library/caddy`)
   and can be overridden per component. Every reference, default or override,
