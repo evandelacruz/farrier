@@ -1,6 +1,6 @@
-// Package status implements the `status` command's core logic: instance
-// health and last-backup age (STAT-001), and replication lag for
-// golden-path transports (STAT-002). This file covers STAT-002.
+// Package status implements the `status` command's core logic.
+// This file: replication lag for golden-path transports (STAT-002).
+// Instance health and last-backup age (STAT-001) are not yet implemented.
 package status
 
 import (
@@ -40,8 +40,14 @@ type Lag struct {
 	// LastBackup is the newest object's Modified time. Valid only when
 	// State == LagMeasured.
 	LastBackup time.Time
-	// Age is now minus LastBackup. Valid only when State == LagMeasured.
+	// Age is now minus LastBackup, clamped to zero. Valid only when State
+	// == LagMeasured.
 	Age time.Duration
+	// Skew is positive when LastBackup is after now — the destination's
+	// clock reads ahead of the reporting clock, which is what a negative
+	// Age would otherwise have signaled silently. Zero when there's no
+	// skew. Valid only when State == LagMeasured.
+	Skew time.Duration
 }
 
 // ReplicationLag reports replication lag for one golden-path destination
@@ -85,9 +91,15 @@ func ReplicationLag(ctx context.Context, dest state.BlobExporter, now time.Time)
 		return Lag{State: LagUnmeasured}, nil
 	}
 
+	age := now.Sub(newest)
+	var skew time.Duration
+	if age < 0 {
+		skew, age = -age, 0
+	}
 	return Lag{
 		State:      LagMeasured,
 		LastBackup: newest,
-		Age:        now.Sub(newest),
+		Age:        age,
+		Skew:       skew,
 	}, nil
 }

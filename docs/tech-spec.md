@@ -280,7 +280,10 @@ isn't one.
 
 - **Measured:** the newest object's `Modified` time (see "Driver
   interfaces" above) across the destination is the last backup; now minus
-  that is the lag.
+  that is the lag, clamped to zero if it would be negative. A negative
+  result means the destination's `Modified` clock reads ahead of the
+  reporting clock; that amount is surfaced as `Lag.Skew` rather than a
+  silent negative `Age`.
 - **No backups:** the destination is real but holds no objects yet.
 - **Unmeasured:** `dest` is `nil` — either no golden-path destination is
   configured, or the operator runs their own replication topology outside

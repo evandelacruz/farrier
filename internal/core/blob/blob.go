@@ -31,9 +31,9 @@ var ErrNotFound = errors.New("blob: not found")
 // the field simply omits it, which decodes as the zero value — callers
 // must treat a zero Modified as "unknown", never as "very old".
 type Object struct {
-	Key      string
-	Size     int64
-	Modified time.Time
+	Key      string    `json:"key"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified"`
 }
 
 // Adapter is the storage-adapter abstraction: List, Get, and Put all
