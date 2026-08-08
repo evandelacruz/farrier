@@ -14,6 +14,11 @@ import (
 // fixed, not manifest-derived: the Compose definition that ships this
 // app.ini (ORCH-002) must mount volumes and run the container consistent
 // with these paths.
+//
+// DataPath and RepoRoot are exported so a caller wiring the host state
+// layout that keeps them durable across a container recreation (UP-004,
+// tech-spec.md "Host state layout") can bind-mount onto exactly the paths
+// this file's rendered app.ini assumes, without duplicating them.
 const (
 	dataPath = "/data/gitea"
 	dbPath   = dataPath + "/gitea.db"
@@ -22,6 +27,16 @@ const (
 	sshPort  = 22
 	runUser  = "git"
 )
+
+// DataPath is the container-side directory the official Forgejo image
+// stores its SQLite database, LFS objects, attachments, avatars, and CI
+// artifacts under (dataPath above) — everything RenderAppINI doesn't give
+// its own path, which is everything except the repository root itself.
+const DataPath = dataPath
+
+// RepoRoot is the container-side directory RenderAppINI configures as
+// Forgejo's git repository root (repoRoot above).
+const RepoRoot = repoRoot
 
 // HTTPPort is the container-side port Forgejo's HTTP server listens on.
 // Exported so a caller wiring Caddy as the reverse proxy in front of it

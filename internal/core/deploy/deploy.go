@@ -2,9 +2,12 @@
 // (spec.md "Stateless vs. stateful" — the forge app, CI orchestration, and
 // runners) to a target host given only an ssh://user@host address and a
 // bundle. It also implements UP-002: ending that deployment with the forge
-// serving HTTPS at the bundle domain, and UP-003: re-running Up against a
-// host it has already deployed to is safe and converges that host to the
-// bundle definition, rather than requiring a fresh host every time.
+// serving HTTPS at the bundle domain; UP-003: re-running Up against a host
+// it has already deployed to is safe and converges that host to the
+// bundle definition, rather than requiring a fresh host every time; and
+// UP-004: forge state — git repositories and the database — lives on the
+// host under RemoteDir/state, bind-mounted into the container that serves
+// it, so recreating that container never destroys it.
 //
 // It is the sequencing layer over packages that already do the real work:
 // orchestrate (SSH transport, Compose rendering and convergence, ORCH-001
@@ -39,6 +42,7 @@ const (
 	StepCheckHost      = "check-host"
 	StepConfigureForge = "configure-forge"
 	StepConfigureTLS   = "configure-tls"
+	StepConfigureState = "configure-state"
 	StepConverge       = "converge"
 	StepWaitForge      = "wait-forge"
 	StepWaitCaddy      = "wait-caddy"
@@ -98,22 +102,25 @@ type Options struct {
 // Up deploys b's full stateless layer to host (UP-001): it verifies Docker
 // is reachable, resolves the bundle's key material and renders and ships
 // Forgejo's app.ini, resolves the bundle's persisted TLS certificate and
-// renders and ships Caddy's config (UP-002), converges the host to the
-// bundle's Compose definition plus that config, waits for Forgejo to accept
-// commands, provisions the first admin account, and waits for Caddy to
-// accept commands so the forge is serving HTTPS and usable in a browser
-// before Up returns.
+// renders and ships Caddy's config (UP-002), gives forge state a durable
+// home on the host and bind-mounts it into the forgejo service (UP-004),
+// converges the host to the bundle's Compose definition plus that config,
+// waits for Forgejo to accept commands, provisions the first admin
+// account, and waits for Caddy to accept commands so the forge is serving
+// HTTPS and usable in a browser before Up returns.
 //
 // Every step is safe to repeat against a host Up has already deployed to
 // (UP-003): CheckHost and waitReady are read-only, configureForge always
 // re-ships app.ini and re-derives its checksum so a changed manifest is
 // visible to Converge (WithEnv's doc comment), configureTLS reuses the
 // persisted certificate untouched unless it's actually due for renewal
-// (configureTLS's doc comment), orchestrate.Converge is idempotent by
-// construction (its own doc comment), and forge.Bootstrap treats an admin
-// account that already exists as done rather than a failure. Nothing here
-// reads back what's already running before deciding what to do — the
-// bundle alone determines the outcome, same as Converge.
+// (configureTLS's doc comment), configureState's directory creation and
+// chown are both idempotent (configureState's doc comment),
+// orchestrate.Converge is idempotent by construction (its own doc
+// comment), and forge.Bootstrap treats an admin account that already
+// exists as done rather than a failure. Nothing here reads back what's
+// already running before deciding what to do — the bundle alone
+// determines the outcome, same as Converge.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
 // exactly once, after every step below has run (or the first one fails),
@@ -161,6 +168,14 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	} else {
 		job.Emit(StepConfigureTLS, events.StateSucceeded, "persisted certificate reused and caddy configured")
 	}
+
+	job.Started(StepConfigureState, "creating host state directories")
+	compose, err = configureState(ctx, host, b, opts.RemoteDir, compose)
+	if err != nil {
+		job.Emit(StepConfigureState, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: configure state: %w", err)
+	}
+	job.Emit(StepConfigureState, events.StateSucceeded, "state directories ready and mounted")
 
 	job.Started(StepConverge, "converging host to bundle definition")
 	deployed := &bundle.Bundle{Manifest: b.Manifest, Compose: compose}
