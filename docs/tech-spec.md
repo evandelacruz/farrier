@@ -257,7 +257,7 @@ Re-running `up` against a host it has already deployed to converges the host to 
 
 **Known gap:** step 3 is not yet re-run-safe. `configureTLS` re-issues a certificate from a fresh ACME account on every call, which risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week) after a handful of re-runs. The read side to close this exists: the certificate `init` persists (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and the renewal-aware `acme.EnsureValid` (ACME-002) that can decide against that persisted certificate whether a new one is actually due. What's missing is the write side — a renewed certificate has to be persisted back to the keystore, or the next `up` re-issues again — and `keystore.Writer.Store` refuses to overwrite a key that already has content by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity"). Whether, and how, a renewal-eligible key like the TLS certificate gets a distinct update path without loosening that guarantee for keys that must never rotate silently is an open decision, not made in this PR. UP-003 stays `partial` in `docs/status.json` until it is.
 
-## Status (`status`, STAT-001)
+## Status (`status`, STAT-001, STAT-002)
 
 `internal/core/status.Check` is a synchronous read, not a job (tech-spec.md
 "API": `GET /status` returns directly, no `jobId`) — it reflects the
@@ -280,8 +280,34 @@ instance's current state each time it's called, never a cached one:
    decision yet pins forge state to a specific bind-mounted host
    directory, so root is the only host-wide signal available without
    guessing one.
+4. **Replication lag (STAT-002):** `status.ReplicationLag` against
+   `Options.Destination`, a `state.BlobExporter` — the read side of
+   `blob.Adapter` — with no bundle-level destination config of its own:
+   - **Measured:** the newest object's `Modified` time (see "Driver
+     interfaces" above) across the destination is the last backup; now
+     minus that is the lag, clamped to zero if it would be negative. A
+     negative result means the destination's `Modified` clock reads ahead
+     of the reporting clock; that amount is surfaced as `Lag.Skew` rather
+     than a silent negative `Age`.
+   - **No backups:** the destination is real but holds no objects yet.
+   - **Unmeasured:** `Destination` is `nil` — either no golden-path
+     destination is configured, or the operator runs their own
+     replication topology outside the system's measurement (spec.md
+     "Replication lag") — or every object present has an unknown
+     `Modified` time. All three report the same `LagUnmeasured` state
+     rather than a fabricated number, since nothing here can tell "no
+     golden-path destination" apart from "operator-assembled transport"
+     from a `blob.Adapter` alone.
 
-`status.Check` returns an error naming which of the three failed rather
+   This lands ahead of `backup --to` (BKUP-005): today `cmd/farrier
+   status` always passes a `nil` `Destination`, since no destination is
+   persisted anywhere yet, so the CLI always prints `unmeasured`. Once
+   BKUP-005 lands, the caller that resolves the bundle's configured
+   destination into a `blob.Adapter` starts passing it in, and lag
+   reporting lights up with no further change to `status.Check` or its
+   CLI skin.
+
+`status.Check` returns an error naming which of the four failed rather
 than a partially-filled report — consistent with the rest of the core's
 "fail loudly, name the reason" posture (`ORCH-001`'s `CheckHost`,
 `BKUP-004`). `cmd/farrier status` is the CLI skin: it connects over SSH,
@@ -289,15 +315,17 @@ calls `status.Check`, and prints the report; its exit code reflects
 whether the report could be produced, not whether the instance it
 describes is healthy.
 
-**Last-backup age is not implemented yet.** STAT-001 also requires it, but
-finding the most recent snapshot needs a stable convention for what
-`backup` (BKUP-001..005, not yet landed) writes to its destination and how
-`status` locates it there — `backup`'s destination is a per-invocation
-`--to` flag (spec.md "Golden path"), not bundle-persisted config, and
-`blob.Object` (BLOB-001/002) carries no timestamp today. That convention
-belongs to backup's own design, not something `status` should invent
-ahead of it; `docs/status.json` carries STAT-001 as partial with this as
-the remaining slice.
+**Last-backup age is not implemented yet.** STAT-001 also requires it —
+distinct from STAT-002's replication lag, since it's the age of the
+bundle's own last backup rather than a destination's — but finding the
+most recent snapshot needs a stable convention for what `backup`
+(BKUP-001..005, not yet landed) writes to its destination and how
+`status` locates it there. `blob.Object.Modified` (BLOB-001/002) now
+carries the timestamp that convention will read; what's still missing is
+the snapshot listing/naming convention itself, which belongs to backup's
+own design, not something `status` should invent ahead of it.
+`docs/status.json` carries STAT-001 as partial with this as the
+remaining slice.
 
 ## Importing repositories (`import`, IMPT-001, IMPT-002, IMPT-003)
 
@@ -313,39 +341,6 @@ The default branch travels automatically as part of the git migration; there is 
 **IMPT-003 — batch reporting and no partial repository on failure.** `importer.RunBatch` migrates many repositories against one target instance within a single job: each repository gets its own `migrate:<n>` step in the event stream and its own entry in the returned `BatchResult` (source, `Result`, and `error`, independently), and the batch keeps going past one repository's failure so the rest still import. The job's own terminal event reflects the batch as a whole — succeeded only if every repository succeeded — but per-repository detail lives in the step events and `BatchResult`, not in that one terminal event. `cmd/farrier import -file <manifest.yaml>` is the batch CLI skin: the manifest lists repositories only (`source`, and optionally `service`, `owner`, `name`, `private`, `mirror`, `mirrorInterval` per entry) and never credentials, which stay in `-target`/`-owner`/`-private`/`-mirror`/`-mirror-interval` and the two environment tokens, applied as the batch-wide default for any entry that doesn't set its own. `-file` and `-source` are mutually exclusive.
 
 Whether run singly or as a batch, a failed migration leaves no partially-registered repository on the target: `migrate`'s failure paths (a non-2xx response, or the request itself failing) call `DELETE /api/v1/repos/{owner}/{repo}` best-effort on a detached, timed-out context, so cleanup still runs even when the failure was the caller's own context expiring or being canceled. A 404 from that delete (nothing was ever registered) is not an error; a genuine cleanup failure is reported alongside, never in place of, the original migration error, since it means the operator may need to remove that repository by hand. A response that decodes successfully after a 2xx is a real, complete repository — decode failures past that point are a client-side bug, not a partial registration, and are never cleaned up.
-
-## Status (`status`, STAT-002)
-
-`internal/core/status.ReplicationLag` reports replication lag for one
-golden-path destination (spec.md "Replication lag") directly against
-`state.BlobExporter` — the read side of `blob.Adapter` — with no
-bundle-level destination config of its own: the caller passes in whichever
-`blob.Adapter` the golden-path destination resolves to, or `nil` when there
-isn't one.
-
-- **Measured:** the newest object's `Modified` time (see "Driver
-  interfaces" above) across the destination is the last backup; now minus
-  that is the lag, clamped to zero if it would be negative. A negative
-  result means the destination's `Modified` clock reads ahead of the
-  reporting clock; that amount is surfaced as `Lag.Skew` rather than a
-  silent negative `Age`.
-- **No backups:** the destination is real but holds no objects yet.
-- **Unmeasured:** `dest` is `nil` — either no golden-path destination is
-  configured, or the operator runs their own replication topology outside
-  the system's measurement (spec.md "Replication lag") — or every object
-  present has an unknown `Modified` time. All three report the same
-  `LagUnmeasured` state rather than a fabricated number, since nothing here
-  can tell "no golden-path destination" apart from "operator-assembled
-  transport" from a `blob.Adapter` alone.
-
-This lands ahead of `backup --to` (BKUP-005): today nothing calls
-`ReplicationLag` with a non-nil destination, since no destination is
-persisted anywhere yet. Once BKUP-005 lands, the caller that resolves the
-bundle's configured destination into a `blob.Adapter` starts passing it
-here, and lag reporting lights up with no further change to this function.
-STAT-001 (instance health, TLS validity, disk headroom, last-backup age)
-and the CLI/API/dashboard surfaces for `status` are separate, not yet
-implemented.
 
 ## API
 

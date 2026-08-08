@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -73,33 +74,46 @@ func runStatus(args []string) int {
 		return 1
 	}
 
-	printReport(report)
+	printReport(os.Stdout, report)
 	return 0
 }
 
-func printReport(r status.Report) {
-	fmt.Println("services:")
+func printReport(w io.Writer, r status.Report) {
+	fmt.Fprintln(w, "services:")
 	for _, s := range r.Services {
 		state := "down"
 		if s.Up {
 			state = "up"
 		}
-		fmt.Printf("  %s: %s (%s)\n", s.Name, state, s.Detail)
+		fmt.Fprintf(w, "  %s: %s (%s)\n", s.Name, state, s.Detail)
 	}
 
-	fmt.Println("tls:")
-	fmt.Printf("  expires: %s\n", r.TLS.NotAfter.Format(time.RFC3339))
+	fmt.Fprintln(w, "tls:")
+	fmt.Fprintf(w, "  expires: %s\n", r.TLS.NotAfter.Format(time.RFC3339))
 	switch {
 	case !r.TLS.Valid:
-		fmt.Println("  status: invalid or expired")
+		fmt.Fprintln(w, "  status: invalid or expired")
 	case r.TLS.ExpiringSoon:
-		fmt.Printf("  status: valid, expiring soon (within %s)\n", status.CertExpiryWarning)
+		fmt.Fprintf(w, "  status: valid, expiring soon (within %s)\n", status.CertExpiryWarning)
 	default:
-		fmt.Println("  status: valid")
+		fmt.Fprintln(w, "  status: valid")
 	}
 
-	fmt.Printf("disk (%s):\n", r.Disk.Path)
-	fmt.Printf("  available: %s of %s\n", formatBytes(r.Disk.AvailableBytes), formatBytes(r.Disk.TotalBytes))
+	fmt.Fprintf(w, "disk (%s):\n", r.Disk.Path)
+	fmt.Fprintf(w, "  available: %s of %s\n", formatBytes(r.Disk.AvailableBytes), formatBytes(r.Disk.TotalBytes))
+
+	fmt.Fprintln(w, "replication lag:")
+	switch r.Lag.State {
+	case status.LagMeasured:
+		fmt.Fprintf(w, "  last backup: %s ago (%s)\n", r.Lag.Age.Round(time.Second), r.Lag.LastBackup.Format(time.RFC3339))
+		if r.Lag.Skew > 0 {
+			fmt.Fprintf(w, "  clock skew: destination is %s ahead of this host\n", r.Lag.Skew.Round(time.Second))
+		}
+	case status.LagNoBackups:
+		fmt.Fprintln(w, "  no backups yet")
+	default:
+		fmt.Fprintln(w, "  unmeasured (no golden-path destination configured, or an operator-assembled transport)")
+	}
 }
 
 // formatBytes renders n as a human-readable size, e.g. "42.1 GB". Display
