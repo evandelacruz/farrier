@@ -19,8 +19,9 @@ const QUALITY_BLOCK = `
 - Do **not** run the full \`go test ./...\`. CI runs the whole suite, plus the
   build, on every PR into main and will report failures on the PR.
   Repeating it here mostly rebuilds packages you did not touch.
-- Open the PR as **ready for review, not draft.** If tooling defaults to draft,
-  mark it ready before finishing.
+- **Never open a PR as a draft.** REST cannot take one back out of draft, and
+  the GraphQL mutation that can is on a budget the fleet routinely exhausts —
+  so a draft can strand finished work permanently. See "When to push".
 - If the solution is not simple, step back and reconsider the approach. Be
   willing to change approach when it makes the future better. Do not force
   round pegs into square holes.
@@ -121,9 +122,26 @@ git merge origin/main
 Do not skip the merge step. Reviewers treat missing main commits as a blocker.
 `.trim();
 
-/** New implementers sync to latest main — no PR or review threads yet. */
+/**
+ * New implementers sync to latest main, then claim the ID by opening the PR
+ * ready for review — never as a draft.
+ *
+ * Draft was the obvious claiming vehicle (a draft is not reviewed, so it costs
+ * nothing to open one early) and it is a trap. Draft state is create-time-only
+ * in REST: `POST /pulls` accepts `draft`, `PATCH /pulls/{n}` silently ignores
+ * it — 200, no error, PR unchanged. The only way back out of draft is the
+ * GraphQL `markPullRequestReadyForReview` mutation, and the GraphQL budget is
+ * 5000 points/hr shared across every session on the account, routinely
+ * exhausted by the fleet. An agent that drafts, works, and then cannot flip
+ * ready leaves its finished work invisible: a draft is never reviewed and
+ * never lands.
+ *
+ * Opening ready-from-start removes the transition entirely, so no part of the
+ * lifecycle depends on GraphQL. Review suppression during the work is the
+ * `conductor:working` lock's job instead of draft state's.
+ */
 const SYNC_WITH_MAIN_IMPLEMENT = `
-## First step — start from latest main (mandatory, do not push yet)
+## First step — start from latest main (mandatory)
 
 \`\`\`bash
 git fetch origin main
@@ -141,25 +159,77 @@ git merge origin/main
 \`\`\`
 
 - Prefer merge over rebase unless merge fails and you document why you switched.
-- **Do not push yet.** Wait until implementation and tests are done
-  (see "When to push").
+- Then claim the ID immediately, **before writing any implementation code** —
+  see "Second step".
+
+## Second step — claim the ID by opening the PR (mandatory, before coding)
+
+Write \`.github/branch-notes/<slug>.md\`, commit it, push the branch, and open
+the PR with the requirement ID in the title. Do this before you implement
+anything.
+
+\`\`\`bash
+git push -u origin HEAD          # branch note only
+
+# Open it READY, never as a draft. Then take the lock in the same breath.
+curl -sS -X POST -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  https://api.github.com/repos/evandelacruz/farrier/pulls \\
+  -d '{"title":"<ID>: <what you are building>","head":"<branch>","base":"main","body":"...","draft":false}'
+
+curl -sS -X POST -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  https://api.github.com/repos/evandelacruz/farrier/issues/<n>/labels \\
+  -d '{"labels":["conductor:working"]}'
+\`\`\`
+
+The open PR is the only signal that this ID is claimed. Until it exists, a
+conductor pass has no way to see you working — the plan reads open PRs, not
+running sessions — so a second agent can be assigned the same ID and build the
+same thing in parallel. That has happened repeatedly and each occurrence costs
+one of the two implementations entirely.
+
+**Never open it as a draft.** Draft is create-time-only in REST: \`PATCH\` on a
+pull request silently ignores \`draft\` — 200, no error, nothing changes — and
+the only way out of draft is a GraphQL mutation. The GraphQL budget is shared
+across every agent on this account and is routinely exhausted, so an agent that
+drafts and then cannot flip ready leaves finished work invisible forever. Open
+ready and there is no transition to lose.
+
+\`conductor:working\` is what keeps reviewers off the PR while you build. Drop it
+at the very end (see "When to push"), and that drop is the handoff.
 `.trim();
 
 const WHEN_TO_PUSH_IMPLEMENT = `
 ## When to push
 
-Push **once**, after implementation and tests are done.
-There are no review threads until you push and open the PR — do not wait for
-feedback that does not exist yet. If you merged main mid-work, do not push
-immediately after that merge alone; wait until the slice is complete.
+You have already pushed once, to open the PR that claims the ID ("Second step").
+That PR is already ready for review — there is no draft to flip, and no
+GraphQL call anywhere in this lifecycle.
 
-An automated reviewer reads every push and posts findings you will get a chance
-to fix. Reviewing your own diff before pushing is **not** your job — push when
-the work is done and let the review happen.
+Push again **once**, when the slice is complete and its tests pass. Do not push
+after a mid-work merge from main on its own. Every push while
+\`conductor:working\` is set is yours; the label is what tells reviewers the PR
+is still being built.
+
+**The handoff is dropping \`conductor:working\` after your final push** — not any
+state change on the PR itself:
 
 \`\`\`bash
 git push origin HEAD
+
+curl -sS -X DELETE -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  https://api.github.com/repos/evandelacruz/farrier/issues/<n>/labels/conductor:working
 \`\`\`
+
+Drop the label on **every** exit path, including when you halt without
+finishing. A lock with no session behind it parks the PR until a human clears
+it by hand.
+
+An automated reviewer reads the PR and posts findings you will get a chance to
+fix. Reviewing your own diff first is **not** your job — push when the work is
+done and let the review happen.
 `.trim();
 
 const WHEN_TO_PUSH_FIX = `
@@ -172,6 +242,9 @@ code review.
 \`\`\`bash
 git push origin HEAD
 \`\`\`
+
+This PR already exists and is already ready for review. Leave it that way —
+never flip it to draft, which would stop every further review on it.
 `.trim();
 
 export function buildImplementerPrompt(
@@ -268,10 +341,10 @@ export function buildImplementerPrompt(
     "## Done means",
     "- The full MUST for each listed ID is met (schema, API, tests as needed)",
     "- Tests that exercise the behavior",
-    "- PR opened ready for review with IDs in the title or body",
+    "- PR opened **ready** before coding, with the IDs in the title or body,",
+    "  and `conductor:working` dropped at the end — that drop is the handoff",
     "- docs/status.json flipped to `landed` for each ID — or",
     "  `{\"state\":\"partial\",\"remaining\":\"...\"}` if a deliberate slice remains",
-    "- Single push after work and tests are complete (not after merge alone)",
   ].join("\n");
 }
 

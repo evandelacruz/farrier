@@ -191,11 +191,11 @@ original, untouched Caddyfile at `caddy.ConfigPath` to release.
 `backup.NoopPushHold` covers topologies with no proxy in front of git
 traffic (a local capture, a drill).
 
-`Run` produces the plain, unencrypted snapshot the rest of this section's
-pipeline builds on: verification at creation (BKUP-004) is a separate
-requirement, not yet implemented. Writing the encrypted result to an
-S3-compatible URI or filesystem path (BKUP-005) is implemented — see
-"Snapshot destination" below.
+`Run` also verifies the snapshot it just captured before returning (BKUP-004,
+below), and `Encrypt` (BKUP-003, below) turns that verified snapshot into the
+single age-encrypted archive that actually leaves the host. `Write`
+(BKUP-005, below) streams that archive to the resolved S3-compatible URI or
+filesystem path — see "Snapshot destination" below.
 
 ## Snapshot encryption (BKUP-003)
 
@@ -211,10 +211,51 @@ its recipient's public key, which any holder of the identity (`filippo.io/age`'s
 without exposing it. `Encrypt` emits its own CORE-002 `StepEncrypt` event on
 the job it's given but does not end the job — like `forge.Bootstrap` and
 `forge.ReconcileCI`, it is a step a future orchestrator composes alongside
-`Run` and `Write` (and, once it lands, BKUP-004's verification) under one
-job whose terminal event that orchestrator owns. On failure it removes any
-partial file it left at the destination path, so a truncated archive is
-never mistaken for a real backup.
+`Run`, `Write`, and `Verify` under one job whose terminal event that
+orchestrator owns. On failure it removes any partial file it left at the
+destination path, so a truncated archive is never mistaken for a real
+backup.
+
+## Snapshot verification (BKUP-004)
+
+`backup.Verify(ctx, dir, manifest, keyNames)` implements the "Verification
+at creation and at restore runs the same code path" check above, against
+the plain snapshot directory `Run` produces. It runs three checks and
+aggregates every defect it finds into one `*backup.VerifyError` — the check
+that found it, the component or reference it's about, and what's wrong —
+rather than stopping at the first one, so a single verify pass reports
+everything wrong instead of one defect per rerun:
+
+- **Completeness:** the manifest declares a checksum algorithm `Verify`
+  knows how to check, exactly one database component, and every name in
+  `keyNames` (the caller's `state.KeyExporter.Names()`) captured as a key
+  component.
+- **Checksums:** every component's file on disk, recomputed, matches the
+  checksum the manifest recorded for it at capture time. A file that's
+  missing or unreadable is reported the same way as a mismatch.
+- **Cross-consistency:** opens the snapshot's own captured `db.sqlite` and
+  checks that every row Forgejo's database holds resolves to a component
+  this same snapshot captured — `repository` rows (`owner_name`,
+  `lower_name`) against the git components `captureGitRefs` and
+  `captureGitObjects` write per repository, and `lfs_meta_object.oid` /
+  `attachment.uuid` against blob component names, matched by containment
+  rather than an exact key so the check stays decoupled from whichever
+  `blob.Adapter` layout the operator configured. A `db.sqlite` that won't
+  even open (corrupt, truncated) is itself reported as a defect. CI
+  artifacts and avatars are not yet cross-checked — their storage-key
+  convention isn't established anywhere in this codebase, and this is a
+  documented scope limit, not a silent gap.
+
+`Run` calls `Verify` immediately after writing `snapshot-manifest.json`
+(`StepVerify`) and fails the job — naming every defect found — if it
+returns an error. This is the fails-loudly-at-backup-time guarantee
+spec.md "Verification" describes, running today against the plain snapshot
+since `Run` doesn't call `Encrypt` itself — encryption and write (above,
+below) are still separate steps a future orchestrator composes alongside
+`Run`. The capture order above ultimately places `verify` after `encrypt`:
+once that orchestration lands, it must run `Verify` against the decrypted
+form of what's about to be written, not leave it checking the pre-encryption
+snapshot alone.
 
 ## Snapshot destination (BKUP-005)
 
