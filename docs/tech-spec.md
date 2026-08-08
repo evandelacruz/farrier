@@ -337,7 +337,13 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
   material. `Store(keyName, secret)` writes the same file, creating `path`
   if needed; the rotation guard that refuses to overwrite non-rotating key
   material sits above the driver, not in it (see "Rotation registry and the
-  overwrite guard" above).
+  overwrite guard" above). `config.path` must be absolute — `keystore.New`
+  rejects a relative one at construction (XCUT-001), since the manifest
+  carries it as a literal string re-resolved fresh on every call; relative,
+  it would silently point at a different location depending on the working
+  directory a later `up` or `status` happens to run from. The `local` blob
+  adapter's `config.path` is the same shape and carries the same
+  requirement (`blob.NewLocal`).
 - **`command`** (`config.command`): one shell command, run via `sh -c`.
   `Resolve(keyName)` sets `FARRIER_KEY_NAME` in the command's environment
   and returns its trimmed stdout — one command branches on the env var to

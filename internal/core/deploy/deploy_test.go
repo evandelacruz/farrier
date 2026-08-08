@@ -136,7 +136,9 @@ func (f *fakeHost) CheckHost(ctx context.Context) error {
 // persist a renewed certificate back through the keystore (ACME-002), so
 // tests must not point the "file" driver straight at the checked-in
 // fixture — writing there would corrupt it for every other test and leave
-// the working tree dirty after a single `go test` run.
+// the working tree dirty after a single `go test` run. A t.TempDir() path
+// is already absolute, which also satisfies the file driver's XCUT-001
+// requirement for free.
 func testBundle(t *testing.T) *bundle.Bundle {
 	t.Helper()
 	keysDir := t.TempDir()

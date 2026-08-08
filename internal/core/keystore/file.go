@@ -83,5 +83,8 @@ func newFileDriver(config map[string]any) (Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("keystore: file: %w", err)
 	}
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("keystore: file: config.path must be an absolute path, got %q — a relative path resolves against whatever directory the current command happens to run from, which differs across machines and invocations (XCUT-001)", path)
+	}
 	return FileDriver{Path: path}, nil
 }
