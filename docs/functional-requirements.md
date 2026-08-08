@@ -86,7 +86,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 ## BKUP — backup
 
 - **BKUP-001** · `backup` must produce a snapshot containing all four state kinds plus a manifest with per-component checksums.
-- **BKUP-002** · `backup` must run against a live instance: reads and fetches stay available throughout, and pushes may be held only for the seconds of git capture.
+- **BKUP-002** · `backup` must run against a live instance: reads and fetches stay available throughout, pushes are rejected with an explicit message only for the seconds of git capture, and the hold is released on every exit path and at a 60-second ceiling that fails the backup.
 - **BKUP-003** · Every snapshot must be age-encrypted before leaving the host.
 - **BKUP-004** · `backup` must verify the snapshot at creation and exit nonzero, naming the specific defect, when verification fails.
 - **BKUP-005** · `backup` must write to an S3-compatible URI or a filesystem path.

@@ -315,8 +315,8 @@ Whether run singly or as a batch, a failed migration leaves no partially-registe
 ## Operational targets
 
 - **RTO:** promote completes — snapshot pulled, restored, verified, services live, DNS flipped — within 10 minutes on the reference instance (10 GB state, 100 Mbps between backup target and new host).
-- **RPO:** equals backup cadence; the golden-path cron documents hourly.
-- **Backup impact:** push-hold under 10 seconds on the reference instance; reads uninterrupted.
+- **RPO:** equals backup cadence, which the operator sets — Farrier ships no scheduler. The golden-path cron is an example, not a default.
+- **Backup impact:** push-hold under 10 seconds on the reference instance; reads uninterrupted. The hold aborts at a hard ceiling of 60 seconds and fails the backup. Git capture runs inside the hold, so hold duration scales with git data; the ceiling makes that growth surface as a failed backup rather than as silently longer holds.
 - **Forge host floor:** 2 vCPU, 2 GB RAM, Linux x86_64 or arm64, Docker ≥ 24.
 - **Control plane:** macOS and Linux; single static binary per platform.
 - **DNS TTL:** 60 seconds on all bundle records.

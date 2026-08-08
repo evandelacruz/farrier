@@ -100,7 +100,7 @@ The system defines the state interface; the operator owns transport and topology
 
 - **Replication:** point any mechanism — object-storage sync, Litestream, rsync, git mirrors, multi-region fan-out — at the exported state interfaces. Topology, frequency, and consistency management are operator decisions.
 - **DNS redundancy:** run any number of providers and failover schemes. The CLI updates configured providers through its driver system and prints the exact record change for everything else.
-- **Golden path:** `backup --to <s3-uri-or-directory>` plus a one-line cron entry is the blessed minimum-effort route from `up` to redundancy.
+- **Golden path:** `backup --to <s3-uri-or-directory>` is the blessed minimum-effort route from `up` to a portable snapshot. A one-line cron entry turns it into redundancy at whatever cadence the operator picks; Farrier schedules nothing itself.
 - **Key custody:** backups are encrypted with age and the operator holds the key. A lost key means an unrecoverable backup. This is by design and stated prominently in the documentation.
 
 ## Bundle config is shareable; keys resolve through drivers
@@ -123,10 +123,11 @@ The CLI answers one question at restore and promote time: is this state a valid,
 
 ## Backups
 
-The CLI produces coordinated, verified, encrypted snapshots of a live instance.
+The CLI produces coordinated, verified, encrypted snapshots of a live instance. A snapshot is the portability mechanism, not a background safety net: `restore`, `promote`, `upgrade`, and `drill` all consume one. Backups are operator-initiated — Farrier ships no scheduler, and cadence is the operator's to choose.
 
 - **Database:** captured through SQLite's online-backup API — consistent with zero pause.
 - **Git data:** `backup` holds incoming pushes for the few seconds of capture; reads and fetches stay live. The push-pause closes the window where a push could land between the database capture and the git capture.
+- **The hold rejects; it does not queue.** Caddy refuses git pushes during capture with an explicit message, and the client retries. Holding a push open across the whole capture is worse than a fast, honest failure, and every git client already handles a failed push. The hold releases on every exit path — success, error, panic, signal — and releases itself at a hard ceiling of 60 seconds, failing the backup loudly rather than leaving pushes rejected behind a stuck capture.
 - **Encryption:** every snapshot is age-encrypted before it leaves the host.
 - **Verification:** a backup that fails verification fails loudly at backup time.
 
