@@ -12,10 +12,17 @@
 // append-only) object store, so the hold stays database-only regardless of
 // how much git data the instance holds (BKUP-002, docs/spec.md "Backups").
 //
-// Run produces a plain, unencrypted snapshot directory. Encryption
-// (BKUP-003), verification at creation (BKUP-004), and writing the result
-// to an S3-compatible URI or filesystem path (BKUP-005) are separate
-// requirements layered on top of what Run produces here.
+// Run also verifies the snapshot it just captured (verify.go, BKUP-004)
+// before returning: manifest completeness, checksums, and cross-consistency
+// between the captured database and the git/blob components captured
+// alongside it. A snapshot that fails verification makes Run return an
+// error naming every defect found — the same fails-loudly-at-backup-time
+// guarantee spec.md "Verification" describes — rather than a silent,
+// unusable snapshot on disk. Encryption (BKUP-003) and writing the result
+// to an S3-compatible URI or filesystem path (BKUP-005) are still separate
+// requirements layered on top of what Run produces here: Run's output
+// today is the plain, unencrypted, verified snapshot the rest of that
+// pipeline builds on.
 package backup
 
 import (
@@ -41,6 +48,7 @@ const (
 	StepBlobs         = "capture-blobs"
 	StepKeys          = "capture-keys"
 	StepWriteManifest = "write-manifest"
+	StepVerify        = "verify"
 )
 
 // defaultPushHoldCeiling bounds the push hold when Params.PushHoldCeiling
@@ -154,6 +162,12 @@ func Run(ctx context.Context, job *events.Job, params Params) (*Manifest, error)
 		return fail(job, StepWriteManifest, err)
 	}
 	job.Emit(StepWriteManifest, events.StateSucceeded, fmt.Sprintf("manifest written with %d component(s)", len(components)))
+
+	job.Started(StepVerify, "verifying snapshot")
+	if err := Verify(ctx, params.Dir, manifest, params.Keys.Names()); err != nil {
+		return fail(job, StepVerify, fmt.Errorf("backup: verify snapshot: %w", err))
+	}
+	job.Emit(StepVerify, events.StateSucceeded, "snapshot verified")
 
 	job.Succeeded(fmt.Sprintf("snapshot written to %s", params.Dir))
 	return manifest, nil

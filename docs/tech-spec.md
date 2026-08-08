@@ -191,10 +191,51 @@ original, untouched Caddyfile at `caddy.ConfigPath` to release.
 `backup.NoopPushHold` covers topologies with no proxy in front of git
 traffic (a local capture, a drill).
 
-`Run` produces the plain, unencrypted snapshot the rest of this section's
-pipeline builds on: encryption (BKUP-003), verification at creation
-(BKUP-004), and writing the result to an S3-compatible URI or filesystem
-path (BKUP-005) are separate, not yet implemented.
+`Run` also verifies the snapshot it just captured before returning (BKUP-004,
+below). Encryption (BKUP-003) and writing the result to an S3-compatible URI
+or filesystem path (BKUP-005) are still separate, not yet implemented —
+`Run`'s output today is the plain, unencrypted, verified snapshot the rest
+of this section's pipeline builds on.
+
+## Snapshot verification (BKUP-004)
+
+`backup.Verify(ctx, dir, manifest, keyNames)` implements the "Verification
+at creation and at restore runs the same code path" check above, against
+the plain snapshot directory `Run` produces. It runs three checks and
+aggregates every defect it finds into one `*backup.VerifyError` — the check
+that found it, the component or reference it's about, and what's wrong —
+rather than stopping at the first one, so a single verify pass reports
+everything wrong instead of one defect per rerun:
+
+- **Completeness:** the manifest declares a checksum algorithm `Verify`
+  knows how to check, exactly one database component, and every name in
+  `keyNames` (the caller's `state.KeyExporter.Names()`) captured as a key
+  component.
+- **Checksums:** every component's file on disk, recomputed, matches the
+  checksum the manifest recorded for it at capture time. A file that's
+  missing or unreadable is reported the same way as a mismatch.
+- **Cross-consistency:** opens the snapshot's own captured `db.sqlite` and
+  checks that every row Forgejo's database holds resolves to a component
+  this same snapshot captured — `repository` rows (`owner_name`,
+  `lower_name`) against the git components `captureGitRefs` and
+  `captureGitObjects` write per repository, and `lfs_meta_object.oid` /
+  `attachment.uuid` against blob component names, matched by containment
+  rather than an exact key so the check stays decoupled from whichever
+  `blob.Adapter` layout the operator configured. A `db.sqlite` that won't
+  even open (corrupt, truncated) is itself reported as a defect. CI
+  artifacts and avatars are not yet cross-checked — their storage-key
+  convention isn't established anywhere in this codebase, and this is a
+  documented scope limit, not a silent gap.
+
+`Run` calls `Verify` immediately after writing `snapshot-manifest.json`
+(`StepVerify`) and fails the job — naming every defect found — if it
+returns an error. This is the fails-loudly-at-backup-time guarantee
+spec.md "Verification" describes, running today against the plain snapshot
+since encryption (BKUP-003) doesn't exist yet. The capture order above
+ultimately places `verify` after `encrypt`: once BKUP-003 lands, its
+pipeline change must move the `Verify` call to run against the decrypted
+form of what's about to be written, not leave it checking the pre-encryption
+snapshot alone.
 
 ## Driver interfaces
 
