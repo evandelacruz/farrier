@@ -370,9 +370,18 @@ wrong: the conductor takes `conductor:working` **before** firing an implementer,
 but never takes `conductor:reviewing` for a reviewer. Fire the reviewer against
 a PR with no reviewing lock on it and let the routine claim its own.
 
-If a PR is already carrying a stale `conductor:reviewing` — a reviewer that died,
-or one a conductor stranded this way — delete it first, then fire. A lock with
-no session behind it never expires on its own.
+The one reviewing lock you may clear is your own. If you pre-set
+`conductor:reviewing` on this pass and the reviewer exited on it — the mistake
+this section warns against — delete the label and fire again. That is safe
+because you know first-hand there is no session behind it.
+
+A reviewing lock you did **not** set is a different question, and `## Notes`
+governs it: a stale lock parks that PR, and clearing it is a manual call. Do
+not clear one to unblock yourself. Nothing in this file can tell whether a
+reviewer is still running, so a conductor that deletes a live reviewer's lock
+puts two reviewers on one PR — and the selection criteria above already filter
+locked PRs out of the automated flow, so a conductor only ever meets one when
+firing ad hoc at a named PR.
 
 **"Carries a verdict" is the load-bearing part, and a review existing is not
 enough.** A reviewer posts its inline findings as a review with an empty body,
