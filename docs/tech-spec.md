@@ -154,6 +154,29 @@ keys/                     bundle key material
 - Capture order: hold pushes → SQLite online backup → tar bare repos → release pushes → blob capture → checksum → encrypt → verify → write.
 - Verification at creation and at restore runs the same code path: manifest completeness, checksums, cross-consistency (DB repo/blob references resolve).
 
+## Snapshot capture (BKUP-001)
+
+`internal/core/backup.Run` captures the four state kinds — via the
+`state.DatabaseExporter`, `state.GitExporter`, `state.BlobExporter`, and
+`state.KeyExporter` interfaces (STATE-001–004) — into a plain snapshot
+directory and writes `snapshot-manifest.json`: the Forgejo version, the
+capture timestamp, the checksum algorithm, and one checksummed `Component`
+per captured file (one database, one per repository, one per blob, one per
+key). Every step emits a CORE-002 job event.
+
+`state.GitExporter` only enumerates remotes (STATE-001); it doesn't stream
+repository content, since replication is ordinarily the operator's own
+mirroring tooling. `backup.Run` pairs it with a `backup.GitCapturer`
+(`LocalGitCapturer`, `SSHGitCapturer`) that tars each bare repository the
+exporter lists — the same Local/SSH split `state.GitExporter` and
+`state.DatabaseExporter` already use.
+
+`Run` produces the plain, unencrypted snapshot the rest of this section's
+pipeline builds on: the push-hold window around git capture (BKUP-002),
+encryption (BKUP-003), verification at creation (BKUP-004), and writing the
+result to an S3-compatible URI or filesystem path (BKUP-005) are separate,
+not yet implemented.
+
 ## Driver interfaces
 
 All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol for out-of-tree ones. The exec protocol itself is generic and lives once, in `internal/core/driver` (CORE-003): `driver.Exec` runs an executable once per call, writing `{"method", "params"}` as a `Request` to its stdin and reading `{"ok", "result", "error"}` back as a `Response` from its stdout — one process per call, no long-lived session. `driver.Exec` satisfies `driver.Invoker`, the seam each driver-type package wraps behind its own domain interface and its own method names.

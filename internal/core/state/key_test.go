@@ -28,13 +28,13 @@ func (d fakeKeyDriver) Resolve(ctx context.Context, keyName string) (keystore.Se
 
 func testKeyDriver() fakeKeyDriver {
 	return fakeKeyDriver{values: map[string]string{
-		forge.KeySecretKey:      "sk-value",
-		forge.KeyInternalToken:  "it-value",
-		forge.KeyLFSJWTSecret:   "lfs-value",
-		KeyTLSCertificate:       "cert-value",
-		KeyTLSIssuerCertificate: "issuer-cert-value",
-		KeyTLSPrivateKey:        "tls-key-value",
-		KeySSHHostKey:           "ssh-host-key-value",
+		forge.KeySecretKey:     "sk-value",
+		forge.KeyInternalToken: "it-value",
+		forge.KeyLFSJWTSecret:  "lfs-value",
+		KeyTLSCertificate:      "cert-value",
+		KeyTLSPrivateKey:       "tls-key-value",
+		KeySSHHostKey:          "ssh-host-key-value",
+		KeySSHHostKeyPublic:    "ssh-host-key-public-value",
 	}}
 }
 
