@@ -155,6 +155,29 @@ keys/                     bundle key material
 - Capture order: hold pushes → SQLite online backup → tar bare repos → release pushes → blob capture → checksum → encrypt → verify → write.
 - Verification at creation and at restore runs the same code path: manifest completeness, checksums, cross-consistency (DB repo/blob references resolve).
 
+## Snapshot capture (BKUP-001)
+
+`internal/core/backup.Run` captures the four state kinds — via the
+`state.DatabaseExporter`, `state.GitExporter`, `state.BlobExporter`, and
+`state.KeyExporter` interfaces (STATE-001–004) — into a plain snapshot
+directory and writes `snapshot-manifest.json`: the Forgejo version, the
+capture timestamp, the checksum algorithm, and one checksummed `Component`
+per captured file (one database, one per repository, one per blob, one per
+key). Every step emits a CORE-002 job event.
+
+`state.GitExporter` only enumerates remotes (STATE-001); it doesn't stream
+repository content, since replication is ordinarily the operator's own
+mirroring tooling. `backup.Run` pairs it with a `backup.GitCapturer`
+(`LocalGitCapturer`, `SSHGitCapturer`) that tars each bare repository the
+exporter lists — the same Local/SSH split `state.GitExporter` and
+`state.DatabaseExporter` already use.
+
+`Run` produces the plain, unencrypted snapshot the rest of this section's
+pipeline builds on: the push-hold window around git capture (BKUP-002),
+encryption (BKUP-003), verification at creation (BKUP-004), and writing the
+result to an S3-compatible URI or filesystem path (BKUP-005) are separate,
+not yet implemented.
+
 ## Driver interfaces
 
 All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol for out-of-tree ones. The exec protocol itself is generic and lives once, in `internal/core/driver` (CORE-003): `driver.Exec` runs an executable once per call, writing `{"method", "params"}` as a `Request` to its stdin and reading `{"ok", "result", "error"}` back as a `Response` from its stdout — one process per call, no long-lived session. `driver.Exec` satisfies `driver.Invoker`, the seam each driver-type package wraps behind its own domain interface and its own method names.
@@ -197,13 +220,13 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 - Rendered `app.ini` enables Actions (`[actions] ENABLED = true`, inlined in `internal/core/forge.RenderAppINI`). Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no app.ini or per-repository key to loosen it — so enabling Actions is what the requirement needs.
 - CI reconciliation at promote: a direct SQLite update resetting `running` → `queued` in the actions tables, executed before services start.
 
-## Deployment (`up`, UP-001, UP-002)
+## Deployment (`up`, UP-001, UP-002, UP-003)
 
 `internal/core/deploy.Up` is the sequencing over orchestrate, forge, caddy, and acme that a real deployment needs, given only an `ssh://user@host` target and a loaded bundle:
 
 1. Check Docker is reachable (ORCH-001's `CheckHost`).
-2. Resolve the bundle's key material through its keystore driver and render `app.ini` (FORGE-001), ship it to the host, and add a bind mount for it to the forgejo service's Compose definition (`orchestrate.WithBindMount`) — deploy-time content, never written into the bundle directory (KEY-003).
-3. Issue a TLS certificate for the bundle domain via ACME DNS-01 (`acme.Issue`, ACME-001), using the DNS-01 provider name the manifest carries from `init`'s own zone-control proof (`Manifest.ACME`). The account key is generated fresh for this issuance — INIT-003, which would persist one as durable bundle key material, has not landed. Render the Caddyfile (`caddy.RenderCaddyfile`) that terminates TLS with the issued certificate and reverse-proxies to Forgejo, ship the Caddyfile and certificate to the host, bind-mount them into the caddy service, and publish its HTTPS port (`orchestrate.WithPorts`) — UP-002.
+2. Resolve the bundle's key material through its keystore driver and render `app.ini` (FORGE-001), ship it to the host, add a bind mount for it to the forgejo service's Compose definition (`orchestrate.WithBindMount`) — deploy-time content, never written into the bundle directory (KEY-003) — and set a checksum of that rendered `app.ini` as an environment variable on the same service (`orchestrate.WithEnv`).
+3. Issue a TLS certificate for the bundle domain via ACME DNS-01 (`acme.Issue`, ACME-001), using the DNS-01 provider name the manifest carries from `init`'s own zone-control proof (`Manifest.ACME`). The account key is generated fresh for this issuance, and so is the certificate — every call to `up` re-issues, regardless of the certificate `init` already persisted as bundle key material (INIT-003; see "Known gap" below). Render the Caddyfile (`caddy.RenderCaddyfile`) that terminates TLS with the issued certificate and reverse-proxies to Forgejo, ship the Caddyfile and certificate to the host, bind-mount them into the caddy service, and publish its HTTPS port (`orchestrate.WithPorts`) — UP-002.
 4. Converge the host to that Compose definition (ORCH-002).
 5. Wait for the forgejo container to accept `docker compose exec`, since `up -d` returning doesn't guarantee the entrypoint has finished.
 6. Provision the first admin account (FORGE-002).
@@ -214,6 +237,15 @@ topology, arranged the same way they arrange the host itself (spec.md "What
 the operator owns") — `up` does not manage DNS records.
 
 Every step reports through the job's CORE-002 event stream; `deploy.Up` owns the job's terminal event. `cmd/farrier up` is the CLI skin: it connects over SSH, calls `deploy.Up`, and prints the same events a dashboard would render over SSE.
+
+Re-running `up` against a host it has already deployed to converges the host to the current bundle definition, and is safe except for the TLS step (UP-003 — `partial`; see "Known gap" below):
+
+- Steps 1, 5, and 7 are read-only probes.
+- Step 2 always re-ships the current `app.ini` and re-derives its checksum. `docker compose up -d` (step 4) decides whether to recreate a service by diffing its resolved config — image, environment, volumes, labels — never the bytes of a file a bind mount happens to point at, so without the checksum a content-only `app.ini` change would ship to disk without the running container ever picking it up. Carrying the checksum as an environment variable puts that content into the diff `docker compose` already does.
+- Step 4 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
+- Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
+
+**Known gap:** step 3 is not yet re-run-safe. `configureTLS` re-issues a certificate from a fresh ACME account on every call, which risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week) after a handful of re-runs. The read side to close this exists: the certificate `init` persists (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and the renewal-aware `acme.EnsureValid` (ACME-002) that can decide against that persisted certificate whether a new one is actually due. What's missing is the write side — a renewed certificate has to be persisted back to the keystore, or the next `up` re-issues again — and `keystore.Writer.Store` refuses to overwrite a key that already has content by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity"). Whether, and how, a renewal-eligible key like the TLS certificate gets a distinct update path without loosening that guarantee for keys that must never rotate silently is an open decision, not made in this PR. UP-003 stays `partial` in `docs/status.json` until it is.
 
 ## Status (`status`, STAT-001)
 

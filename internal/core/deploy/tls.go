@@ -60,12 +60,15 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 // HTTPS port added (UP-002).
 //
 // The ACME account key is generated fresh for this issuance, the same way
-// initialize's zone-control proof generates one for its own: INIT-003, the
-// requirement that persists an account key as durable bundle key material,
-// has not landed yet. Every up therefore registers a new ACME account —
-// registration itself carries none of Let's Encrypt's issuance rate
-// limits, so this only becomes a problem UP-003's re-run story needs to
-// solve, not this one.
+// initialize's zone-control proof generates one for its own — registering
+// an account carries none of Let's Encrypt's issuance rate limits, so that
+// part is harmless to repeat. The certificate itself is also reissued on
+// every call, though: init already persists one as durable bundle key
+// material (INIT-003) and acme.EnsureValid (ACME-002) exists to decide
+// against it whether a new one is actually due, but there is no path yet
+// to persist a renewed certificate back to the keystore (see tech-spec.md
+// "Known gap" under Deployment) — UP-003's re-run story is partial until
+// that lands.
 func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte, issuer CertIssuer) (map[string][]byte, error) {
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
