@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
@@ -38,10 +39,23 @@ type fakeGitCapturer struct {
 	err     error
 	errFor  string
 	calls   []string
+
+	refsContent map[string][]byte
+	refsErr     error
+	refsErrFor  string
+	refsCalls   []string
+
+	// order, when set, also gets an "archive:<name>"/"refs:<name>" entry
+	// appended for every call, interleaved with a fakePushHold sharing the
+	// same slice so a test can assert relative ordering across both.
+	order *[]string
 }
 
 func (f *fakeGitCapturer) Archive(ctx context.Context, remote state.Remote) (io.ReadCloser, error) {
 	f.calls = append(f.calls, remote.Name)
+	if f.order != nil {
+		*f.order = append(*f.order, "archive:"+remote.Name)
+	}
 	if f.err != nil && (f.errFor == "" || f.errFor == remote.Name) {
 		return nil, f.err
 	}
@@ -50,6 +64,56 @@ func (f *fakeGitCapturer) Archive(ctx context.Context, remote state.Remote) (io.
 		data = []byte("tar-bytes-" + remote.Name)
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (f *fakeGitCapturer) Refs(ctx context.Context, remote state.Remote) (io.ReadCloser, error) {
+	f.refsCalls = append(f.refsCalls, remote.Name)
+	if f.order != nil {
+		*f.order = append(*f.order, "refs:"+remote.Name)
+	}
+	if f.refsErr != nil && (f.refsErrFor == "" || f.refsErrFor == remote.Name) {
+		return nil, f.refsErr
+	}
+	data := f.refsContent[remote.Name]
+	if data == nil {
+		data = []byte("refs-bytes-" + remote.Name)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// fakePushHold records Engage/Release calls in order, and their relative
+// ordering against the database/git capturers they wrap, for tests to
+// assert on. errFor selects which call ("engage" or "release") fails.
+type fakePushHold struct {
+	calls  []string
+	errFor string
+	err    error
+
+	// order, when set, also gets "engage"/"release" appended — see
+	// fakeGitCapturer.order.
+	order *[]string
+}
+
+func (f *fakePushHold) Engage(ctx context.Context) error {
+	f.calls = append(f.calls, "engage")
+	if f.order != nil {
+		*f.order = append(*f.order, "engage")
+	}
+	if f.errFor == "engage" {
+		return f.err
+	}
+	return nil
+}
+
+func (f *fakePushHold) Release(ctx context.Context) error {
+	f.calls = append(f.calls, "release")
+	if f.order != nil {
+		*f.order = append(*f.order, "release")
+	}
+	if f.errFor == "release" {
+		return f.err
+	}
+	return nil
 }
 
 type fakeDatabaseExporter struct {
@@ -123,6 +187,7 @@ func validParams(t *testing.T) Params {
 			names:  []string{"secret_key", "internal_token"},
 			values: map[string]string{"secret_key": "sk-value", "internal_token": "it-value"},
 		},
+		PushHold: &fakePushHold{},
 	}
 }
 
@@ -145,9 +210,9 @@ func TestRunWritesACompleteSnapshot(t *testing.T) {
 		t.Error("Timestamp is zero")
 	}
 
-	// database(1) + git(2) + blobs(2) + keys(2) = 7
-	if len(manifest.Components) != 7 {
-		t.Fatalf("Components = %d, want 7: %+v", len(manifest.Components), manifest.Components)
+	// database(1) + git refs(2) + git objects(2) + blobs(2) + keys(2) = 9
+	if len(manifest.Components) != 9 {
+		t.Fatalf("Components = %d, want 9: %+v", len(manifest.Components), manifest.Components)
 	}
 
 	byKind := make(map[bundle.StateKind][]Component)
@@ -166,8 +231,8 @@ func TestRunWritesACompleteSnapshot(t *testing.T) {
 	if len(byKind[bundle.StateKindDatabase]) != 1 {
 		t.Errorf("database components = %d, want 1", len(byKind[bundle.StateKindDatabase]))
 	}
-	if len(byKind[bundle.StateKindGit]) != 2 {
-		t.Errorf("git components = %d, want 2", len(byKind[bundle.StateKindGit]))
+	if len(byKind[bundle.StateKindGit]) != 4 {
+		t.Errorf("git components = %d, want 4 (2 repositories x refs+objects)", len(byKind[bundle.StateKindGit]))
 	}
 	if len(byKind[bundle.StateKindBlobs]) != 2 {
 		t.Errorf("blob components = %d, want 2", len(byKind[bundle.StateKindBlobs]))
@@ -250,7 +315,7 @@ func TestRunCapturesStepsInOrder(t *testing.T) {
 			order = append(order, ev.Step)
 		}
 	}
-	want := []string{StepValidate, StepDatabase, StepGit, StepBlobs, StepKeys, StepWriteManifest}
+	want := []string{StepValidate, StepPushHold, StepDatabase, StepRecordRefs, StepGit, StepBlobs, StepKeys, StepWriteManifest}
 	if len(order) != len(want) {
 		t.Fatalf("started steps = %v, want %v", order, want)
 	}
@@ -291,6 +356,7 @@ func TestRunRejectsMissingExporters(t *testing.T) {
 		{"database exporter", func(p *Params) { p.Database = nil }},
 		{"blob exporter", func(p *Params) { p.Blobs = nil }},
 		{"key exporter", func(p *Params) { p.Keys = nil }},
+		{"push hold", func(p *Params) { p.PushHold = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -349,6 +415,125 @@ func TestRunPropagatesGitArchiveError(t *testing.T) {
 		t.Errorf("error = %v, want it to name acme/gadgets and wrap the archive error", err)
 	}
 	assertJobFailed(t, job)
+}
+
+func TestRunHoldsPushesOnlyAcrossDatabaseAndRefRecording(t *testing.T) {
+	var order []string
+	params := validParams(t)
+	params.PushHold = &fakePushHold{order: &order}
+	params.GitCapturer = &fakeGitCapturer{order: &order}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(order) == 0 || order[0] != "engage" {
+		t.Fatalf("order = %v, want it to start with engage", order)
+	}
+	releaseIdx := -1
+	for i, step := range order {
+		if step == "release" {
+			releaseIdx = i
+			break
+		}
+	}
+	if releaseIdx == -1 {
+		t.Fatalf("order = %v, push hold was never released", order)
+	}
+	for i, step := range order {
+		if strings.HasPrefix(step, "archive:") && i < releaseIdx {
+			t.Errorf("order = %v: %q (object tar) ran before the push hold released", order, step)
+		}
+		if strings.HasPrefix(step, "refs:") && i > releaseIdx {
+			t.Errorf("order = %v: %q (ref recording) ran after the push hold released", order, step)
+		}
+	}
+}
+
+func TestRunReleasesPushHoldOnDatabaseError(t *testing.T) {
+	params := validParams(t)
+	hold := &fakePushHold{}
+	params.PushHold = hold
+	params.Database = &fakeDatabaseExporter{err: errors.New("database unreachable")}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if len(hold.calls) != 2 || hold.calls[0] != "engage" || hold.calls[1] != "release" {
+		t.Fatalf("push hold calls = %v, want [engage release]", hold.calls)
+	}
+}
+
+func TestRunPropagatesPushHoldEngageError(t *testing.T) {
+	params := validParams(t)
+	params.PushHold = &fakePushHold{errFor: "engage", err: errors.New("caddy reload failed")}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "caddy reload failed") {
+		t.Errorf("error = %v, want it to wrap the engage error", err)
+	}
+	assertJobFailed(t, job)
+}
+
+func TestRunPropagatesPushHoldReleaseError(t *testing.T) {
+	params := validParams(t)
+	params.PushHold = &fakePushHold{errFor: "release", err: errors.New("caddy reload failed")}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "caddy reload failed") {
+		t.Errorf("error = %v, want it to wrap the release error", err)
+	}
+	assertJobFailed(t, job)
+}
+
+func TestRunPropagatesRefsError(t *testing.T) {
+	params := validParams(t)
+	params.GitCapturer = &fakeGitCapturer{refsErr: errors.New("refs capture failed"), refsErrFor: "acme/gadgets"}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "refs capture failed") || !strings.Contains(err.Error(), "acme/gadgets") {
+		t.Errorf("error = %v, want it to name acme/gadgets and wrap the refs error", err)
+	}
+	assertJobFailed(t, job)
+}
+
+func TestRunReleasesPushHoldWhenCeilingExpires(t *testing.T) {
+	params := validParams(t)
+	hold := &fakePushHold{}
+	params.PushHold = hold
+	params.PushHoldCeiling = time.Nanosecond
+	params.Database = &blockingDatabaseExporter{}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want error when the push hold ceiling expires, got nil")
+	}
+	if len(hold.calls) != 2 || hold.calls[0] != "engage" || hold.calls[1] != "release" {
+		t.Fatalf("push hold calls = %v, want [engage release]", hold.calls)
+	}
+}
+
+// blockingDatabaseExporter blocks until its context is canceled, standing
+// in for a wedged capture that only a push-hold ceiling can bound.
+type blockingDatabaseExporter struct{}
+
+func (blockingDatabaseExporter) Snapshot(ctx context.Context) (io.ReadCloser, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func TestRunPropagatesBlobListError(t *testing.T) {

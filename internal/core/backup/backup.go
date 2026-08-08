@@ -1,16 +1,21 @@
-// Package backup implements BKUP-001: capturing all four kinds of state —
-// git data (state.GitExporter), the database (state.DatabaseExporter),
-// blobs (state.BlobExporter), and key material (state.KeyExporter) — into a
-// snapshot directory, with a manifest (snapshot-manifest.json) recording the
-// Forgejo version, the capture timestamp, and a checksum for every captured
-// file (tech-spec.md "Snapshot format"). It is the core logic behind the
-// `backup` CLI command.
+// Package backup implements BKUP-001 and BKUP-002: capturing all four kinds
+// of state — git data (state.GitExporter), the database
+// (state.DatabaseExporter), blobs (state.BlobExporter), and key material
+// (state.KeyExporter) — into a snapshot directory, with a manifest
+// (snapshot-manifest.json) recording the Forgejo version, the capture
+// timestamp, and a checksum for every captured file (tech-spec.md "Snapshot
+// format"). It is the core logic behind the `backup` CLI command.
 //
-// Run produces a plain, unencrypted snapshot directory. The push-hold
-// window around git capture (BKUP-002), encryption (BKUP-003), verification
-// at creation (BKUP-004), and writing the result to an S3-compatible URI or
-// filesystem path (BKUP-005) are separate requirements layered on top of
-// what Run produces here.
+// Run holds git pushes (PushHold) only across the database backup and
+// recording every repository's ref state — the one part of git data a push
+// actually changes — and releases before tarring the (immutable,
+// append-only) object store, so the hold stays database-only regardless of
+// how much git data the instance holds (BKUP-002, docs/spec.md "Backups").
+//
+// Run produces a plain, unencrypted snapshot directory. Encryption
+// (BKUP-003), verification at creation (BKUP-004), and writing the result
+// to an S3-compatible URI or filesystem path (BKUP-005) are separate
+// requirements layered on top of what Run produces here.
 package backup
 
 import (
@@ -29,12 +34,20 @@ import (
 // Step names emitted through the job's event stream (CORE-002).
 const (
 	StepValidate      = "validate"
+	StepPushHold      = "push-hold"
 	StepDatabase      = "capture-database"
+	StepRecordRefs    = "record-refs"
 	StepGit           = "capture-git"
 	StepBlobs         = "capture-blobs"
 	StepKeys          = "capture-keys"
 	StepWriteManifest = "write-manifest"
 )
+
+// defaultPushHoldCeiling bounds the push hold when Params.PushHoldCeiling
+// isn't set: a bug backstop, not a growth alarm — with the object tar
+// happening outside the hold, the hold itself no longer grows with the
+// instance, so a low default is always appropriate (BKUP-002).
+const defaultPushHoldCeiling = 30 * time.Second
 
 // Params are backup's inputs: where to write the snapshot, the Forgejo
 // version that produced it, and the four state exporters Run captures from.
@@ -52,6 +65,22 @@ type Params struct {
 	Database    state.DatabaseExporter
 	Blobs       state.BlobExporter
 	Keys        state.KeyExporter
+
+	// PushHold rejects git pushes for the database-only window Run holds
+	// them across: SQLite's online backup plus recording every
+	// repository's ref state (BKUP-002).
+	PushHold PushHold
+
+	// PushHoldCeiling bounds how long that window may run before Run gives
+	// up and releases anyway. Zero uses defaultPushHoldCeiling.
+	PushHoldCeiling time.Duration
+}
+
+func (p Params) pushHoldCeiling() time.Duration {
+	if p.PushHoldCeiling > 0 {
+		return p.PushHoldCeiling
+	}
+	return defaultPushHoldCeiling
 }
 
 // Run captures all four kinds of state into params.Dir and writes
@@ -72,16 +101,16 @@ func Run(ctx context.Context, job *events.Job, params Params) (*Manifest, error)
 
 	var components []Component
 
-	job.Started(StepDatabase, "capturing database")
-	dbComponent, err := captureDatabase(ctx, params.Dir, params.Database)
+	dbComponent, refComponents, remotes, err := captureUnderHold(ctx, job, params)
 	if err != nil {
-		return fail(job, StepDatabase, err)
+		return fail(job, StepPushHold, err)
 	}
+	job.Emit(StepPushHold, events.StateSucceeded, "pushes released")
 	components = append(components, dbComponent)
-	job.Emit(StepDatabase, events.StateSucceeded, "database captured")
+	components = append(components, refComponents...)
 
 	job.Started(StepGit, "capturing git repositories")
-	gitComponents, err := captureGit(ctx, params.Dir, params.Git, params.GitCapturer)
+	gitComponents, err := captureGitObjects(ctx, params.Dir, params.GitCapturer, remotes)
 	if err != nil {
 		return fail(job, StepGit, err)
 	}
@@ -142,7 +171,68 @@ func (p Params) validate() error {
 	if p.Keys == nil {
 		return errors.New("backup: key exporter is required")
 	}
+	if p.PushHold == nil {
+		return errors.New("backup: push hold is required")
+	}
 	return nil
+}
+
+// captureUnderHold engages params.PushHold, captures the database and
+// records every repository's ref state while it's engaged, and releases the
+// hold before returning — on success, on error, or if this panics — so a
+// capture that dies mid-hold never leaves pushes rejected (BKUP-002,
+// docs/spec.md "Backups"). The object tar is deliberately not captured
+// here: Run only starts it after this returns, once pushes are flowing
+// again.
+func captureUnderHold(ctx context.Context, job *events.Job, params Params) (dbComponent Component, refComponents []Component, remotes []state.Remote, err error) {
+	job.Started(StepPushHold, "holding git pushes")
+	if err = params.PushHold.Engage(ctx); err != nil {
+		err = fmt.Errorf("backup: engage push hold: %w", err)
+		return
+	}
+
+	holdCtx, cancel := context.WithTimeout(ctx, params.pushHoldCeiling())
+	defer cancel()
+
+	defer func() {
+		// Release unconditionally, on a context detached from ctx's own
+		// cancellation (and from the ceiling above) — a caller that
+		// cancels ctx, or a ceiling that expires, must not also be able
+		// to block the release that has to follow it.
+		releaseErr := params.PushHold.Release(context.WithoutCancel(ctx))
+		if releaseErr == nil {
+			return
+		}
+		releaseErr = fmt.Errorf("backup: release push hold: %w", releaseErr)
+		if err != nil {
+			err = fmt.Errorf("%w (also failed to release push hold: %v)", err, releaseErr)
+			return
+		}
+		err = releaseErr
+	}()
+
+	job.Started(StepDatabase, "capturing database")
+	dbComponent, err = captureDatabase(holdCtx, params.Dir, params.Database)
+	if err != nil {
+		job.Emit(StepDatabase, events.StateFailed, err.Error())
+		return
+	}
+	job.Emit(StepDatabase, events.StateSucceeded, "database captured")
+
+	job.Started(StepRecordRefs, "recording repository refs")
+	remotes, err = params.Git.Remotes(holdCtx)
+	if err != nil {
+		err = fmt.Errorf("backup: capture git: list repositories: %w", err)
+		job.Emit(StepRecordRefs, events.StateFailed, err.Error())
+		return
+	}
+	refComponents, err = captureGitRefs(holdCtx, params.Dir, params.GitCapturer, remotes)
+	if err != nil {
+		job.Emit(StepRecordRefs, events.StateFailed, err.Error())
+		return
+	}
+	job.Emit(StepRecordRefs, events.StateSucceeded, fmt.Sprintf("recorded refs for %d repository(ies)", len(remotes)))
+	return
 }
 
 func fail(job *events.Job, step string, err error) (*Manifest, error) {
