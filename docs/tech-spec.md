@@ -17,6 +17,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, issue TLS cert, converge, bootstrap admin
+  status/             instance health: services up, TLS validity, disk headroom, last-backup age (STAT-001)
   importer/           `import` sequencing: calls Forgejo's migration API, with optional mirror sync (IMPT-001, IMPT-002)
   acme/               cert issuance and renewal (lego)
   caddy/              Caddy config rendering: the Caddyfile that terminates TLS with a core-issued certificate
@@ -256,7 +257,49 @@ Re-running `up` against a host it has already deployed to converges the host to 
 
 **Known gap:** step 3 is not yet re-run-safe. `configureTLS` re-issues a certificate from a fresh ACME account on every call, which risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week) after a handful of re-runs. The read side to close this exists: the certificate `init` persists (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and the renewal-aware `acme.EnsureValid` (ACME-002) that can decide against that persisted certificate whether a new one is actually due. What's missing is the write side — a renewed certificate has to be persisted back to the keystore, or the next `up` re-issues again — and `keystore.Writer.Store` refuses to overwrite a key that already has content by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity"). Whether, and how, a renewal-eligible key like the TLS certificate gets a distinct update path without loosening that guarantee for keys that must never rotate silently is an open decision, not made in this PR. UP-003 stays `partial` in `docs/status.json` until it is.
 
-## Importing repositories (`import`, IMPT-001, IMPT-002)
+## Status (`status`, STAT-001)
+
+`internal/core/status.Check` is a synchronous read, not a job (tech-spec.md
+"API": `GET /status` returns directly, no `jobId`) — it reflects the
+instance's current state each time it's called, never a cached one:
+
+1. **Services up:** `docker compose ps --all --format json` inside the
+   deployed project (`orchestrate.ComposeCommand`'s cd and
+   `COMPOSE_PROJECT_NAME`/`COMPOSE_FILE` prefix, the same one
+   `deploy`'s `composeRunner` builds for `forge.Bootstrap`), checked
+   against the two services `up` deploys today (`forge.Service`,
+   `caddy.Service`). A service whose container state isn't `"running"`, or
+   that has no container at all, reports down with docker compose's own
+   status string as detail.
+2. **TLS validity:** resolves `state.KeyTLSCertificate` through the
+   bundle's keystore driver and parses it as X.509 — valid when the host
+   clock falls inside the certificate's validity window, expiring-soon at
+   the same 14-day threshold ACME-002 sets for renewal warnings
+   (`status.CertExpiryWarning`).
+3. **Disk headroom:** `df -Pk` on the host, default path `/` — no landed
+   decision yet pins forge state to a specific bind-mounted host
+   directory, so root is the only host-wide signal available without
+   guessing one.
+
+`status.Check` returns an error naming which of the three failed rather
+than a partially-filled report — consistent with the rest of the core's
+"fail loudly, name the reason" posture (`ORCH-001`'s `CheckHost`,
+`BKUP-004`). `cmd/farrier status` is the CLI skin: it connects over SSH,
+calls `status.Check`, and prints the report; its exit code reflects
+whether the report could be produced, not whether the instance it
+describes is healthy.
+
+**Last-backup age is not implemented yet.** STAT-001 also requires it, but
+finding the most recent snapshot needs a stable convention for what
+`backup` (BKUP-001..005, not yet landed) writes to its destination and how
+`status` locates it there — `backup`'s destination is a per-invocation
+`--to` flag (spec.md "Golden path"), not bundle-persisted config, and
+`blob.Object` (BLOB-001/002) carries no timestamp today. That convention
+belongs to backup's own design, not something `status` should invent
+ahead of it; `docs/status.json` carries STAT-001 as partial with this as
+the remaining slice.
+
+## Importing repositories (`import`, IMPT-001, IMPT-002, IMPT-003)
 
 `internal/core/importer.Run` calls Forgejo's own migration endpoint, `POST /api/v1/repos/migrate`, on the target instance's API — no git transport is reimplemented:
 
@@ -267,7 +310,9 @@ Re-running `up` against a host it has already deployed to converges the host to 
 
 The default branch travels automatically as part of the git migration; there is no separate step for it. `Run` owns the job's terminal event the way `deploy.Up` does. `cmd/farrier import` is the CLI skin: `-target` addresses the Farrier instance and `-source` the origin, `-owner`/`-name` set the repository's home on the target, and `-mirror`/`-mirror-interval` opt into continuous sync. The two API tokens are never CLI flags — `FARRIER_TARGET_TOKEN` and `FARRIER_SOURCE_TOKEN` in the process environment, read the same way `init`'s ACME DNS-01 provider reads its own credentials (see "Bundle creation" above), so neither token is ever visible in `ps` output or shell history.
 
-IMPT-003 (per-repository batch reporting and no partially-registered repository on failure) is not implemented yet; today's `import` migrates one repository per invocation and reports that one outcome.
+**IMPT-003 — batch reporting and no partial repository on failure.** `importer.RunBatch` migrates many repositories against one target instance within a single job: each repository gets its own `migrate:<n>` step in the event stream and its own entry in the returned `BatchResult` (source, `Result`, and `error`, independently), and the batch keeps going past one repository's failure so the rest still import. The job's own terminal event reflects the batch as a whole — succeeded only if every repository succeeded — but per-repository detail lives in the step events and `BatchResult`, not in that one terminal event. `cmd/farrier import -file <manifest.yaml>` is the batch CLI skin: the manifest lists repositories only (`source`, and optionally `service`, `owner`, `name`, `private`, `mirror`, `mirrorInterval` per entry) and never credentials, which stay in `-target`/`-owner`/`-private`/`-mirror`/`-mirror-interval` and the two environment tokens, applied as the batch-wide default for any entry that doesn't set its own. `-file` and `-source` are mutually exclusive.
+
+Whether run singly or as a batch, a failed migration leaves no partially-registered repository on the target: `migrate`'s failure paths (a non-2xx response, or the request itself failing) call `DELETE /api/v1/repos/{owner}/{repo}` best-effort on a detached, timed-out context, so cleanup still runs even when the failure was the caller's own context expiring or being canceled. A 404 from that delete (nothing was ever registered) is not an error; a genuine cleanup failure is reported alongside, never in place of, the original migration error, since it means the operator may need to remove that repository by hand. A response that decodes successfully after a 2xx is a real, complete repository — decode failures past that point are a client-side bug, not a partial registration, and are never cleaned up.
 
 ## Status (`status`, STAT-002)
 
