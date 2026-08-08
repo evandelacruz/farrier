@@ -69,10 +69,13 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 // (UP-003). It renders Caddy's config using whatever certificate results,
 // ships both to host, and returns compose with Caddy's bind mounts and its
 // published HTTPS port added (UP-002). renewed reports whether issuer
-// actually issued a fresh certificate — true only on the rare renewal-due
-// branch, since the fresh certificate is used for this deploy but not
-// persisted back to the keystore (that write path is ACME-002's gap, not
-// this one's).
+// actually issued a fresh certificate — on that branch the renewed
+// certificate is also persisted back to the keystore (ACME-002), through
+// the same driver Store the rest of this function reads from: the TLS
+// certificate and its private key are the one piece of key material the
+// keystore's rotation guard (keystore.Rotates) lets overwrite, so this
+// call succeeds where storing any other key material a second time would
+// refuse.
 //
 // The ACME account key is generated fresh whenever issuance does happen,
 // the same way initialize's zone-control proof generates one for its own
@@ -101,6 +104,11 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 	}, existing, time.Now())
 	if err != nil {
 		return nil, false, fmt.Errorf("issue certificate for %s: %w", b.Manifest.Domain, err)
+	}
+	if renewed {
+		if err := persistRenewedCertificate(ctx, driver, cert); err != nil {
+			return nil, false, err
+		}
 	}
 
 	upstream := fmt.Sprintf("%s:%d", forge.Service, forge.HTTPPort)
@@ -140,6 +148,29 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 		return nil, false, fmt.Errorf("publish https port: %w", err)
 	}
 	return compose, renewed, nil
+}
+
+// persistRenewedCertificate writes cert back to the keystore under
+// state.KeyTLSCertificate/state.KeyTLSPrivateKey (ACME-002), so the
+// renewal EnsureValid just decided actually takes effect: without this,
+// the fresh certificate would serve this one deploy and then be
+// forgotten, and the next `up` would find the old one still due and renew
+// again. Every bundle's keystore target was already required to implement
+// keystore.Writer at init time (initialize.Run) — the same target is used
+// here, so this only fails if that target changed underneath the bundle
+// since init.
+func persistRenewedCertificate(ctx context.Context, driver keystore.Driver, cert *acme.Certificate) error {
+	writer, ok := driver.(keystore.Writer)
+	if !ok {
+		return fmt.Errorf("persist renewed certificate: keystore driver cannot store key material")
+	}
+	if err := writer.Store(ctx, state.KeyTLSCertificate, keystore.NewSecret(string(cert.Certificate))); err != nil {
+		return fmt.Errorf("persist renewed %s: %w", state.KeyTLSCertificate, err)
+	}
+	if err := writer.Store(ctx, state.KeyTLSPrivateKey, keystore.NewSecret(string(cert.PrivateKey))); err != nil {
+		return fmt.Errorf("persist renewed %s: %w", state.KeyTLSPrivateKey, err)
+	}
+	return nil
 }
 
 // resolvePersistedCertificate resolves the TLS certificate and private key

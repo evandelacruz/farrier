@@ -27,10 +27,7 @@
     "FORGE-003": "landed",
     "FORGE-004": "landed",
     "ACME-001": "landed",
-    "ACME-002": {
-      "state": "partial",
-      "remaining": "Renewal is decided but cannot be persisted. acme.EnsureValid correctly reports when a certificate is due (two-thirds of lifetime) and issues a replacement, and status warns inside 14 days of expiry, but a renewed certificate has nowhere to go: keystore.Writer.Store refuses to overwrite a key that already has content by design, the same invariant that keeps SECRET_KEY/INTERNAL_TOKEN/the SSH host key from silently rotating (spec.md 'Identity'). Renewal therefore returns a valid certificate to its caller while the bundle keeps the old one, and the next call renews again. Closing this needs a write path for renewal-eligible key material that does not loosen the no-overwrite guarantee for keys that must never rotate, which is an open decision. This is not what makes re-running up unsafe: UP-003 is closed by reading the persisted certificate through EnsureValid, which needs no write at all."
-    },
+    "ACME-002": "landed",
     "DNS-001": "landed",
     "DNS-002": "landed",
     "DNS-003": "landed",

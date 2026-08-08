@@ -139,24 +139,26 @@ func TestFileDriverStoreCreatesMissingDirectory(t *testing.T) {
 	}
 }
 
-func TestFileDriverStoreRefusesToOverwriteExistingKey(t *testing.T) {
+// TestFileDriverStoreOverwritesWithoutGuard documents that the bare driver
+// has no overwrite guard of its own: that check moved up into New's
+// guardedDriver (guard_test.go), so every driver gets it once instead of
+// each driver implementing it separately.
+func TestFileDriverStoreOverwritesWithoutGuard(t *testing.T) {
 	dir := t.TempDir()
 	d := FileDriver{Path: dir}
 	if err := d.Store(context.Background(), "k", NewSecret("original")); err != nil {
 		t.Fatalf("Store: %v", err)
 	}
-
-	err := d.Store(context.Background(), "k", NewSecret("replacement"))
-	if err == nil {
-		t.Fatal("Store: want error overwriting an existing key, got nil")
+	if err := d.Store(context.Background(), "k", NewSecret("replacement")); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
 
 	got, resolveErr := d.Resolve(context.Background(), "k")
 	if resolveErr != nil {
 		t.Fatalf("Resolve: %v", resolveErr)
 	}
-	if got.Reveal() != "original" {
-		t.Errorf("Reveal() = %q, want original value preserved", got.Reveal())
+	if got.Reveal() != "replacement" {
+		t.Errorf("Reveal() = %q, want the replacement value", got.Reveal())
 	}
 }
 

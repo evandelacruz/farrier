@@ -50,7 +50,24 @@ type Writer interface {
 // treated as an out-of-tree driver executable reached through the
 // CORE-003 exec protocol, configured the same way driver.Exec itself is:
 // config.path is the executable, config.args its fixed arguments.
+//
+// When the built driver implements Writer, New wraps it in the rotation
+// guard (guardedDriver) before returning it, so every caller's Store goes
+// through the same policy check no matter which driver they configured —
+// a caller that type-asserts the result for Writer still sees one, since
+// guardedDriver implements it too.
 func New(driverName string, config map[string]any) (Driver, error) {
+	d, err := newDriver(driverName, config)
+	if err != nil {
+		return nil, err
+	}
+	if w, ok := d.(Writer); ok {
+		return guardedDriver{Driver: d, writer: w}, nil
+	}
+	return d, nil
+}
+
+func newDriver(driverName string, config map[string]any) (Driver, error) {
 	switch driverName {
 	case "":
 		return nil, fmt.Errorf("keystore: driver name is required")
