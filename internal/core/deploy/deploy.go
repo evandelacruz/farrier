@@ -1,13 +1,15 @@
 // Package deploy implements UP-001: deploying the full stateless layer
 // (spec.md "Stateless vs. stateful" — the forge app, CI orchestration, and
 // runners) to a target host given only an ssh://user@host address and a
-// bundle.
+// bundle. It also implements UP-002: ending that deployment with the forge
+// serving HTTPS at the bundle domain.
 //
 // It is the sequencing layer over packages that already do the real work:
 // orchestrate (SSH transport, Compose rendering and convergence, ORCH-001
-// and ORCH-002) and forge (app.ini rendering and admin bootstrap, FORGE-001
-// and FORGE-002). Up is the first thing that calls them together, in the
-// order a real deployment needs.
+// and ORCH-002), forge (app.ini rendering and admin bootstrap, FORGE-001
+// and FORGE-002), caddy (Caddyfile rendering), and acme (certificate
+// issuance, ACME-001). Up is the first thing that calls them together, in
+// the order a real deployment needs.
 package deploy
 
 import (
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
+	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
@@ -31,8 +34,10 @@ import (
 const (
 	StepCheckHost      = "check-host"
 	StepConfigureForge = "configure-forge"
+	StepConfigureTLS   = "configure-tls"
 	StepConverge       = "converge"
 	StepWaitForge      = "wait-forge"
+	StepWaitCaddy      = "wait-caddy"
 )
 
 // hostConfigDir is the directory under RemoteDir Up writes deploy-time
@@ -68,15 +73,24 @@ type Host interface {
 // Options configures Up beyond the target host and bundle.
 type Options struct {
 	// RemoteDir is the directory on the host Up deploys into: Compose
-	// files, and the rendered forge config, live under it. Required.
+	// files, and the rendered forge and Caddy config, live under it.
+	// Required.
 	RemoteDir string
+
+	// CertIssuer issues the TLS certificate Up hands to Caddy (UP-002).
+	// Nil uses the real ACME DNS-01 issuer (acme.Issue); tests substitute
+	// a fake so Up's sequencing is assertable without a real ACME server.
+	CertIssuer CertIssuer
 }
 
 // Up deploys b's full stateless layer to host (UP-001): it verifies Docker
 // is reachable, resolves the bundle's key material and renders and ships
-// Forgejo's app.ini, converges the host to the bundle's Compose definition
-// plus that config, waits for Forgejo to accept commands, and provisions
-// the first admin account.
+// Forgejo's app.ini, issues a TLS certificate for the bundle domain and
+// renders and ships Caddy's config (UP-002), converges the host to the
+// bundle's Compose definition plus that config, waits for Forgejo to accept
+// commands, provisions the first admin account, and waits for Caddy to
+// accept commands so the forge is serving HTTPS and usable in a browser
+// before Up returns.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
 // exactly once, after every step below has run (or the first one fails),
@@ -113,6 +127,14 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped")
 
+	job.Started(StepConfigureTLS, "issuing certificate and rendering caddy config")
+	compose, err = configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer))
+	if err != nil {
+		job.Emit(StepConfigureTLS, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: configure tls: %w", err)
+	}
+	job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate issued and caddy configured")
+
 	job.Started(StepConverge, "converging host to bundle definition")
 	deployed := &bundle.Bundle{Manifest: b.Manifest, Compose: compose}
 	if err := orchestrate.Converge(ctx, host, opts.RemoteDir, deployed); err != nil {
@@ -124,7 +146,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	runner := &composeRunner{host: host, remoteDir: opts.RemoteDir, bundle: deployed}
 
 	job.Started(StepWaitForge, "waiting for forgejo to accept commands")
-	if err := waitReady(ctx, runner); err != nil {
+	if err := waitReady(ctx, runner, forge.Service); err != nil {
 		job.Emit(StepWaitForge, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: wait for forgejo: %w", err)
 	}
@@ -137,6 +159,13 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	if err := forge.Bootstrap(ctx, runner, job, account); err != nil {
 		return fmt.Errorf("deploy: %w", err)
 	}
+
+	job.Started(StepWaitCaddy, "waiting for caddy to accept commands")
+	if err := waitReady(ctx, runner, caddy.Service); err != nil {
+		job.Emit(StepWaitCaddy, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: wait for caddy: %w", err)
+	}
+	job.Emit(StepWaitCaddy, events.StateSucceeded, fmt.Sprintf("caddy ready — https://%s is live", b.Manifest.Domain))
 	return nil
 }
 
@@ -169,18 +198,19 @@ func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir 
 	return compose, nil
 }
 
-// waitReady polls until the forgejo service accepts `docker compose exec`,
-// or readyTimeout elapses. Converge's `docker compose up -d` returns once
+// waitReady polls until service accepts `docker compose exec`, or
+// readyTimeout elapses. Converge's `docker compose up -d` returns once
 // containers are created and started, which can race the container's own
-// entrypoint init; admin bootstrap right after would then fail
-// intermittently rather than deterministically, so this waits the race out
-// instead of leaving it as a heisenbug in Bootstrap.
-func waitReady(ctx context.Context, runner forge.Runner) error {
+// entrypoint init; admin bootstrap and the browser-readiness check right
+// after would then fail intermittently rather than deterministically, so
+// this waits the race out instead of leaving it as a heisenbug in the
+// caller.
+func waitReady(ctx context.Context, runner forge.Runner, service string) error {
 	deadline := time.Now().Add(readyTimeout)
 	var lastErr error
 	for {
 		var stderr bytes.Buffer
-		err := runner.Run(ctx, fmt.Sprintf("docker compose exec -T %s true", forge.Service), io.Discard, &stderr)
+		err := runner.Run(ctx, fmt.Sprintf("docker compose exec -T %s true", service), io.Discard, &stderr)
 		if err == nil {
 			return nil
 		}
@@ -190,7 +220,7 @@ func waitReady(ctx context.Context, runner forge.Runner) error {
 		}
 
 		if !time.Now().Before(deadline) {
-			return fmt.Errorf("forgejo did not become ready within %s: %w", readyTimeout, lastErr)
+			return fmt.Errorf("%s did not become ready within %s: %w", service, readyTimeout, lastErr)
 		}
 		select {
 		case <-ctx.Done():

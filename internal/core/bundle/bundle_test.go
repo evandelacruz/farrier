@@ -19,6 +19,7 @@ func validManifest() *Manifest {
 			Keystore: DriverRef{Driver: "file", Config: map[string]any{"path": "/keys/bundle.key"}},
 			Blob:     DriverRef{Driver: "local", Config: map[string]any{"path": "/data/blobs"}},
 		},
+		ACMEConfig{DNSProvider: "manual"},
 	)
 }
 
@@ -43,6 +44,7 @@ func TestManifestValidate(t *testing.T) {
 		{"tag-pinned image", func(m *Manifest) { m.Images["forgejo"] = "forgejo/forgejo:11" }, true},
 		{"missing keystore driver", func(m *Manifest) { m.Drivers.Keystore.Driver = "" }, true},
 		{"missing blob driver", func(m *Manifest) { m.Drivers.Blob.Driver = "" }, true},
+		{"missing acme dns provider", func(m *Manifest) { m.ACME.DNSProvider = "" }, true},
 		{"missing state kind", func(m *Manifest) { m.State = m.State[1:] }, true},
 		{"duplicate state kind", func(m *Manifest) { m.State = append(m.State, m.State[0]) }, true},
 		{"missing checksum algorithm", func(m *Manifest) { m.ChecksumAlgorithm = "" }, true},

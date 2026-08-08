@@ -15,7 +15,7 @@ func testManifest() *bundle.Manifest {
 	}, bundle.DriverConfig{
 		Keystore: bundle.DriverRef{Driver: "file"},
 		Blob:     bundle.DriverRef{Driver: "local"},
-	})
+	}, bundle.ACMEConfig{DNSProvider: "manual"})
 }
 
 func TestRenderProducesOneServicePerImage(t *testing.T) {

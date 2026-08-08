@@ -30,6 +30,20 @@ type Driver interface {
 	Resolve(ctx context.Context, keyName string) (Secret, error)
 }
 
+// Writer is the optional write side of a Driver: it stores a piece of key
+// material under keyName, so it can later be read back through Resolve.
+// Only drivers with an obvious, unambiguous place to put a secret implement
+// it — FileDriver does, since its storage is just a directory on disk.
+// CommandDriver deliberately does not: KEY-002 defines it as reading the
+// stdout of an operator-specified command, a one-way interface with no
+// generic notion of "write a secret here." A caller (initialize.Run,
+// INIT-003) that needs to generate and persist key material checks for
+// Writer with a type assertion and fails clearly when the configured
+// driver doesn't implement it, rather than silently doing nothing.
+type Writer interface {
+	Store(ctx context.Context, keyName string, secret Secret) error
+}
+
 // New builds the Driver named by driverName from its non-secret config, as
 // carried by a bundle manifest's keystore DriverRef. "file" and "command"
 // are the shipped in-tree drivers (KEY-001, KEY-002); any other name is
