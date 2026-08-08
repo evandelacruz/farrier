@@ -37,16 +37,33 @@ func captureDatabase(ctx context.Context, dir string, exporter state.DatabaseExp
 	return Component{Kind: bundle.StateKindDatabase, Name: databaseFile, Path: databaseFile, Checksum: checksum}, nil
 }
 
-// captureGit lists every remote gitExporter exposes, archives each through
-// capturer, and writes it to dir/repos/<name>.tar, returning one Component
-// per repository in the same order state.GitExporter.Remotes returns (both
-// shipped exporters return that list sorted by name).
-func captureGit(ctx context.Context, dir string, gitExporter state.GitExporter, capturer GitCapturer) ([]Component, error) {
-	remotes, err := gitExporter.Remotes(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("backup: capture git: list repositories: %w", err)
+// captureGitRefs records every remote's ref state — HEAD, packed-refs,
+// refs/ — through capturer.Refs, writing each to
+// dir/repos/<name>.refs.tar. Run calls this while params.PushHold is
+// engaged (BKUP-002): it's the only part of git capture that has to happen
+// inside the hold, since it's the only part a push actually changes.
+func captureGitRefs(ctx context.Context, dir string, capturer GitCapturer, remotes []state.Remote) ([]Component, error) {
+	components := make([]Component, 0, len(remotes))
+	for _, remote := range remotes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		component, err := captureOneRepoRefs(ctx, dir, capturer, remote)
+		if err != nil {
+			return nil, err
+		}
+		components = append(components, component)
 	}
+	return components, nil
+}
 
+// captureGitObjects archives every remote's full object store through
+// capturer, and writes it to dir/repos/<name>.tar, returning one Component
+// per repository in remotes order. Run calls this only after params.PushHold
+// has released (BKUP-002): git objects are immutable and append-only, so a
+// push landing while this runs can only add objects, never disturb a ref
+// captureGitRefs already pinned during the hold.
+func captureGitObjects(ctx context.Context, dir string, capturer GitCapturer, remotes []state.Remote) ([]Component, error) {
 	components := make([]Component, 0, len(remotes))
 	for _, remote := range remotes {
 		if err := ctx.Err(); err != nil {
@@ -59,6 +76,21 @@ func captureGit(ctx context.Context, dir string, gitExporter state.GitExporter, 
 		components = append(components, component)
 	}
 	return components, nil
+}
+
+func captureOneRepoRefs(ctx context.Context, dir string, capturer GitCapturer, remote state.Remote) (Component, error) {
+	rc, err := capturer.Refs(ctx, remote)
+	if err != nil {
+		return Component{}, fmt.Errorf("backup: capture git: refs %s: %w", remote.Name, err)
+	}
+	defer rc.Close()
+
+	relPath := path.Join(reposDir, remote.Name+".refs.tar")
+	checksum, err := writeChecksummed(filepath.Join(dir, filepath.FromSlash(relPath)), rc)
+	if err != nil {
+		return Component{}, fmt.Errorf("backup: capture git: refs %s: %w", remote.Name, err)
+	}
+	return Component{Kind: bundle.StateKindGit, Name: remote.Name, Path: relPath, Checksum: checksum}, nil
 }
 
 func captureOneRepo(ctx context.Context, dir string, capturer GitCapturer, remote state.Remote) (Component, error) {

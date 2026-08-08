@@ -149,36 +149,52 @@ One age-encrypted archive per backup:
 ```
 snapshot-manifest.json    forgejo version, timestamp, per-component checksums
 db.sqlite                 SQLite online-backup output
-repos/                    bare repositories, tar-captured post push-hold
+repos/                    <name>.refs.tar (ref state, pinned during the hold) and <name>.tar (objects, tarred after release)
 blobs/                    LFS objects, CI artifacts, avatars (via blob adapter)
 keys/                     bundle key material
 ```
 
-- Capture order: hold pushes → SQLite online backup → tar bare repos → release pushes → blob capture → checksum → encrypt → verify → write.
+- Capture order: hold pushes → SQLite online backup → record every repository's refs → release pushes → tar objects → blob capture → checksum → encrypt → verify → write.
+  Git objects are immutable and append-only; only refs move. Recording each repository's ref state (`HEAD`, `packed-refs`, `refs/`) is a few KB and instant, so it's the only git work that has to happen inside the hold — the object tar, which scales with git data, happens afterward, outside it. A push landing during that tar can only add objects; it can never disturb a ref already pinned during the hold. This keeps the hold database-only: a second or two, regardless of how much git data the instance holds.
+- During the hold, Caddy rejects git pushes outright with an explicit message — it does not queue or buffer them, so a client mid-push gets a clean, immediate failure and retries. Reads and fetches are untouched throughout.
+- The hold releases on every exit path — success, error, panic, or a canceled context — so a capture that dies mid-hold can't leave pushes rejected until an operator notices. A configurable ceiling (low default) bounds both halves of that: it caps the capture, and the release that always follows gets its own timeout off the same ceiling, so a wedged release can't leave pushes rejected any more than a wedged capture can. It's a bug backstop, not a growth alarm, since nothing about it scales with instance size.
 - Verification at creation and at restore runs the same code path: manifest completeness, checksums, cross-consistency (DB repo/blob references resolve).
 
-## Snapshot capture (BKUP-001)
+## Snapshot capture (BKUP-001, BKUP-002)
 
 `internal/core/backup.Run` captures the four state kinds — via the
 `state.DatabaseExporter`, `state.GitExporter`, `state.BlobExporter`, and
 `state.KeyExporter` interfaces (STATE-001–004) — into a plain snapshot
 directory and writes `snapshot-manifest.json`: the Forgejo version, the
 capture timestamp, the checksum algorithm, and one checksummed `Component`
-per captured file (one database, one per repository, one per blob, one per
-key). Every step emits a CORE-002 job event.
+per captured file (one database, one per blob, one per key, and two per
+repository — refs and objects). Every step emits a CORE-002 job event.
 
 `state.GitExporter` only enumerates remotes (STATE-001); it doesn't stream
 repository content, since replication is ordinarily the operator's own
 mirroring tooling. `backup.Run` pairs it with a `backup.GitCapturer`
 (`LocalGitCapturer`, `SSHGitCapturer`) that tars each bare repository the
 exporter lists — the same Local/SSH split `state.GitExporter` and
-`state.DatabaseExporter` already use.
+`state.DatabaseExporter` already use. `GitCapturer.Refs` tars only the
+mutable ref paths (`HEAD`, `packed-refs`, `refs/`); `GitCapturer.Archive`,
+unchanged from BKUP-001, tars the full object store.
+
+`backup.PushHold` (`Engage`/`Release`) is the push-hold mechanism: `Run`
+engages it before the database backup and ref recording, and releases it
+before the object tar. `backup.CaddyPushHold` implements it by reloading
+the bundle's already-running Caddy — over the same `state.Runner` SSH
+seam `SSHDatabaseExporter` and `SSHGitCapturer` use — against a temporary
+Caddyfile (`caddy.RenderPushHoldCaddyfile`) that returns 503 for git's
+smart-HTTP push endpoints (`POST .../git-receive-pack`,
+`GET .../info/refs?service=git-receive-pack`), then reloads back to the
+original, untouched Caddyfile at `caddy.ConfigPath` to release.
+`backup.NoopPushHold` covers topologies with no proxy in front of git
+traffic (a local capture, a drill).
 
 `Run` produces the plain, unencrypted snapshot the rest of this section's
-pipeline builds on: the push-hold window around git capture (BKUP-002),
-encryption (BKUP-003), verification at creation (BKUP-004), and writing the
-result to an S3-compatible URI or filesystem path (BKUP-005) are separate,
-not yet implemented.
+pipeline builds on: encryption (BKUP-003), verification at creation
+(BKUP-004), and writing the result to an S3-compatible URI or filesystem
+path (BKUP-005) are separate, not yet implemented.
 
 ## Driver interfaces
 
@@ -353,7 +369,7 @@ Whether run singly or as a batch, a failed migration leaves no partially-registe
 
 - **RTO:** promote completes — snapshot pulled, restored, verified, services live, DNS flipped — within 10 minutes on the reference instance (10 GB state, 100 Mbps between backup target and new host).
 - **RPO:** equals backup cadence; the golden-path cron documents hourly.
-- **Backup impact:** push-hold under 10 seconds on the reference instance; reads uninterrupted.
+- **Backup impact:** push-hold is database-only (SQLite online backup plus recording every repository's ref state) and stays a second or two regardless of git data size, since the object tar runs outside it; reads and fetches are uninterrupted throughout.
 - **Forge host floor:** 2 vCPU, 2 GB RAM, Linux x86_64 or arm64, Docker ≥ 24.
 - **Control plane:** macOS and Linux; single static binary per platform.
 - **DNS TTL:** 60 seconds on all bundle records.

@@ -123,10 +123,12 @@ The CLI answers one question at restore and promote time: is this state a valid,
 
 ## Backups
 
+Backups are operator-initiated: Farrier ships no scheduler, and nothing runs one on the operator's behalf. The golden path's cron entry is a line the operator adds, not a default the system enables. A snapshot is the portability mechanism restore, promote, upgrade, and drill all consume — not a background redundancy job running on its own cadence.
+
 The CLI produces coordinated, verified, encrypted snapshots of a live instance.
 
 - **Database:** captured through SQLite's online-backup API — consistent with zero pause.
-- **Git data:** `backup` holds incoming pushes for the few seconds of capture; reads and fetches stay live. The push-pause closes the window where a push could land between the database capture and the git capture.
+- **Git data:** `backup` holds incoming pushes only for the seconds the database capture takes, closing the window where a push could land between the database capture and the git data it references. Git objects are immutable and append-only, so tarring them can happen after the hold releases, with no consistency loss — only pinning each repository's ref state has to happen inside the hold, and that's a few kilobytes, not the repository itself. The hold is database-only and does not grow with git data. During the hold, a push is rejected outright with an explicit message, never queued or buffered — the client sees a clean failure and retries. Reads and fetches stay live throughout.
 - **Encryption:** every snapshot is age-encrypted before it leaves the host.
 - **Verification:** a backup that fails verification fails loudly at backup time.
 
