@@ -18,11 +18,11 @@
 // alongside it. A snapshot that fails verification makes Run return an
 // error naming every defect found — the same fails-loudly-at-backup-time
 // guarantee spec.md "Verification" describes — rather than a silent,
-// unusable snapshot on disk. Encryption (BKUP-003) and writing the result
-// to an S3-compatible URI or filesystem path (BKUP-005) are still separate
-// requirements layered on top of what Run produces here: Run's output
-// today is the plain, unencrypted, verified snapshot the rest of that
-// pipeline builds on.
+// unusable snapshot on disk. Encrypt (BKUP-003) turns Run's verified,
+// unencrypted snapshot directory into the single age-encrypted archive
+// that actually leaves the host. Writing the result to an S3-compatible
+// URI or filesystem path (BKUP-005) is still a separate requirement
+// layered on top of what Run and Encrypt produce here.
 package backup
 
 import (

@@ -192,10 +192,29 @@ original, untouched Caddyfile at `caddy.ConfigPath` to release.
 traffic (a local capture, a drill).
 
 `Run` also verifies the snapshot it just captured before returning (BKUP-004,
-below). Encryption (BKUP-003) and writing the result to an S3-compatible URI
-or filesystem path (BKUP-005) are still separate, not yet implemented —
-`Run`'s output today is the plain, unencrypted, verified snapshot the rest
-of this section's pipeline builds on.
+below), and `Encrypt` (BKUP-003, below) turns that verified snapshot into the
+single age-encrypted archive that actually leaves the host. Writing the
+result to an S3-compatible URI or filesystem path (BKUP-005) is the one
+piece still separate and not yet implemented.
+
+## Snapshot encryption (BKUP-003)
+
+`internal/core/backup.Encrypt` turns the plain directory `Run` wrote into
+the one age-encrypted archive per backup this section's "Snapshot format"
+describes: it tars every file under the snapshot directory straight into an
+`age.Encrypt` writer — the plaintext tar is never staged as a second copy on
+disk — and writes the result to a caller-supplied destination path, so
+nothing captured leaves the host unencrypted. It takes an `age.Recipient`,
+not the operator's identity: encryption never needs the private half, only
+its recipient's public key, which any holder of the identity (`filippo.io/age`'s
+`X25519Identity.Recipient()`) can derive from `initialize.KeyAgeBackupKey`
+without exposing it. `Encrypt` emits its own CORE-002 `StepEncrypt` event on
+the job it's given but does not end the job — like `forge.Bootstrap` and
+`forge.ReconcileCI`, it is a step a future orchestrator composes alongside
+`Run` (and, once it lands, BKUP-005's write) under one job whose terminal
+event that orchestrator owns. On failure it removes any partial file it left
+at the destination path, so a truncated archive is never mistaken for a real
+backup.
 
 ## Snapshot verification (BKUP-004)
 
@@ -231,10 +250,11 @@ everything wrong instead of one defect per rerun:
 (`StepVerify`) and fails the job — naming every defect found — if it
 returns an error. This is the fails-loudly-at-backup-time guarantee
 spec.md "Verification" describes, running today against the plain snapshot
-since encryption (BKUP-003) doesn't exist yet. The capture order above
-ultimately places `verify` after `encrypt`: once BKUP-003 lands, its
-pipeline change must move the `Verify` call to run against the decrypted
-form of what's about to be written, not leave it checking the pre-encryption
+since `Run` doesn't call `Encrypt` itself — encryption (above) is still a
+separate step a future orchestrator composes alongside `Run`. The capture
+order above ultimately places `verify` before `encrypt`: once that
+orchestration lands, it must run `Verify` against the decrypted form of
+what's about to be written, not leave it checking the pre-encryption
 snapshot alone.
 
 ## Driver interfaces
