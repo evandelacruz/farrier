@@ -89,20 +89,12 @@ func runUp(args []string) int {
 	defer client.Close()
 
 	job := events.NewJob()
-	sub, cancel := job.Subscribe()
-	defer cancel()
+	err = runJob(job, func() error {
+		return deploy.Up(ctx, job, client, b, deploy.Options{RemoteDir: *remoteDir})
+	})
 
-	done := make(chan struct{})
-	go func() {
-		printEvents(sub)
-		close(done)
-	}()
-
-	deployErr := deploy.Up(ctx, job, client, b, deploy.Options{RemoteDir: *remoteDir})
-	<-done
-
-	if deployErr != nil {
-		fmt.Fprintf(os.Stderr, "farrier: up: %v\n", deployErr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: up: %v\n", err)
 		return 1
 	}
 	return 0
