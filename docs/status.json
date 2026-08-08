@@ -65,7 +65,7 @@
     "DRIL-001": "open",
     "DRIL-002": "open",
     "DRIL-003": "open",
-    "STAT-001": "open",
+    "STAT-001": {"state": "partial", "remaining": "last-backup age reporting: needs the snapshot listing/naming convention that BKUP-001..005 (not yet landed) will define for its destination, plus a timestamp on blob.Object so status can read it without inventing that convention ahead of backup"},
     "STAT-002": "open",
     "API-001": "open",
     "API-002": "open",
