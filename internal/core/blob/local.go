@@ -57,7 +57,7 @@ func (a *LocalAdapter) List(ctx context.Context, prefix string) ([]Object, error
 		if err != nil {
 			return err
 		}
-		objects = append(objects, Object{Key: key, Size: info.Size()})
+		objects = append(objects, Object{Key: key, Size: info.Size(), Modified: info.ModTime()})
 		return nil
 	})
 	if err != nil {

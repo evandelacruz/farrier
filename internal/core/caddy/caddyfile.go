@@ -52,3 +52,54 @@ func RenderCaddyfile(domain, upstream string) ([]byte, error) {
 	fmt.Fprintf(&b, "}\n")
 	return []byte(b.String()), nil
 }
+
+// RenderPushHoldCaddyfile renders the same TLS-terminating,
+// reverse-proxying Caddyfile RenderCaddyfile does, with two routes ahead of
+// the proxy that reject git's smart-HTTP push endpoints —
+// `POST .../git-receive-pack` and `GET .../info/refs?service=git-receive-pack`
+// — with a 503 and message, instead of forwarding them on. Every other
+// request, including fetches and clones, reaches upstream unchanged
+// (BKUP-002, spec.md "Backups": reads and fetches stay live; only pushes
+// are held).
+//
+// backup.CaddyPushHold reloads Caddy against this rendered config for the
+// duration of the hold, then reloads back to the original Caddyfile at
+// ConfigPath to release it — the reject is a clean, immediate failure, not
+// a queued or buffered request, so a client mid-push simply gets an error
+// and retries.
+func RenderPushHoldCaddyfile(domain, upstream, message string) ([]byte, error) {
+	domain = strings.TrimSpace(domain)
+	upstream = strings.TrimSpace(upstream)
+	message = strings.TrimSpace(message)
+	if domain == "" {
+		return nil, fmt.Errorf("caddy: domain is required")
+	}
+	if upstream == "" {
+		return nil, fmt.Errorf("caddy: upstream is required")
+	}
+	if message == "" {
+		return nil, fmt.Errorf("caddy: message is required")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s {\n", domain)
+	fmt.Fprintf(&b, "\ttls %s %s\n", CertPath, KeyPath)
+	fmt.Fprintf(&b, "\t@git_push {\n")
+	fmt.Fprintf(&b, "\t\tmethod POST\n")
+	fmt.Fprintf(&b, "\t\tpath */git-receive-pack\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\t@git_push_refs {\n")
+	fmt.Fprintf(&b, "\t\tmethod GET\n")
+	fmt.Fprintf(&b, "\t\tpath */info/refs\n")
+	fmt.Fprintf(&b, "\t\tquery service=git-receive-pack\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\thandle @git_push {\n")
+	fmt.Fprintf(&b, "\t\trespond %q 503\n", message)
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\thandle @git_push_refs {\n")
+	fmt.Fprintf(&b, "\t\trespond %q 503\n", message)
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\treverse_proxy %s\n", upstream)
+	fmt.Fprintf(&b, "}\n")
+	return []byte(b.String()), nil
+}

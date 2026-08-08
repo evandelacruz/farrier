@@ -43,7 +43,10 @@ type execListResult struct {
 }
 
 // List invokes the "list" method and decodes its result directly, since
-// object metadata is small enough for the JSON envelope.
+// object metadata is small enough for the JSON envelope. Each returned
+// object carries a "modified" field (Object.Modified) alongside "key" and
+// "size" — a driver executable that predates the field simply omits it,
+// which decodes as the zero time, meaning unknown rather than very old.
 func (a *ExecAdapter) List(ctx context.Context, prefix string) ([]Object, error) {
 	var res execListResult
 	if err := a.Invoker.Invoke(ctx, "list", execListParams{Prefix: prefix}, &res); err != nil {

@@ -7,12 +7,15 @@ import (
 	"crypto/rand"
 	"fmt"
 	"path"
+	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/forge"
+	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
+	"github.com/evandelacruz/farrier/internal/core/state"
 )
 
 // caddyConfigDir is the directory under RemoteDir Up writes Caddy's
@@ -31,19 +34,23 @@ const (
 // ("usable in a browser immediately").
 const httpsPort = "443"
 
-// CertIssuer issues a TLS certificate for cfg.Domain via ACME DNS-01,
-// letting tests substitute a fake for acme.Issue's real ACME server and DNS
-// provider calls. Satisfied by acmeCertIssuer, the production default.
+// CertIssuer returns a TLS certificate for cfg.Domain valid at now: existing
+// unchanged if it isn't yet due for renewal, or freshly issued via ACME
+// DNS-01 otherwise (renewed reports which). Lets tests substitute a fake
+// for acme.EnsureValid's real ACME server and DNS provider calls. Satisfied
+// by acmeCertIssuer, the production default.
 type CertIssuer interface {
-	Issue(cfg acme.Config) (*acme.Certificate, error)
+	EnsureValid(cfg acme.Config, existing *acme.Certificate, now time.Time) (cert *acme.Certificate, renewed bool, err error)
 }
 
-// acmeCertIssuer is the production CertIssuer: it calls acme.Issue directly
-// (ACME-001), the same entry point initialize's zone-control proof uses.
+// acmeCertIssuer is the production CertIssuer: it calls acme.EnsureValid
+// directly (ACME-002), the renewal-aware entry point that only reaches the
+// ACME server — acme.Issue, the same one initialize's zone-control proof
+// uses — when existing is nil or actually due for renewal.
 type acmeCertIssuer struct{}
 
-func (acmeCertIssuer) Issue(cfg acme.Config) (*acme.Certificate, error) {
-	return acme.Issue(cfg)
+func (acmeCertIssuer) EnsureValid(cfg acme.Config, existing *acme.Certificate, now time.Time) (*acme.Certificate, bool, error) {
+	return acme.EnsureValid(cfg, existing, now)
 }
 
 func issuerOrDefault(i CertIssuer) CertIssuer {
@@ -53,42 +60,53 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 	return acmeCertIssuer{}
 }
 
-// configureTLS issues a certificate for b's domain via ACME DNS-01, using
-// the DNS-01 provider name b.Manifest.ACME carries from init's own
-// zone-control proof (INIT-002), renders Caddy's config, ships both to
-// host, and returns compose with Caddy's bind mounts and its published
-// HTTPS port added (UP-002).
+// configureTLS resolves the certificate init already persisted as bundle
+// key material (INIT-003, state.KeyTLSCertificate/state.KeyTLSPrivateKey) and hands it
+// to the renewal-aware acme.EnsureValid (ACME-002, via issuer) rather than
+// issuing a fresh certificate unconditionally: an ordinary re-run reuses
+// the persisted certificate untouched, so it never reaches the ACME server
+// and never risks Let's Encrypt's duplicate-certificate rate limit
+// (UP-003). It renders Caddy's config using whatever certificate results,
+// ships both to host, and returns compose with Caddy's bind mounts and its
+// published HTTPS port added (UP-002). renewed reports whether issuer
+// actually issued a fresh certificate — true only on the rare renewal-due
+// branch, since the fresh certificate is used for this deploy but not
+// persisted back to the keystore (that write path is ACME-002's gap, not
+// this one's).
 //
-// The ACME account key is generated fresh for this issuance, the same way
-// initialize's zone-control proof generates one for its own — registering
-// an account carries none of Let's Encrypt's issuance rate limits, so that
-// part is harmless to repeat. The certificate itself is also reissued on
-// every call, though: init already persists one as durable bundle key
-// material (INIT-003) and acme.EnsureValid (ACME-002) exists to decide
-// against it whether a new one is actually due, but there is no path yet
-// to persist a renewed certificate back to the keystore (see tech-spec.md
-// "Known gap" under Deployment) — UP-003's re-run story is partial until
-// that lands.
-func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte, issuer CertIssuer) (map[string][]byte, error) {
-	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+// The ACME account key is generated fresh whenever issuance does happen,
+// the same way initialize's zone-control proof generates one for its own
+// — registering an account carries none of Let's Encrypt's issuance rate
+// limits, so that part is harmless to repeat.
+func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte, issuer CertIssuer) (map[string][]byte, bool, error) {
+	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
-		return nil, fmt.Errorf("generate acme account key: %w", err)
+		return nil, false, fmt.Errorf("keystore driver: %w", err)
+	}
+	existing, err := resolvePersistedCertificate(ctx, driver, b.Manifest.Domain)
+	if err != nil {
+		return nil, false, err
 	}
 
-	cert, err := issuer.Issue(acme.Config{
+	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, false, fmt.Errorf("generate acme account key: %w", err)
+	}
+
+	cert, renewed, err := issuer.EnsureValid(acme.Config{
 		Domain:      b.Manifest.Domain,
 		Email:       b.Manifest.ACME.Email,
 		AccountKey:  accountKey,
 		DNSProvider: b.Manifest.ACME.DNSProvider,
-	})
+	}, existing, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("issue certificate for %s: %w", b.Manifest.Domain, err)
+		return nil, false, fmt.Errorf("issue certificate for %s: %w", b.Manifest.Domain, err)
 	}
 
 	upstream := fmt.Sprintf("%s:%d", forge.Service, forge.HTTPPort)
 	caddyfile, err := caddy.RenderCaddyfile(b.Manifest.Domain, upstream)
 	if err != nil {
-		return nil, fmt.Errorf("render caddyfile: %w", err)
+		return nil, false, fmt.Errorf("render caddyfile: %w", err)
 	}
 
 	caddyfilePath := path.Join(remoteDir, caddyConfigDir, caddyfileFilename)
@@ -96,30 +114,53 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 	keyPath := path.Join(remoteDir, caddyConfigDir, keyFilename)
 
 	if err := host.WriteFile(ctx, caddyfilePath, caddyfile, 0o644); err != nil {
-		return nil, fmt.Errorf("ship caddyfile: %w", err)
+		return nil, false, fmt.Errorf("ship caddyfile: %w", err)
 	}
 	if err := host.WriteFile(ctx, certPath, cert.Certificate, 0o644); err != nil {
-		return nil, fmt.Errorf("ship certificate: %w", err)
+		return nil, false, fmt.Errorf("ship certificate: %w", err)
 	}
 	if err := host.WriteFile(ctx, keyPath, cert.PrivateKey, 0o600); err != nil {
-		return nil, fmt.Errorf("ship private key: %w", err)
+		return nil, false, fmt.Errorf("ship private key: %w", err)
 	}
 
 	compose, err = orchestrate.WithBindMount(compose, caddy.Service, caddyfilePath, caddy.ConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("mount caddyfile: %w", err)
+		return nil, false, fmt.Errorf("mount caddyfile: %w", err)
 	}
 	compose, err = orchestrate.WithBindMount(compose, caddy.Service, certPath, caddy.CertPath)
 	if err != nil {
-		return nil, fmt.Errorf("mount certificate: %w", err)
+		return nil, false, fmt.Errorf("mount certificate: %w", err)
 	}
 	compose, err = orchestrate.WithBindMount(compose, caddy.Service, keyPath, caddy.KeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("mount private key: %w", err)
+		return nil, false, fmt.Errorf("mount private key: %w", err)
 	}
 	compose, err = orchestrate.WithPorts(compose, caddy.Service, httpsPort, httpsPort)
 	if err != nil {
-		return nil, fmt.Errorf("publish https port: %w", err)
+		return nil, false, fmt.Errorf("publish https port: %w", err)
 	}
-	return compose, nil
+	return compose, renewed, nil
+}
+
+// resolvePersistedCertificate resolves the TLS certificate and private key
+// init persisted for domain (INIT-003) and parses them into an
+// acme.Certificate, so EnsureValid can decide whether it's still due for
+// renewal. Every bundle carries this key material from init onward, so a
+// resolve failure here is a broken keystore, not an expected first-run
+// case — it fails the same way configureForge does for the three Forgejo
+// secrets, rather than treating it as "nothing persisted yet."
+func resolvePersistedCertificate(ctx context.Context, driver keystore.Driver, domain string) (*acme.Certificate, error) {
+	certSecret, err := driver.Resolve(ctx, state.KeyTLSCertificate)
+	if err != nil {
+		return nil, fmt.Errorf("resolve persisted %s: %w", state.KeyTLSCertificate, err)
+	}
+	keySecret, err := driver.Resolve(ctx, state.KeyTLSPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("resolve persisted %s: %w", state.KeyTLSPrivateKey, err)
+	}
+	cert, err := acme.ParseCertificate(domain, []byte(certSecret.Reveal()), []byte(keySecret.Reveal()))
+	if err != nil {
+		return nil, fmt.Errorf("parse persisted certificate: %w", err)
+	}
+	return cert, nil
 }

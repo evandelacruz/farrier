@@ -76,11 +76,13 @@ type DiskStatus struct {
 	AvailableBytes uint64
 }
 
-// Report is STAT-001's instance-health snapshot.
+// Report is STAT-001's instance-health snapshot, plus STAT-002's
+// replication lag.
 type Report struct {
 	Services []ServiceStatus
 	TLS      TLSStatus
 	Disk     DiskStatus
+	Lag      Lag
 }
 
 // Runner executes one command against the forge host, returning its
@@ -113,8 +115,16 @@ type Options struct {
 	// DiskPath overrides which filesystem path DiskStatus reports on.
 	// Defaults to DefaultDiskPath.
 	DiskPath string
-	// Now overrides the clock TLSStatus is computed against. Defaults to
-	// time.Now.
+	// Destination is the golden-path backup destination to report
+	// replication lag against (STAT-002). Nil — the only value there is to
+	// pass today, since no landed requirement persists a bundle-level
+	// destination yet — yields Lag.State == LagUnmeasured. Once `backup
+	// --to` (BKUP-005) lands and persists one, the caller resolves it into
+	// a state.BlobExporter and passes it here; lag reporting lights up with
+	// no further change to Check.
+	Destination state.BlobExporter
+	// Now overrides the clock TLSStatus and ReplicationLag are computed
+	// against. Defaults to time.Now.
 	Now func() time.Time
 }
 
@@ -156,7 +166,12 @@ func Check(ctx context.Context, opts Options) (Report, error) {
 		return Report{}, fmt.Errorf("status: disk: %w", err)
 	}
 
-	return Report{Services: services, TLS: tls, Disk: disk}, nil
+	lag, err := ReplicationLag(ctx, opts.Destination, now())
+	if err != nil {
+		return Report{}, fmt.Errorf("status: replication lag: %w", err)
+	}
+
+	return Report{Services: services, TLS: tls, Disk: disk, Lag: lag}, nil
 }
 
 // composePSEntry is the subset of `docker compose ps --format json`'s

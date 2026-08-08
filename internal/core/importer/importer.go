@@ -1,5 +1,5 @@
-// Package importer implements `import` (IMPT-001, IMPT-002): bringing a
-// repository in from GitHub or GitLab onto a Farrier instance.
+// Package importer implements `import` (IMPT-001, IMPT-002, IMPT-003):
+// bringing repositories in from GitHub or GitLab onto a Farrier instance.
 //
 // Per spec.md "Importing repositories", import wraps Forgejo's built-in
 // migration API rather than reimplementing git transport: code, full
@@ -9,6 +9,13 @@
 // pull-request history is deliberately left on the source forge — that
 // call sets issues/pull_requests/wiki/releases to false unconditionally,
 // matching the settled design rather than exposing it as a choice.
+//
+// Run migrates one repository; RunBatch migrates many against one target
+// in a single job, reporting each repository's own success or failure
+// (IMPT-003). Either way, a migration that fails leaves no
+// partially-registered repository behind: migrate's failure paths attempt
+// to delete whatever Forgejo may have registered on the target before the
+// failure.
 package importer
 
 import (
@@ -93,13 +100,27 @@ type Result struct {
 // (CORE-002) and owning the job's terminal event — job.Succeeded or
 // job.Failed — the way deploy.Up owns it for `up`.
 func Run(ctx context.Context, job *events.Job, opts Options) (Result, error) {
-	service, repoName, err := resolve(opts)
+	result, err := runOne(ctx, job, opts, StepMigrate)
 	if err != nil {
 		job.Failed(err.Error())
+		return Result{}, err
+	}
+	job.Succeeded(successDetail(opts, result))
+	return result, nil
+}
+
+// runOne migrates one repository and emits its Started/Succeeded|Failed
+// events scoped to step, but never a job-terminal (empty-step) event —
+// Run and RunBatch each own the job's single terminal event and call this
+// once per repository they migrate.
+func runOne(ctx context.Context, job *events.Job, opts Options, step string) (Result, error) {
+	service, repoName, err := resolve(opts)
+	if err != nil {
+		job.Emit(step, events.StateFailed, err.Error())
 		return Result{}, fmt.Errorf("importer: %w", err)
 	}
 
-	job.Started(StepMigrate, fmt.Sprintf(
+	job.Started(step, fmt.Sprintf(
 		"migrating %s from %s to %s/%s (mirror=%t)",
 		opts.SourceURL, service, opts.RepoOwner, repoName, opts.Mirror,
 	))
@@ -107,18 +128,23 @@ func Run(ctx context.Context, job *events.Job, opts Options) (Result, error) {
 	result, err := migrate(ctx, opts, service, repoName)
 	if err != nil {
 		detail := fmt.Sprintf("migrate %s: %s", opts.SourceURL, err)
-		job.Emit(StepMigrate, events.StateFailed, detail)
-		job.Failed(detail)
+		job.Emit(step, events.StateFailed, detail)
 		return Result{}, fmt.Errorf("importer: migrate %s: %w", opts.SourceURL, err)
 	}
 
+	job.Emit(step, events.StateSucceeded, successDetail(opts, result))
+	return result, nil
+}
+
+// successDetail is the detail string for one repository's successful
+// migration, shared by Run's job-terminal event and runOne's per-step
+// event.
+func successDetail(opts Options, result Result) string {
 	detail := fmt.Sprintf("imported %s as %s", opts.SourceURL, result.FullName)
 	if opts.Mirror {
 		detail += " (mirror sync enabled)"
 	}
-	job.Emit(StepMigrate, events.StateSucceeded, detail)
-	job.Succeeded(detail)
-	return result, nil
+	return detail
 }
 
 // resolve validates opts and fills in Service/RepoName defaults, without
@@ -258,23 +284,27 @@ func migrate(ctx context.Context, opts Options, service, repoName string) (Resul
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return Result{}, fmt.Errorf("call target API: %w", err)
+		return Result{}, withCleanup(opts, repoName, fmt.Errorf("call target API: %w", err))
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Result{}, fmt.Errorf("read response: %w", err)
+		return Result{}, withCleanup(opts, repoName, fmt.Errorf("read response: %w", err))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr apiError
 		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Message != "" {
-			return Result{}, fmt.Errorf("target API returned %d: %s", resp.StatusCode, apiErr.Message)
+			return Result{}, withCleanup(opts, repoName, fmt.Errorf("target API returned %d: %s", resp.StatusCode, apiErr.Message))
 		}
-		return Result{}, fmt.Errorf("target API returned %d: %s", resp.StatusCode, trimBody(respBody))
+		return Result{}, withCleanup(opts, repoName, fmt.Errorf("target API returned %d: %s", resp.StatusCode, trimBody(respBody)))
 	}
 
+	// A 2xx response means Forgejo genuinely created the repository — a
+	// decode failure past this point is a client-side parsing bug, not a
+	// partial registration, so no cleanup: deleting a successfully
+	// created repository here would destroy real, complete work.
 	var decoded migrateResponse
 	if err := json.Unmarshal(respBody, &decoded); err != nil {
 		return Result{}, fmt.Errorf("decode response: %w", err)
@@ -295,4 +325,53 @@ func trimBody(body []byte) string {
 		return s[:max] + "..."
 	}
 	return s
+}
+
+// withCleanup attempts to delete any repository Forgejo may have
+// registered on the target before migrateErr occurred — IMPT-003's "no
+// partially-registered repository on failure". It runs best-effort: a
+// cleanup failure is reported alongside, never in place of, the original
+// migration error, and a 404 (nothing was ever registered) is not an
+// error at all.
+func withCleanup(opts Options, repoName string, migrateErr error) error {
+	if cleanupErr := deleteRepo(opts, repoName); cleanupErr != nil {
+		return fmt.Errorf("%w (cleanup also failed, %s/%s may need manual removal from the target: %s)", migrateErr, opts.RepoOwner, repoName, cleanupErr)
+	}
+	return migrateErr
+}
+
+// deleteRepo removes owner/repoName from the target instance. It runs on
+// its own detached, timed-out context rather than the caller's — the
+// failure that triggered cleanup may itself be that context expiring or
+// being canceled, and cleanup must still get a chance to run.
+func deleteRepo(opts Options, repoName string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	endpoint := strings.TrimRight(opts.TargetBaseURL, "/") + "/api/v1/repos/" + url.PathEscape(opts.RepoOwner) + "/" + url.PathEscape(repoName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build cleanup request: %w", err)
+	}
+	req.Header.Set("Authorization", "token "+opts.TargetToken.Reveal())
+
+	client := opts.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("call target API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("target API returned %d: %s", resp.StatusCode, trimBody(body))
+	}
+	return nil
 }

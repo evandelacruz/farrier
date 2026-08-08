@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -19,22 +20,38 @@ import (
 )
 
 // fakeCertIssuer satisfies CertIssuer without a real ACME server or DNS
-// provider, so tests can exercise Up's TLS-provisioning step deterministically.
+// provider, so tests can exercise Up's TLS-provisioning step
+// deterministically. By default it always issues (calls is appended and a
+// fresh fake certificate returned), matching what a caller with no
+// persisted certificate would see. Setting reuse makes it instead mimic
+// acme.EnsureValid's short-circuit: existing is returned unchanged and
+// calls is left untouched, so tests can assert nothing reached "the ACME
+// server" when a persisted certificate is still fresh (UP-003).
 type fakeCertIssuer struct {
-	calls []acme.Config
-	err   error
+	calls        []acme.Config
+	existingSeen []*acme.Certificate
+	err          error
+	reuse        bool
 }
 
-func (f *fakeCertIssuer) Issue(cfg acme.Config) (*acme.Certificate, error) {
+func (f *fakeCertIssuer) EnsureValid(cfg acme.Config, existing *acme.Certificate, now time.Time) (*acme.Certificate, bool, error) {
+	f.existingSeen = append(f.existingSeen, existing)
+	if f.reuse {
+		if existing == nil {
+			return nil, false, errors.New("fakeCertIssuer: reuse requested but no existing certificate")
+		}
+		return existing, false, nil
+	}
+
 	f.calls = append(f.calls, cfg)
 	if f.err != nil {
-		return nil, f.err
+		return nil, false, f.err
 	}
 	return &acme.Certificate{
 		Domain:      cfg.Domain,
 		Certificate: []byte("fake-cert-pem"),
 		PrivateKey:  []byte("fake-key-pem"),
-	}, nil
+	}, true, nil
 }
 
 // testOptions is Options with a fakeCertIssuer wired in, for tests whose
@@ -174,6 +191,12 @@ func TestUpSucceeds(t *testing.T) {
 	if issuer.calls[0].AccountKey == nil {
 		t.Error("issue call carries no account key")
 	}
+	if len(issuer.existingSeen) != 1 || issuer.existingSeen[0] == nil {
+		t.Fatalf("existingSeen = %+v, want the persisted testdata certificate resolved and passed through", issuer.existingSeen)
+	}
+	if issuer.existingSeen[0].NotAfter.IsZero() {
+		t.Error("existingSeen[0] carries a zero NotAfter — persisted certificate was not parsed")
+	}
 
 	caddyfile, ok := host.files["/opt/farrier/caddy/Caddyfile"]
 	if !ok {
@@ -268,6 +291,75 @@ func TestUpFailsWhenCertIssuanceFails(t *testing.T) {
 		if strings.Contains(cmd, "docker compose up -d") {
 			t.Error("Up ran docker compose up after certificate issuance failed")
 		}
+	}
+}
+
+// TestUpReusesPersistedCertificateWithoutIssuing exercises the core of
+// UP-003's TLS fix: re-running Up against a host with a persisted
+// certificate that isn't due for renewal must not reach the ACME server at
+// all, or a handful of re-runs would trip Let's Encrypt's
+// duplicate-certificate rate limit.
+func TestUpReusesPersistedCertificateWithoutIssuing(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+	issuer := &fakeCertIssuer{reuse: true}
+
+	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	if len(issuer.calls) != 0 {
+		t.Errorf("cert issuer calls = %d, want 0 — a fresh persisted certificate must not be reissued", len(issuer.calls))
+	}
+
+	persistedCert, err := os.ReadFile("testdata/keys/tls_certificate")
+	if err != nil {
+		t.Fatalf("read testdata certificate: %v", err)
+	}
+	if host.files["/opt/farrier/caddy/tls.crt"] != string(persistedCert) {
+		t.Error("shipped certificate does not match the persisted testdata certificate")
+	}
+
+	evs := drain(job)
+	var sawReuse bool
+	for _, ev := range evs {
+		if ev.Step == StepConfigureTLS && ev.State == events.StateSucceeded && strings.Contains(ev.Detail, "reused") {
+			sawReuse = true
+		}
+	}
+	if !sawReuse {
+		t.Errorf("no configure-tls success event reporting reuse, events: %+v", evs)
+	}
+}
+
+// TestUpReportsRenewedCertificateNotPersisted exercises the rare branch
+// where the persisted certificate is due for renewal: Up must still
+// succeed, using the freshly issued certificate for this deploy, and must
+// tell the operator through the event stream that the renewal was not
+// persisted back to the keystore (persisting it is ACME-002's gap, not
+// UP-003's).
+func TestUpReportsRenewedCertificateNotPersisted(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+	issuer := &fakeCertIssuer{}
+
+	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	if host.files["/opt/farrier/caddy/tls.crt"] != "fake-cert-pem" {
+		t.Error("Up did not ship the freshly issued certificate for this deploy")
+	}
+
+	evs := drain(job)
+	var sawNotPersisted bool
+	for _, ev := range evs {
+		if ev.Step == StepConfigureTLS && ev.State == events.StateSucceeded && strings.Contains(ev.Detail, "not persisted") {
+			sawNotPersisted = true
+		}
+	}
+	if !sawNotPersisted {
+		t.Errorf("no configure-tls success event reporting the renewal was not persisted, events: %+v", evs)
 	}
 }
 

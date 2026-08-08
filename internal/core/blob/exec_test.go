@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeInvoker plays the part of a driver executable in-process: it
@@ -138,6 +139,49 @@ func TestExecList(t *testing.T) {
 	want := []string{"lfs/a", "lfs/b"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("List(%q) = %v, want %v", "lfs/", got, want)
+	}
+}
+
+// rawInvoker returns a fixed, hand-written JSON response for every call —
+// a stand-in for a third-party driver executable's literal stdout, to
+// exercise how ExecAdapter.List decodes a "modified" field a real
+// (non-Go) driver would produce.
+type rawInvoker struct {
+	response string
+}
+
+func (r rawInvoker) Invoke(ctx context.Context, method string, params, result any) error {
+	return json.Unmarshal([]byte(r.response), result)
+}
+
+func TestExecListDecodesLowercaseModifiedField(t *testing.T) {
+	a := NewExec(rawInvoker{response: `{"objects":[{"key":"a","size":3,"modified":"2024-01-02T03:04:05Z"}]}`})
+
+	objects, err := a.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(objects) != 1 {
+		t.Fatalf("List returned %d objects, want 1", len(objects))
+	}
+	want, _ := time.Parse(time.RFC3339, "2024-01-02T03:04:05Z")
+	if !objects[0].Modified.Equal(want) {
+		t.Fatalf("Modified = %v, want %v", objects[0].Modified, want)
+	}
+}
+
+func TestExecListOmittedModifiedFieldIsZero(t *testing.T) {
+	a := NewExec(rawInvoker{response: `{"objects":[{"key":"a","size":3}]}`})
+
+	objects, err := a.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(objects) != 1 {
+		t.Fatalf("List returned %d objects, want 1", len(objects))
+	}
+	if !objects[0].Modified.IsZero() {
+		t.Fatalf("Modified = %v, want zero value (older driver, field omitted)", objects[0].Modified)
 	}
 }
 

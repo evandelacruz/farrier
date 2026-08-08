@@ -27,6 +27,7 @@ internal/core/        the engine — all logic lives here
   blob/               blob adapter interface + shipped adapters
   registry/           resolves a container image reference to its digest (init's image pinning)
   events/             the job/progress event model
+  status/             `status` command logic: instance health, last-backup age, replication lag
 internal/api/         loopback HTTP server, RPC endpoints, SSE
 web/                  dashboard (embedded into the binary via go:embed)
 docs/                 this documentation
@@ -148,36 +149,52 @@ One age-encrypted archive per backup:
 ```
 snapshot-manifest.json    forgejo version, timestamp, per-component checksums
 db.sqlite                 SQLite online-backup output
-repos/                    bare repositories, tar-captured post push-hold
+repos/                    <name>.refs.tar (ref state, pinned during the hold) and <name>.tar (objects, tarred after release)
 blobs/                    LFS objects, CI artifacts, avatars (via blob adapter)
 keys/                     bundle key material
 ```
 
-- Capture order: hold pushes → SQLite online backup → tar bare repos → release pushes → blob capture → checksum → encrypt → verify → write.
+- Capture order: hold pushes → SQLite online backup → record every repository's refs → release pushes → tar objects → blob capture → checksum → encrypt → verify → write.
+  Git objects are immutable and append-only; only refs move. Recording each repository's ref state (`HEAD`, `packed-refs`, `refs/`) is a few KB and instant, so it's the only git work that has to happen inside the hold — the object tar, which scales with git data, happens afterward, outside it. A push landing during that tar can only add objects; it can never disturb a ref already pinned during the hold. This keeps the hold database-only: a second or two, regardless of how much git data the instance holds.
+- During the hold, Caddy rejects git pushes outright with an explicit message — it does not queue or buffer them, so a client mid-push gets a clean, immediate failure and retries. Reads and fetches are untouched throughout.
+- The hold releases on every exit path — success, error, panic, or a canceled context — so a capture that dies mid-hold can't leave pushes rejected until an operator notices. A configurable ceiling (low default) bounds both halves of that: it caps the capture, and the release that always follows gets its own timeout off the same ceiling, so a wedged release can't leave pushes rejected any more than a wedged capture can. It's a bug backstop, not a growth alarm, since nothing about it scales with instance size.
 - Verification at creation and at restore runs the same code path: manifest completeness, checksums, cross-consistency (DB repo/blob references resolve).
 
-## Snapshot capture (BKUP-001)
+## Snapshot capture (BKUP-001, BKUP-002)
 
 `internal/core/backup.Run` captures the four state kinds — via the
 `state.DatabaseExporter`, `state.GitExporter`, `state.BlobExporter`, and
 `state.KeyExporter` interfaces (STATE-001–004) — into a plain snapshot
 directory and writes `snapshot-manifest.json`: the Forgejo version, the
 capture timestamp, the checksum algorithm, and one checksummed `Component`
-per captured file (one database, one per repository, one per blob, one per
-key). Every step emits a CORE-002 job event.
+per captured file (one database, one per blob, one per key, and two per
+repository — refs and objects). Every step emits a CORE-002 job event.
 
 `state.GitExporter` only enumerates remotes (STATE-001); it doesn't stream
 repository content, since replication is ordinarily the operator's own
 mirroring tooling. `backup.Run` pairs it with a `backup.GitCapturer`
 (`LocalGitCapturer`, `SSHGitCapturer`) that tars each bare repository the
 exporter lists — the same Local/SSH split `state.GitExporter` and
-`state.DatabaseExporter` already use.
+`state.DatabaseExporter` already use. `GitCapturer.Refs` tars only the
+mutable ref paths (`HEAD`, `packed-refs`, `refs/`); `GitCapturer.Archive`,
+unchanged from BKUP-001, tars the full object store.
+
+`backup.PushHold` (`Engage`/`Release`) is the push-hold mechanism: `Run`
+engages it before the database backup and ref recording, and releases it
+before the object tar. `backup.CaddyPushHold` implements it by reloading
+the bundle's already-running Caddy — over the same `state.Runner` SSH
+seam `SSHDatabaseExporter` and `SSHGitCapturer` use — against a temporary
+Caddyfile (`caddy.RenderPushHoldCaddyfile`) that returns 503 for git's
+smart-HTTP push endpoints (`POST .../git-receive-pack`,
+`GET .../info/refs?service=git-receive-pack`), then reloads back to the
+original, untouched Caddyfile at `caddy.ConfigPath` to release.
+`backup.NoopPushHold` covers topologies with no proxy in front of git
+traffic (a local capture, a drill).
 
 `Run` produces the plain, unencrypted snapshot the rest of this section's
-pipeline builds on: the push-hold window around git capture (BKUP-002),
-verification at creation (BKUP-004), and writing the result to an
-S3-compatible URI or filesystem path (BKUP-005) are separate, not yet
-implemented.
+pipeline builds on: verification at creation (BKUP-004) and writing the
+result to an S3-compatible URI or filesystem path (BKUP-005) are separate,
+not yet implemented.
 
 ## Snapshot encryption (BKUP-003)
 
@@ -206,7 +223,15 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 - **Keystore:** `Resolve(keyName) → secret`, every driver; `Store(keyName,
   secret) → error` on `file` only (INIT-003's generated key material has
   nowhere else defined to land). Shipped: `file`, `command`.
-- **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`.
+- **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every
+  `List` result carries `Modified`, the time an object was last written —
+  `local` reads it from the filesystem's mtime, `s3` from the endpoint's
+  `Last-Modified`, and the exec protocol's `list` method result carries it
+  as an additional `modified` field alongside `key` and `size`. This is an
+  addition to the published `Adapter` interface (`blob.Object`); a
+  third-party exec adapter written before this addition simply omits the
+  field, which decodes as the zero time, meaning unknown — never treated
+  as "very old" (see "Status" below).
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
 
@@ -246,7 +271,7 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 
 1. Check Docker is reachable (ORCH-001's `CheckHost`).
 2. Resolve the bundle's key material through its keystore driver and render `app.ini` (FORGE-001), ship it to the host, add a bind mount for it to the forgejo service's Compose definition (`orchestrate.WithBindMount`) — deploy-time content, never written into the bundle directory (KEY-003) — and set a checksum of that rendered `app.ini` as an environment variable on the same service (`orchestrate.WithEnv`).
-3. Issue a TLS certificate for the bundle domain via ACME DNS-01 (`acme.Issue`, ACME-001), using the DNS-01 provider name the manifest carries from `init`'s own zone-control proof (`Manifest.ACME`). The account key is generated fresh for this issuance, and so is the certificate — every call to `up` re-issues, regardless of the certificate `init` already persisted as bundle key material (INIT-003; see "Known gap" below). Render the Caddyfile (`caddy.RenderCaddyfile`) that terminates TLS with the issued certificate and reverse-proxies to Forgejo, ship the Caddyfile and certificate to the host, bind-mount them into the caddy service, and publish its HTTPS port (`orchestrate.WithPorts`) — UP-002.
+3. Resolve the certificate `init` already persisted as bundle key material (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and hand it to the renewal-aware `acme.EnsureValid` (ACME-002), using the DNS-01 provider name the manifest carries from `init`'s own zone-control proof (`Manifest.ACME`). `EnsureValid` returns the persisted certificate unchanged when it isn't yet due for renewal — every ordinary re-run — and only reaches ACME DNS-01 (`acme.Issue`, ACME-001, with a freshly generated account key) when it's nil or past two-thirds of its lifetime. Render the Caddyfile (`caddy.RenderCaddyfile`) that terminates TLS with the resulting certificate and reverse-proxies to Forgejo, ship the Caddyfile and certificate to the host, bind-mount them into the caddy service, and publish its HTTPS port (`orchestrate.WithPorts`) — UP-002.
 4. Converge the host to that Compose definition (ORCH-002).
 5. Wait for the forgejo container to accept `docker compose exec`, since `up -d` returning doesn't guarantee the entrypoint has finished.
 6. Provision the first admin account (FORGE-002).
@@ -258,16 +283,15 @@ the operator owns") — `up` does not manage DNS records.
 
 Every step reports through the job's CORE-002 event stream; `deploy.Up` owns the job's terminal event. `cmd/farrier up` is the CLI skin: it connects over SSH, calls `deploy.Up`, and prints the same events a dashboard would render over SSE.
 
-Re-running `up` against a host it has already deployed to converges the host to the current bundle definition, and is safe except for the TLS step (UP-003 — `partial`; see "Known gap" below):
+Re-running `up` against a host it has already deployed to converges the host to the current bundle definition, and is safe on every step (UP-003):
 
 - Steps 1, 5, and 7 are read-only probes.
 - Step 2 always re-ships the current `app.ini` and re-derives its checksum. `docker compose up -d` (step 4) decides whether to recreate a service by diffing its resolved config — image, environment, volumes, labels — never the bytes of a file a bind mount happens to point at, so without the checksum a content-only `app.ini` change would ship to disk without the running container ever picking it up. Carrying the checksum as an environment variable puts that content into the diff `docker compose` already does.
+- Step 3 reuses the persisted certificate until it's actually due for renewal, so an ordinary re-run never reaches the ACME server and never risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week). On the rare renewal-due branch, the freshly issued certificate is used for that deploy but not persisted back to the keystore — `keystore.Writer.Store` refuses to overwrite existing key material by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity") — so `up` reports the renewal through the job's event stream and the next `up` decides again from the same persisted certificate. Giving a renewal-eligible key a distinct update path past that invariant is ACME-002's gap, tracked separately.
 - Step 4 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
 - Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
 
-**Known gap:** step 3 is not yet re-run-safe. `configureTLS` re-issues a certificate from a fresh ACME account on every call, which risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week) after a handful of re-runs. The read side to close this exists: the certificate `init` persists (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and the renewal-aware `acme.EnsureValid` (ACME-002) that can decide against that persisted certificate whether a new one is actually due. What's missing is the write side — a renewed certificate has to be persisted back to the keystore, or the next `up` re-issues again — and `keystore.Writer.Store` refuses to overwrite a key that already has content by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity"). Whether, and how, a renewal-eligible key like the TLS certificate gets a distinct update path without loosening that guarantee for keys that must never rotate silently is an open decision, not made in this PR. UP-003 stays `partial` in `docs/status.json` until it is.
-
-## Status (`status`, STAT-001)
+## Status (`status`, STAT-001, STAT-002)
 
 `internal/core/status.Check` is a synchronous read, not a job (tech-spec.md
 "API": `GET /status` returns directly, no `jobId`) — it reflects the
@@ -290,8 +314,34 @@ instance's current state each time it's called, never a cached one:
    decision yet pins forge state to a specific bind-mounted host
    directory, so root is the only host-wide signal available without
    guessing one.
+4. **Replication lag (STAT-002):** `status.ReplicationLag` against
+   `Options.Destination`, a `state.BlobExporter` — the read side of
+   `blob.Adapter` — with no bundle-level destination config of its own:
+   - **Measured:** the newest object's `Modified` time (see "Driver
+     interfaces" above) across the destination is the last backup; now
+     minus that is the lag, clamped to zero if it would be negative. A
+     negative result means the destination's `Modified` clock reads ahead
+     of the reporting clock; that amount is surfaced as `Lag.Skew` rather
+     than a silent negative `Age`.
+   - **No backups:** the destination is real but holds no objects yet.
+   - **Unmeasured:** `Destination` is `nil` — either no golden-path
+     destination is configured, or the operator runs their own
+     replication topology outside the system's measurement (spec.md
+     "Replication lag") — or every object present has an unknown
+     `Modified` time. All three report the same `LagUnmeasured` state
+     rather than a fabricated number, since nothing here can tell "no
+     golden-path destination" apart from "operator-assembled transport"
+     from a `blob.Adapter` alone.
 
-`status.Check` returns an error naming which of the three failed rather
+   This lands ahead of `backup --to` (BKUP-005): today `cmd/farrier
+   status` always passes a `nil` `Destination`, since no destination is
+   persisted anywhere yet, so the CLI always prints `unmeasured`. Once
+   BKUP-005 lands, the caller that resolves the bundle's configured
+   destination into a `blob.Adapter` starts passing it in, and lag
+   reporting lights up with no further change to `status.Check` or its
+   CLI skin.
+
+`status.Check` returns an error naming which of the four failed rather
 than a partially-filled report — consistent with the rest of the core's
 "fail loudly, name the reason" posture (`ORCH-001`'s `CheckHost`,
 `BKUP-004`). `cmd/farrier status` is the CLI skin: it connects over SSH,
@@ -299,17 +349,19 @@ calls `status.Check`, and prints the report; its exit code reflects
 whether the report could be produced, not whether the instance it
 describes is healthy.
 
-**Last-backup age is not implemented yet.** STAT-001 also requires it, but
-finding the most recent snapshot needs a stable convention for what
-`backup` (BKUP-001..005, not yet landed) writes to its destination and how
-`status` locates it there — `backup`'s destination is a per-invocation
-`--to` flag (spec.md "Golden path"), not bundle-persisted config, and
-`blob.Object` (BLOB-001/002) carries no timestamp today. That convention
-belongs to backup's own design, not something `status` should invent
-ahead of it; `docs/status.json` carries STAT-001 as partial with this as
-the remaining slice.
+**Last-backup age is not implemented yet.** STAT-001 also requires it —
+distinct from STAT-002's replication lag, since it's the age of the
+bundle's own last backup rather than a destination's — but finding the
+most recent snapshot needs a stable convention for what `backup`
+(BKUP-001..005, not yet landed) writes to its destination and how
+`status` locates it there. `blob.Object.Modified` (BLOB-001/002) now
+carries the timestamp that convention will read; what's still missing is
+the snapshot listing/naming convention itself, which belongs to backup's
+own design, not something `status` should invent ahead of it.
+`docs/status.json` carries STAT-001 as partial with this as the
+remaining slice.
 
-## Importing repositories (`import`, IMPT-001, IMPT-002)
+## Importing repositories (`import`, IMPT-001, IMPT-002, IMPT-003)
 
 `internal/core/importer.Run` calls Forgejo's own migration endpoint, `POST /api/v1/repos/migrate`, on the target instance's API — no git transport is reimplemented:
 
@@ -320,7 +372,9 @@ the remaining slice.
 
 The default branch travels automatically as part of the git migration; there is no separate step for it. `Run` owns the job's terminal event the way `deploy.Up` does. `cmd/farrier import` is the CLI skin: `-target` addresses the Farrier instance and `-source` the origin, `-owner`/`-name` set the repository's home on the target, and `-mirror`/`-mirror-interval` opt into continuous sync. The two API tokens are never CLI flags — `FARRIER_TARGET_TOKEN` and `FARRIER_SOURCE_TOKEN` in the process environment, read the same way `init`'s ACME DNS-01 provider reads its own credentials (see "Bundle creation" above), so neither token is ever visible in `ps` output or shell history.
 
-IMPT-003 (per-repository batch reporting and no partially-registered repository on failure) is not implemented yet; today's `import` migrates one repository per invocation and reports that one outcome.
+**IMPT-003 — batch reporting and no partial repository on failure.** `importer.RunBatch` migrates many repositories against one target instance within a single job: each repository gets its own `migrate:<n>` step in the event stream and its own entry in the returned `BatchResult` (source, `Result`, and `error`, independently), and the batch keeps going past one repository's failure so the rest still import. The job's own terminal event reflects the batch as a whole — succeeded only if every repository succeeded — but per-repository detail lives in the step events and `BatchResult`, not in that one terminal event. `cmd/farrier import -file <manifest.yaml>` is the batch CLI skin: the manifest lists repositories only (`source`, and optionally `service`, `owner`, `name`, `private`, `mirror`, `mirrorInterval` per entry) and never credentials, which stay in `-target`/`-owner`/`-private`/`-mirror`/`-mirror-interval` and the two environment tokens, applied as the batch-wide default for any entry that doesn't set its own. `-file` and `-source` are mutually exclusive.
+
+Whether run singly or as a batch, a failed migration leaves no partially-registered repository on the target: `migrate`'s failure paths (a non-2xx response, or the request itself failing) call `DELETE /api/v1/repos/{owner}/{repo}` best-effort on a detached, timed-out context, so cleanup still runs even when the failure was the caller's own context expiring or being canceled. A 404 from that delete (nothing was ever registered) is not an error; a genuine cleanup failure is reported alongside, never in place of, the original migration error, since it means the operator may need to remove that repository by hand. A response that decodes successfully after a 2xx is a real, complete repository — decode failures past that point are a client-side bug, not a partial registration, and are never cleaned up.
 
 ## API
 
@@ -333,7 +387,7 @@ IMPT-003 (per-repository batch reporting and no partially-registered repository 
 
 - **RTO:** promote completes — snapshot pulled, restored, verified, services live, DNS flipped — within 10 minutes on the reference instance (10 GB state, 100 Mbps between backup target and new host).
 - **RPO:** equals backup cadence; the golden-path cron documents hourly.
-- **Backup impact:** push-hold under 10 seconds on the reference instance; reads uninterrupted.
+- **Backup impact:** push-hold is database-only (SQLite online backup plus recording every repository's ref state) and stays a second or two regardless of git data size, since the object tar runs outside it; reads and fetches are uninterrupted throughout.
 - **Forge host floor:** 2 vCPU, 2 GB RAM, Linux x86_64 or arm64, Docker ≥ 24.
 - **Control plane:** macOS and Linux; single static binary per platform.
 - **DNS TTL:** 60 seconds on all bundle records.

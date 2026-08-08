@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
@@ -38,10 +39,23 @@ type fakeGitCapturer struct {
 	err     error
 	errFor  string
 	calls   []string
+
+	refsContent map[string][]byte
+	refsErr     error
+	refsErrFor  string
+	refsCalls   []string
+
+	// order, when set, also gets an "archive:<name>"/"refs:<name>" entry
+	// appended for every call, interleaved with a fakePushHold sharing the
+	// same slice so a test can assert relative ordering across both.
+	order *[]string
 }
 
 func (f *fakeGitCapturer) Archive(ctx context.Context, remote state.Remote) (io.ReadCloser, error) {
 	f.calls = append(f.calls, remote.Name)
+	if f.order != nil {
+		*f.order = append(*f.order, "archive:"+remote.Name)
+	}
 	if f.err != nil && (f.errFor == "" || f.errFor == remote.Name) {
 		return nil, f.err
 	}
@@ -50,6 +64,52 @@ func (f *fakeGitCapturer) Archive(ctx context.Context, remote state.Remote) (io.
 		data = []byte("tar-bytes-" + remote.Name)
 	}
 	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (f *fakeGitCapturer) Refs(ctx context.Context, remote state.Remote) (io.ReadCloser, error) {
+	f.refsCalls = append(f.refsCalls, remote.Name)
+	if f.order != nil {
+		*f.order = append(*f.order, "refs:"+remote.Name)
+	}
+	if f.refsErr != nil && (f.refsErrFor == "" || f.refsErrFor == remote.Name) {
+		return nil, f.refsErr
+	}
+	data := f.refsContent[remote.Name]
+	if data == nil {
+		data = []byte("refs-bytes-" + remote.Name)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+// fakePushHold records Engage/Release calls in order, and their relative
+// ordering against the database/git capturers they wrap, for tests to
+// assert on. engageErr and releaseErr are independent, so a test can drive
+// any combination of the two failing — including both at once, which a
+// single shared error field can't express.
+type fakePushHold struct {
+	calls      []string
+	engageErr  error
+	releaseErr error
+
+	// order, when set, also gets "engage"/"release" appended — see
+	// fakeGitCapturer.order.
+	order *[]string
+}
+
+func (f *fakePushHold) Engage(ctx context.Context) error {
+	f.calls = append(f.calls, "engage")
+	if f.order != nil {
+		*f.order = append(*f.order, "engage")
+	}
+	return f.engageErr
+}
+
+func (f *fakePushHold) Release(ctx context.Context) error {
+	f.calls = append(f.calls, "release")
+	if f.order != nil {
+		*f.order = append(*f.order, "release")
+	}
+	return f.releaseErr
 }
 
 type fakeDatabaseExporter struct {
@@ -123,6 +183,7 @@ func validParams(t *testing.T) Params {
 			names:  []string{"secret_key", "internal_token"},
 			values: map[string]string{"secret_key": "sk-value", "internal_token": "it-value"},
 		},
+		PushHold: &fakePushHold{},
 	}
 }
 
@@ -145,9 +206,9 @@ func TestRunWritesACompleteSnapshot(t *testing.T) {
 		t.Error("Timestamp is zero")
 	}
 
-	// database(1) + git(2) + blobs(2) + keys(2) = 7
-	if len(manifest.Components) != 7 {
-		t.Fatalf("Components = %d, want 7: %+v", len(manifest.Components), manifest.Components)
+	// database(1) + git refs(2) + git objects(2) + blobs(2) + keys(2) = 9
+	if len(manifest.Components) != 9 {
+		t.Fatalf("Components = %d, want 9: %+v", len(manifest.Components), manifest.Components)
 	}
 
 	byKind := make(map[bundle.StateKind][]Component)
@@ -166,8 +227,8 @@ func TestRunWritesACompleteSnapshot(t *testing.T) {
 	if len(byKind[bundle.StateKindDatabase]) != 1 {
 		t.Errorf("database components = %d, want 1", len(byKind[bundle.StateKindDatabase]))
 	}
-	if len(byKind[bundle.StateKindGit]) != 2 {
-		t.Errorf("git components = %d, want 2", len(byKind[bundle.StateKindGit]))
+	if len(byKind[bundle.StateKindGit]) != 4 {
+		t.Errorf("git components = %d, want 4 (2 repositories x refs+objects)", len(byKind[bundle.StateKindGit]))
 	}
 	if len(byKind[bundle.StateKindBlobs]) != 2 {
 		t.Errorf("blob components = %d, want 2", len(byKind[bundle.StateKindBlobs]))
@@ -250,7 +311,7 @@ func TestRunCapturesStepsInOrder(t *testing.T) {
 			order = append(order, ev.Step)
 		}
 	}
-	want := []string{StepValidate, StepDatabase, StepGit, StepBlobs, StepKeys, StepWriteManifest}
+	want := []string{StepValidate, StepPushHold, StepDatabase, StepRecordRefs, StepGit, StepBlobs, StepKeys, StepWriteManifest}
 	if len(order) != len(want) {
 		t.Fatalf("started steps = %v, want %v", order, want)
 	}
@@ -291,6 +352,7 @@ func TestRunRejectsMissingExporters(t *testing.T) {
 		{"database exporter", func(p *Params) { p.Database = nil }},
 		{"blob exporter", func(p *Params) { p.Blobs = nil }},
 		{"key exporter", func(p *Params) { p.Keys = nil }},
+		{"push hold", func(p *Params) { p.PushHold = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -319,6 +381,15 @@ func TestRunPropagatesDatabaseError(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap the database exporter's error", err)
 	}
 	assertJobFailed(t, job)
+	// Run must not re-attribute a failure captureUnderHold already
+	// emitted (StepDatabase here) to StepPushHold as well — a database
+	// failure under an otherwise clean hold is one real failure and must
+	// produce exactly one failed step in the CORE-002 stream.
+	assertOneFailedStep(t, job, StepDatabase)
+	// The hold itself still engaged and released cleanly, so StepPushHold
+	// must reach its own succeeded event rather than sitting at "started"
+	// forever in the CORE-002 stream.
+	assertStepSucceeded(t, job, StepPushHold)
 }
 
 func TestRunPropagatesGitListError(t *testing.T) {
@@ -349,6 +420,129 @@ func TestRunPropagatesGitArchiveError(t *testing.T) {
 		t.Errorf("error = %v, want it to name acme/gadgets and wrap the archive error", err)
 	}
 	assertJobFailed(t, job)
+}
+
+func TestRunHoldsPushesOnlyAcrossDatabaseAndRefRecording(t *testing.T) {
+	var order []string
+	params := validParams(t)
+	params.PushHold = &fakePushHold{order: &order}
+	params.GitCapturer = &fakeGitCapturer{order: &order}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(order) == 0 || order[0] != "engage" {
+		t.Fatalf("order = %v, want it to start with engage", order)
+	}
+	releaseIdx := -1
+	for i, step := range order {
+		if step == "release" {
+			releaseIdx = i
+			break
+		}
+	}
+	if releaseIdx == -1 {
+		t.Fatalf("order = %v, push hold was never released", order)
+	}
+	for i, step := range order {
+		if strings.HasPrefix(step, "archive:") && i < releaseIdx {
+			t.Errorf("order = %v: %q (object tar) ran before the push hold released", order, step)
+		}
+		if strings.HasPrefix(step, "refs:") && i > releaseIdx {
+			t.Errorf("order = %v: %q (ref recording) ran after the push hold released", order, step)
+		}
+	}
+}
+
+func TestRunReleasesPushHoldOnDatabaseError(t *testing.T) {
+	params := validParams(t)
+	hold := &fakePushHold{}
+	params.PushHold = hold
+	params.Database = &fakeDatabaseExporter{err: errors.New("database unreachable")}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if len(hold.calls) != 2 || hold.calls[0] != "engage" || hold.calls[1] != "release" {
+		t.Fatalf("push hold calls = %v, want [engage release]", hold.calls)
+	}
+}
+
+func TestRunPropagatesPushHoldEngageError(t *testing.T) {
+	params := validParams(t)
+	params.PushHold = &fakePushHold{engageErr: errors.New("caddy reload failed")}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "caddy reload failed") {
+		t.Errorf("error = %v, want it to wrap the engage error", err)
+	}
+	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepPushHold)
+}
+
+func TestRunPropagatesPushHoldReleaseError(t *testing.T) {
+	params := validParams(t)
+	params.PushHold = &fakePushHold{releaseErr: errors.New("caddy reload failed")}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "caddy reload failed") {
+		t.Errorf("error = %v, want it to wrap the release error", err)
+	}
+	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepPushHold)
+}
+
+func TestRunPropagatesRefsError(t *testing.T) {
+	params := validParams(t)
+	params.GitCapturer = &fakeGitCapturer{refsErr: errors.New("refs capture failed"), refsErrFor: "acme/gadgets"}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "refs capture failed") || !strings.Contains(err.Error(), "acme/gadgets") {
+		t.Errorf("error = %v, want it to name acme/gadgets and wrap the refs error", err)
+	}
+	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepRecordRefs)
+	assertStepSucceeded(t, job, StepPushHold)
+}
+
+func TestRunReleasesPushHoldWhenCeilingExpires(t *testing.T) {
+	params := validParams(t)
+	hold := &fakePushHold{}
+	params.PushHold = hold
+	params.PushHoldCeiling = time.Nanosecond
+	params.Database = &blockingDatabaseExporter{}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want error when the push hold ceiling expires, got nil")
+	}
+	if len(hold.calls) != 2 || hold.calls[0] != "engage" || hold.calls[1] != "release" {
+		t.Fatalf("push hold calls = %v, want [engage release]", hold.calls)
+	}
+}
+
+// blockingDatabaseExporter blocks until its context is canceled, standing
+// in for a wedged capture that only a push-hold ceiling can bound.
+type blockingDatabaseExporter struct{}
+
+func (blockingDatabaseExporter) Snapshot(ctx context.Context) (io.ReadCloser, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func TestRunPropagatesBlobListError(t *testing.T) {
@@ -403,6 +597,183 @@ func TestRunPropagatesKeyResolveError(t *testing.T) {
 	assertJobFailed(t, job)
 }
 
+// TestRunPushHoldMatrix drives the five states captureUnderHold's deferred
+// release can end up in — engage failing outright, the capture and the
+// release each failing independently, both failing together, and the clean
+// path — and checks step attribution and StepPushHold's terminal state for
+// each. fakePushHold's independent engageErr/releaseErr fields are what
+// make the "both fail" combination expressible at all; a single shared
+// error field can only select one call to fail.
+func TestRunPushHoldMatrix(t *testing.T) {
+	cases := []struct {
+		name             string
+		engageErr        error
+		databaseErr      error
+		releaseErr       error
+		wantFailedSteps  []string
+		wantPushHoldTerm events.State
+	}{
+		{
+			name:             "engage fails",
+			engageErr:        errors.New("engage failed"),
+			wantFailedSteps:  []string{StepPushHold},
+			wantPushHoldTerm: events.StateFailed,
+		},
+		{
+			name:             "capture fails, release clean",
+			databaseErr:      errors.New("database unreachable"),
+			wantFailedSteps:  []string{StepDatabase},
+			wantPushHoldTerm: events.StateSucceeded,
+		},
+		{
+			name:             "capture clean, release fails",
+			releaseErr:       errors.New("release failed"),
+			wantFailedSteps:  []string{StepPushHold},
+			wantPushHoldTerm: events.StateFailed,
+		},
+		{
+			name:             "capture fails, release fails",
+			databaseErr:      errors.New("database unreachable"),
+			releaseErr:       errors.New("release failed"),
+			wantFailedSteps:  []string{StepDatabase, StepPushHold},
+			wantPushHoldTerm: events.StateFailed,
+		},
+		{
+			name:             "everything clean",
+			wantPushHoldTerm: events.StateSucceeded,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := validParams(t)
+			params.PushHold = &fakePushHold{engageErr: tc.engageErr, releaseErr: tc.releaseErr}
+			if tc.databaseErr != nil {
+				params.Database = &fakeDatabaseExporter{err: tc.databaseErr}
+			}
+			job := events.NewJob()
+
+			_, err := Run(context.Background(), job, params)
+			if len(tc.wantFailedSteps) == 0 {
+				if err != nil {
+					t.Fatalf("Run: %v, want success", err)
+				}
+				assertJobSucceeded(t, job)
+			} else {
+				if err == nil {
+					t.Fatal("Run: want error, got nil")
+				}
+				assertJobFailed(t, job)
+			}
+
+			var failedSteps []string
+			for _, ev := range job.Events() {
+				if ev.State == events.StateFailed && ev.Step != "" {
+					failedSteps = append(failedSteps, ev.Step)
+				}
+			}
+			if !equalSteps(failedSteps, tc.wantFailedSteps) {
+				t.Errorf("failed steps = %v, want %v", failedSteps, tc.wantFailedSteps)
+			}
+
+			var pushHoldTerm events.State
+			for _, ev := range job.Events() {
+				if ev.Step == StepPushHold && (ev.State == events.StateSucceeded || ev.State == events.StateFailed) {
+					pushHoldTerm = ev.State
+				}
+			}
+			if pushHoldTerm != tc.wantPushHoldTerm {
+				t.Errorf("StepPushHold terminal state = %v, want %v (events: %+v)", pushHoldTerm, tc.wantPushHoldTerm, job.Events())
+			}
+		})
+	}
+}
+
+func equalSteps(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestRunEveryStartedStepReachesATerminalEvent is the invariant this
+// package's three-round StepPushHold bug should have been caught by from
+// the start: whatever fails, every step Run (via job.Started) starts must
+// also reach a succeeded or failed event of its own. It walks the event
+// stream generically instead of naming a specific step, so it guards every
+// step in this package — including ones added later — not just
+// StepPushHold.
+func TestRunEveryStartedStepReachesATerminalEvent(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Params)
+	}{
+		{"validate fails", func(p *Params) { p.Dir = "" }},
+		{"push hold engage fails", func(p *Params) {
+			p.PushHold = &fakePushHold{engageErr: errors.New("engage failed")}
+		}},
+		{"database fails, release clean", func(p *Params) {
+			p.Database = &fakeDatabaseExporter{err: errors.New("db failed")}
+		}},
+		{"database clean, release fails", func(p *Params) {
+			p.PushHold = &fakePushHold{releaseErr: errors.New("release failed")}
+		}},
+		{"database fails, release fails", func(p *Params) {
+			p.Database = &fakeDatabaseExporter{err: errors.New("db failed")}
+			p.PushHold = &fakePushHold{releaseErr: errors.New("release failed")}
+		}},
+		{"refs list fails", func(p *Params) {
+			p.Git = &fakeGitExporter{err: errors.New("list failed")}
+		}},
+		{"refs capture fails", func(p *Params) {
+			p.GitCapturer = &fakeGitCapturer{refsErr: errors.New("refs failed"), refsErrFor: "acme/gadgets"}
+		}},
+		{"git archive fails", func(p *Params) {
+			p.GitCapturer = &fakeGitCapturer{err: errors.New("archive failed"), errFor: "acme/gadgets"}
+		}},
+		{"blob list fails", func(p *Params) {
+			p.Blobs = &fakeBlobExporter{listErr: errors.New("blob list failed")}
+		}},
+		{"key resolve fails", func(p *Params) {
+			keys := p.Keys.(*fakeKeyExporter)
+			keys.resolveErr = errors.New("resolve failed")
+			keys.resolveErrFor = "internal_token"
+		}},
+		{"everything succeeds", func(p *Params) {}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := validParams(t)
+			tc.mutate(&params)
+			job := events.NewJob()
+
+			Run(context.Background(), job, params)
+
+			started := map[string]bool{}
+			for _, ev := range job.Events() {
+				if ev.Step == "" {
+					continue
+				}
+				switch ev.State {
+				case events.StateStarted:
+					started[ev.Step] = true
+				case events.StateSucceeded, events.StateFailed:
+					delete(started, ev.Step)
+				}
+			}
+			if len(started) != 0 {
+				t.Errorf("steps started but never reached a terminal event: %v (events: %+v)", started, job.Events())
+			}
+		})
+	}
+}
+
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -435,4 +806,35 @@ func assertJobFailed(t *testing.T, job *events.Job) {
 	if last.Step != "" || last.State != events.StateFailed {
 		t.Errorf("last event = %+v, want a job-terminal failed event", last)
 	}
+}
+
+// assertOneFailedStep checks that exactly one step (as opposed to the
+// job-terminal event, which carries no step) failed in job's event stream,
+// and that it's wantStep — a real failure must attribute to exactly one
+// step in the CORE-002 stream, never the failing step plus StepPushHold.
+func assertOneFailedStep(t *testing.T, job *events.Job, wantStep string) {
+	t.Helper()
+	var failedSteps []string
+	for _, ev := range job.Events() {
+		if ev.State == events.StateFailed && ev.Step != "" {
+			failedSteps = append(failedSteps, ev.Step)
+		}
+	}
+	if len(failedSteps) != 1 || failedSteps[0] != wantStep {
+		t.Errorf("failed steps = %v, want exactly [%s]", failedSteps, wantStep)
+	}
+}
+
+// assertStepSucceeded checks that step reached a succeeded event somewhere
+// in job's event stream — a step captureUnderHold started must reach a
+// terminal event of its own even when a later step fails, so a dashboard
+// rendering the CORE-002 stream never sees it stuck at "started" forever.
+func assertStepSucceeded(t *testing.T, job *events.Job, step string) {
+	t.Helper()
+	for _, ev := range job.Events() {
+		if ev.Step == step && ev.State == events.StateSucceeded {
+			return
+		}
+	}
+	t.Errorf("step %s never reached a succeeded event: %+v", step, job.Events())
 }

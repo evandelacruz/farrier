@@ -24,14 +24,19 @@ import (
 // S3Adapter's own requests. It does not verify request signatures — the
 // point is to exercise S3Adapter's request shapes and response handling,
 // not minio-go's signer.
+type fakeObject struct {
+	content  []byte
+	modified time.Time
+}
+
 type fakeS3 struct {
 	mu      sync.Mutex
 	bucket  string
-	objects map[string][]byte
+	objects map[string]fakeObject
 }
 
 func newFakeS3(bucket string) *fakeS3 {
-	return &fakeS3{bucket: bucket, objects: make(map[string][]byte)}
+	return &fakeS3{bucket: bucket, objects: make(map[string]fakeObject)}
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,43 +63,39 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		f.objects[key] = body
+		modified := time.Now().UTC()
+		f.objects[key] = fakeObject{content: body, modified: modified}
 		w.Header().Set("ETag", `"fake"`)
-		w.Header().Set("Last-Modified", f.now())
+		w.Header().Set("Last-Modified", modified.Format(http.TimeFormat))
 		w.WriteHeader(http.StatusOK)
 	case http.MethodHead:
-		content, ok := f.objects[key]
+		obj, ok := f.objects[key]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-		w.Header().Set("Last-Modified", f.now())
+		w.Header().Set("Content-Length", strconv.Itoa(len(obj.content)))
+		w.Header().Set("Last-Modified", obj.modified.Format(http.TimeFormat))
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:
-		content, ok := f.objects[key]
+		obj, ok := f.objects[key]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
-		w.Header().Set("Last-Modified", f.now())
+		w.Header().Set("Content-Length", strconv.Itoa(len(obj.content)))
+		w.Header().Set("Last-Modified", obj.modified.Format(http.TimeFormat))
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		w.Write(obj.content)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
-// now returns the current time formatted as an HTTP date, the format
-// minio-go's Stat parses Last-Modified with.
-func (f *fakeS3) now() string {
-	return time.Now().UTC().Format(http.TimeFormat)
-}
-
 type listContent struct {
-	Key  string `xml:"Key"`
-	Size int64  `xml:"Size"`
+	Key          string    `xml:"Key"`
+	Size         int64     `xml:"Size"`
+	LastModified time.Time `xml:"LastModified"`
 }
 
 type listBucketResult struct {
@@ -111,11 +112,11 @@ func (f *fakeS3) list(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	result := listBucketResult{Name: f.bucket, Prefix: prefix, MaxKeys: 1000}
-	for key, content := range f.objects {
+	for key, obj := range f.objects {
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		result.Contents = append(result.Contents, listContent{Key: key, Size: int64(len(content))})
+		result.Contents = append(result.Contents, listContent{Key: key, Size: int64(len(obj.content)), LastModified: obj.modified})
 	}
 	f.mu.Unlock()
 	result.KeyCount = len(result.Contents)
@@ -200,6 +201,27 @@ func TestS3List(t *testing.T) {
 	want := []string{"lfs/a", "lfs/b"}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("List(%q) = %v, want %v", "lfs/", got, want)
+	}
+}
+
+func TestS3ListPopulatesModified(t *testing.T) {
+	a, _ := newTestS3Adapter(t, "test-bucket")
+	ctx := context.Background()
+	before := time.Now().Add(-time.Minute)
+
+	if err := a.Put(ctx, "k", bytes.NewReader([]byte("v")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	objects, err := a.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(objects) != 1 {
+		t.Fatalf("List returned %d objects, want 1", len(objects))
+	}
+	if objects[0].Modified.Before(before) {
+		t.Fatalf("Modified = %v, want at or after %v", objects[0].Modified, before)
 	}
 }
 
