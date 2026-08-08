@@ -15,21 +15,18 @@ test("SYNC_WITH_MAIN requires merge origin/main before other work", () => {
   assert.doesNotMatch(SYNC_WITH_MAIN, /push origin HEAD.*merge/s);
 });
 
-test("implementer brief claims the ID with a draft PR before coding", () => {
+test("implementer brief claims the ID with a ready PR before coding", () => {
   const prompt = buildImplementerPrompt(["BKUP-002"]);
   assert.match(prompt, /When to push/i);
-  // The claim happens before implementation, and it is a draft — a draft is
-  // not reviewed, so it costs nothing and makes the ID visible to the next
-  // conductor pass, which reads open PRs rather than running sessions.
-  assert.match(prompt, /claim the ID with a draft PR \(mandatory, before coding\)/i);
+  // The claim happens before implementation, and it makes the ID visible to the
+  // next conductor pass, which reads open PRs rather than running sessions.
+  assert.match(prompt, /claim the ID by opening the PR \(mandatory, before coding\)/i);
   assert.match(prompt, /branch-notes/);
   assert.match(prompt, /only signal that this ID is claimed/i);
-  assert.match(prompt, /mark the PR ready for review/i);
-  assert.match(prompt, /draft: false/);
   // The claiming push must come before the "When to push" section, so an agent
   // reading top-to-bottom claims first and implements second.
   assert.ok(
-    prompt.indexOf("claim the ID with a draft PR") < prompt.indexOf("## When to push"),
+    prompt.indexOf("claim the ID by opening the PR") < prompt.indexOf("## When to push"),
     "claim step comes before the push section",
   );
   assert.match(prompt, /start from latest main/i);
@@ -79,11 +76,28 @@ test("no writer brief asks the agent to review its own diff", () => {
   }
 });
 
+test("implementer brief never tells an agent to open or flip a draft", () => {
+  // Draft state is create-time-only in REST: PATCH silently ignores `draft`,
+  // and the only way back out is a GraphQL mutation on a budget the fleet
+  // routinely exhausts. An agent that drafts and then cannot flip ready leaves
+  // finished work invisible, so the brief must never route through draft at all.
+  const prompt = buildImplementerPrompt(["BKUP-002"]);
+  assert.match(prompt, /"draft":false/);
+  assert.match(prompt, /Never open it as a draft/i);
+  assert.doesNotMatch(prompt, /open a \*\*draft\*\* PR/i);
+  assert.doesNotMatch(prompt, /mark it ready with/i);
+  assert.doesNotMatch(prompt, /update_pull_request/);
+  // conductor:working replaces draft as the review-suppression mechanism, and
+  // dropping it is the handoff.
+  assert.match(prompt, /conductor:working/);
+  assert.match(prompt, /Drop the label on \*\*every\*\* exit path/i);
+});
+
 test("the implementer is told the reviewer will read the push", () => {
   // Removing self-review only works if the agent knows review still happens;
   // otherwise "mark it ready when done" reads as "nobody checks this".
   const prompt = buildImplementerPrompt(["BKUP-002"]);
-  assert.match(prompt, /An automated reviewer reads the ready PR/i);
+  assert.match(prompt, /An automated reviewer reads the PR/i);
   assert.match(prompt, /not\*\* your job/i);
 });
 
