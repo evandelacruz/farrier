@@ -502,7 +502,7 @@ repos:
 	if len(m.Repos) != 2 {
 		t.Fatalf("len(m.Repos) = %d, want 2", len(m.Repos))
 	}
-	if m.Repos[1].Name != "renamed-gadgets" || !m.Repos[1].Mirror || m.Repos[1].MirrorInterval != "30m" {
+	if m.Repos[1].Name != "renamed-gadgets" || m.Repos[1].Mirror == nil || !*m.Repos[1].Mirror || m.Repos[1].MirrorInterval != "30m" {
 		t.Errorf("m.Repos[1] = %+v, want the full override set", m.Repos[1])
 	}
 	if m.Repos[1].Private == nil || *m.Repos[1].Private {
@@ -554,6 +554,37 @@ repos:
 	}
 	if opts[1].RepoOwner != "other-org" || opts[1].Private {
 		t.Errorf("opts[1] = %+v, want its own owner/private overrides", opts[1])
+	}
+}
+
+func TestManifestRepoOptionsMirrorFalseOverridesBatchDefault(t *testing.T) {
+	m, err := ParseManifest([]byte(`
+repos:
+  - source: https://github.com/acme/widgets
+  - source: https://github.com/acme/gadgets
+    mirror: false
+`))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+
+	defaults := Options{
+		TargetBaseURL: "https://target.example.com",
+		TargetToken:   keystore.NewSecret("target-token"),
+		SourceToken:   keystore.NewSecret("source-token"),
+		RepoOwner:     "acme",
+		Mirror:        true,
+	}
+
+	opts, err := m.RepoOptions(defaults)
+	if err != nil {
+		t.Fatalf("RepoOptions: %v", err)
+	}
+	if !opts[0].Mirror {
+		t.Error("opts[0].Mirror = false, want true (inherits the batch default)")
+	}
+	if opts[1].Mirror {
+		t.Error("opts[1].Mirror = true, want false (entry's explicit mirror: false overrides the batch default)")
 	}
 }
 

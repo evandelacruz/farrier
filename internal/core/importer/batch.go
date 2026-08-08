@@ -92,7 +92,7 @@ type ManifestEntry struct {
 	Owner          string `yaml:"owner,omitempty"`
 	Name           string `yaml:"name,omitempty"`
 	Private        *bool  `yaml:"private,omitempty"`
-	Mirror         bool   `yaml:"mirror,omitempty"`
+	Mirror         *bool  `yaml:"mirror,omitempty"`
 	MirrorInterval string `yaml:"mirrorInterval,omitempty"`
 }
 
@@ -141,8 +141,8 @@ func (m Manifest) RepoOptions(defaults Options) ([]Options, error) {
 		if entry.Private != nil {
 			opts.Private = *entry.Private
 		}
-		if entry.Mirror {
-			opts.Mirror = true
+		if entry.Mirror != nil {
+			opts.Mirror = *entry.Mirror
 		}
 		if entry.MirrorInterval != "" {
 			d, err := time.ParseDuration(entry.MirrorInterval)
