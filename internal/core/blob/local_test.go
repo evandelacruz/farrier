@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 func TestLocalPutGetRoundTrip(t *testing.T) {
@@ -34,6 +35,30 @@ func TestLocalPutGetRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) {
 		t.Fatalf("got %q, want %q", got, content)
+	}
+}
+
+func TestLocalListPopulatesModified(t *testing.T) {
+	a, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	ctx := context.Background()
+	before := time.Now().Add(-time.Second)
+
+	if err := a.Put(ctx, "k", bytes.NewReader([]byte("v")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	objects, err := a.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(objects) != 1 {
+		t.Fatalf("List returned %d objects, want 1", len(objects))
+	}
+	if objects[0].Modified.Before(before) {
+		t.Fatalf("Modified = %v, want at or after %v", objects[0].Modified, before)
 	}
 }
 

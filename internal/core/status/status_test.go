@@ -1,6 +1,7 @@
 package status
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/forge"
@@ -314,6 +316,58 @@ func TestCheckReportsDiskHeadroom(t *testing.T) {
 	}
 	if report.Disk.AvailableBytes != 62914560*1024 {
 		t.Errorf("Disk.AvailableBytes = %d, want %d", report.Disk.AvailableBytes, uint64(62914560*1024))
+	}
+}
+
+func TestCheckReportsUnmeasuredLagWithNoDestination(t *testing.T) {
+	runner := &fakeRunner{byContains: map[string]fakeResult{
+		"docker compose ps": {out: []byte(
+			`{"Service":"forgejo","State":"running","Status":"Up"}` + "\n" +
+				`{"Service":"caddy","State":"running","Status":"Up"}`,
+		)},
+		"df -Pk": {out: []byte("Filesystem 1024-blocks Used Available Capacity Mounted\n" +
+			"/dev/sda1 104857600 41943040 62914560 40% /\n")},
+	}}
+	opts := validOptions(t, runner, testCert(t, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)))
+
+	report, err := Check(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if report.Lag.State != LagUnmeasured {
+		t.Errorf("Lag.State = %q, want %q", report.Lag.State, LagUnmeasured)
+	}
+}
+
+func TestCheckReportsMeasuredLagFromDestination(t *testing.T) {
+	runner := &fakeRunner{byContains: map[string]fakeResult{
+		"docker compose ps": {out: []byte(
+			`{"Service":"forgejo","State":"running","Status":"Up"}` + "\n" +
+				`{"Service":"caddy","State":"running","Status":"Up"}`,
+		)},
+		"df -Pk": {out: []byte("Filesystem 1024-blocks Used Available Capacity Mounted\n" +
+			"/dev/sda1 104857600 41943040 62914560 40% /\n")},
+	}}
+	dest, err := blob.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	if err := dest.Put(context.Background(), "snapshot-1", bytes.NewReader([]byte("data")), 4); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	opts := validOptions(t, runner, testCert(t, time.Now().Add(-time.Hour), time.Now().Add(90*24*time.Hour)))
+	opts.Destination = dest
+
+	report, err := Check(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if report.Lag.State != LagMeasured {
+		t.Fatalf("Lag.State = %q, want %q", report.Lag.State, LagMeasured)
+	}
+	if report.Lag.Age < 0 {
+		t.Errorf("Lag.Age = %v, want >= 0", report.Lag.Age)
 	}
 }
 
