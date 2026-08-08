@@ -390,6 +390,10 @@ func TestRunPropagatesDatabaseError(t *testing.T) {
 	// failure under an otherwise clean hold is one real failure and must
 	// produce exactly one failed step in the CORE-002 stream.
 	assertOneFailedStep(t, job, StepDatabase)
+	// The hold itself still engaged and released cleanly, so StepPushHold
+	// must reach its own succeeded event rather than sitting at "started"
+	// forever in the CORE-002 stream.
+	assertStepSucceeded(t, job, StepPushHold)
 }
 
 func TestRunPropagatesGitListError(t *testing.T) {
@@ -517,6 +521,7 @@ func TestRunPropagatesRefsError(t *testing.T) {
 	}
 	assertJobFailed(t, job)
 	assertOneFailedStep(t, job, StepRecordRefs)
+	assertStepSucceeded(t, job, StepPushHold)
 }
 
 func TestRunReleasesPushHoldWhenCeilingExpires(t *testing.T) {
@@ -645,4 +650,18 @@ func assertOneFailedStep(t *testing.T, job *events.Job, wantStep string) {
 	if len(failedSteps) != 1 || failedSteps[0] != wantStep {
 		t.Errorf("failed steps = %v, want exactly [%s]", failedSteps, wantStep)
 	}
+}
+
+// assertStepSucceeded checks that step reached a succeeded event somewhere
+// in job's event stream — a step captureUnderHold started must reach a
+// terminal event of its own even when a later step fails, so a dashboard
+// rendering the CORE-002 stream never sees it stuck at "started" forever.
+func assertStepSucceeded(t *testing.T, job *events.Job, step string) {
+	t.Helper()
+	for _, ev := range job.Events() {
+		if ev.Step == step && ev.State == events.StateSucceeded {
+			return
+		}
+	}
+	t.Errorf("step %s never reached a succeeded event: %+v", step, job.Events())
 }

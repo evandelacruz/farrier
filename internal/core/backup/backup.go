@@ -111,7 +111,10 @@ func Run(ctx context.Context, job *events.Job, params Params) (*Manifest, error)
 		// stream.
 		return failJob(job, err)
 	}
-	job.Emit(StepPushHold, events.StateSucceeded, "pushes released")
+	// captureUnderHold already emitted StepPushHold's terminal event
+	// itself — on this success path as well as when the capture
+	// underneath failed but release still worked — so Run has nothing
+	// left to emit for it here.
 	components = append(components, dbComponent)
 	components = append(components, refComponents...)
 
@@ -208,6 +211,11 @@ func captureUnderHold(ctx context.Context, job *events.Job, params Params) (dbCo
 		// to block the release that has to follow it.
 		releaseErr := params.PushHold.Release(context.WithoutCancel(ctx))
 		if releaseErr == nil {
+			// The hold itself behaved correctly — it engaged and
+			// released cleanly — regardless of whether the capture
+			// underneath failed, so StepPushHold always reaches this
+			// terminal event and never sits at "started" forever.
+			job.Emit(StepPushHold, events.StateSucceeded, "pushes released")
 			return
 		}
 		releaseErr = fmt.Errorf("backup: release push hold: %w", releaseErr)
