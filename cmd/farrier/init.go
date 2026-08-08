@@ -57,33 +57,16 @@ func runInit(args []string) int {
 	}
 
 	job := events.NewJob()
-	sub, cancel := job.Subscribe()
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		printEvents(sub)
-		close(done)
-	}()
-
-	_, err := initialize.Run(context.Background(), job, params)
-	<-done
+	err := runJob(job, func() error {
+		_, runErr := initialize.Run(context.Background(), job, params)
+		return runErr
+	})
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: init: %v\n", err)
 		return 1
 	}
 	return 0
-}
-
-func printEvents(ch <-chan events.Event) {
-	for ev := range ch {
-		if ev.Step == "" {
-			fmt.Printf("%s\n", ev.Detail)
-			continue
-		}
-		fmt.Printf("[%s] %s: %s\n", ev.Step, ev.State, ev.Detail)
-	}
 }
 
 // keyValueFlag collects repeated "key=value" flag occurrences into an

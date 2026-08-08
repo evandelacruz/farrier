@@ -20,10 +20,16 @@ type LocalAdapter struct {
 }
 
 // NewLocal returns a LocalAdapter rooted at root, creating root if it does
-// not already exist.
+// not already exist. root must be an absolute path: a relative one would
+// resolve against whatever directory the current process happens to be
+// running from, which differs across machines and invocations — exactly
+// the coupling to "the machine that ran init" XCUT-001 forbids.
 func NewLocal(root string) (*LocalAdapter, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("blob: local: root is required")
+	}
+	if !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("blob: local: root must be an absolute path, got %q", root)
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("blob: local: create root %s: %w", root, err)
