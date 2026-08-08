@@ -27,6 +27,7 @@ internal/core/        the engine — all logic lives here
   blob/               blob adapter interface + shipped adapters
   registry/           resolves a container image reference to its digest (init's image pinning)
   events/             the job/progress event model
+  status/             `status` command logic: instance health, last-backup age, replication lag
 internal/api/         loopback HTTP server, RPC endpoints, SSE
 web/                  dashboard (embedded into the binary via go:embed)
 docs/                 this documentation
@@ -187,7 +188,15 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 - **Keystore:** `Resolve(keyName) → secret`, every driver; `Store(keyName,
   secret) → error` on `file` only (INIT-003's generated key material has
   nowhere else defined to land). Shipped: `file`, `command`.
-- **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`.
+- **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every
+  `List` result carries `Modified`, the time an object was last written —
+  `local` reads it from the filesystem's mtime, `s3` from the endpoint's
+  `Last-Modified`, and the exec protocol's `list` method result carries it
+  as an additional `modified` field alongside `key` and `size`. This is an
+  addition to the published `Adapter` interface (`blob.Object`); a
+  third-party exec adapter written before this addition simply omits the
+  field, which decodes as the zero time, meaning unknown — never treated
+  as "very old" (see "Status" below).
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
 
@@ -248,7 +257,7 @@ Re-running `up` against a host it has already deployed to converges the host to 
 
 **Known gap:** step 3 is not yet re-run-safe. `configureTLS` re-issues a certificate from a fresh ACME account on every call, which risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week) after a handful of re-runs. The read side to close this exists: the certificate `init` persists (INIT-003, `state.KeyTLSCertificate`/`state.KeyTLSPrivateKey`) and the renewal-aware `acme.EnsureValid` (ACME-002) that can decide against that persisted certificate whether a new one is actually due. What's missing is the write side — a renewed certificate has to be persisted back to the keystore, or the next `up` re-issues again — and `keystore.Writer.Store` refuses to overwrite a key that already has content by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity"). Whether, and how, a renewal-eligible key like the TLS certificate gets a distinct update path without loosening that guarantee for keys that must never rotate silently is an open decision, not made in this PR. UP-003 stays `partial` in `docs/status.json` until it is.
 
-## Status (`status`, STAT-001)
+## Status (`status`, STAT-001, STAT-002)
 
 `internal/core/status.Check` is a synchronous read, not a job (tech-spec.md
 "API": `GET /status` returns directly, no `jobId`) — it reflects the
@@ -271,8 +280,34 @@ instance's current state each time it's called, never a cached one:
    decision yet pins forge state to a specific bind-mounted host
    directory, so root is the only host-wide signal available without
    guessing one.
+4. **Replication lag (STAT-002):** `status.ReplicationLag` against
+   `Options.Destination`, a `state.BlobExporter` — the read side of
+   `blob.Adapter` — with no bundle-level destination config of its own:
+   - **Measured:** the newest object's `Modified` time (see "Driver
+     interfaces" above) across the destination is the last backup; now
+     minus that is the lag, clamped to zero if it would be negative. A
+     negative result means the destination's `Modified` clock reads ahead
+     of the reporting clock; that amount is surfaced as `Lag.Skew` rather
+     than a silent negative `Age`.
+   - **No backups:** the destination is real but holds no objects yet.
+   - **Unmeasured:** `Destination` is `nil` — either no golden-path
+     destination is configured, or the operator runs their own
+     replication topology outside the system's measurement (spec.md
+     "Replication lag") — or every object present has an unknown
+     `Modified` time. All three report the same `LagUnmeasured` state
+     rather than a fabricated number, since nothing here can tell "no
+     golden-path destination" apart from "operator-assembled transport"
+     from a `blob.Adapter` alone.
 
-`status.Check` returns an error naming which of the three failed rather
+   This lands ahead of `backup --to` (BKUP-005): today `cmd/farrier
+   status` always passes a `nil` `Destination`, since no destination is
+   persisted anywhere yet, so the CLI always prints `unmeasured`. Once
+   BKUP-005 lands, the caller that resolves the bundle's configured
+   destination into a `blob.Adapter` starts passing it in, and lag
+   reporting lights up with no further change to `status.Check` or its
+   CLI skin.
+
+`status.Check` returns an error naming which of the four failed rather
 than a partially-filled report — consistent with the rest of the core's
 "fail loudly, name the reason" posture (`ORCH-001`'s `CheckHost`,
 `BKUP-004`). `cmd/farrier status` is the CLI skin: it connects over SSH,
@@ -280,15 +315,17 @@ calls `status.Check`, and prints the report; its exit code reflects
 whether the report could be produced, not whether the instance it
 describes is healthy.
 
-**Last-backup age is not implemented yet.** STAT-001 also requires it, but
-finding the most recent snapshot needs a stable convention for what
-`backup` (BKUP-001..005, not yet landed) writes to its destination and how
-`status` locates it there — `backup`'s destination is a per-invocation
-`--to` flag (spec.md "Golden path"), not bundle-persisted config, and
-`blob.Object` (BLOB-001/002) carries no timestamp today. That convention
-belongs to backup's own design, not something `status` should invent
-ahead of it; `docs/status.json` carries STAT-001 as partial with this as
-the remaining slice.
+**Last-backup age is not implemented yet.** STAT-001 also requires it —
+distinct from STAT-002's replication lag, since it's the age of the
+bundle's own last backup rather than a destination's — but finding the
+most recent snapshot needs a stable convention for what `backup`
+(BKUP-001..005, not yet landed) writes to its destination and how
+`status` locates it there. `blob.Object.Modified` (BLOB-001/002) now
+carries the timestamp that convention will read; what's still missing is
+the snapshot listing/naming convention itself, which belongs to backup's
+own design, not something `status` should invent ahead of it.
+`docs/status.json` carries STAT-001 as partial with this as the
+remaining slice.
 
 ## Importing repositories (`import`, IMPT-001, IMPT-002, IMPT-003)
 
