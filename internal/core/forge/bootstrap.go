@@ -21,11 +21,27 @@ type Runner interface {
 	Run(ctx context.Context, command string, stdout, stderr io.Writer) error
 }
 
+// alreadyExistsMarker is the substring Forgejo's `admin user create` fails
+// with when account.Username is already taken — the shape of
+// user_model.ErrUserAlreadyExist's Error(), "user already exists [name:
+// ...]", surfaced by the CLI as "Command error: <that>" on stderr. Bootstrap
+// matches on it to tell "this host is already bootstrapped" (UP-003: safe
+// to repeat) apart from a genuine failure.
+const alreadyExistsMarker = "user already exists"
+
 // Bootstrap creates account on the running forgejo service by running
 // `forgejo admin user create` through runner, then emits the account's
 // credentials exactly once through job's event stream (FORGE-002) — the
 // only place they are ever handed to the operator. Bootstrap does not emit
 // a job-terminal event; the caller's deployment flow owns that.
+//
+// If account.Username already exists — the host was already bootstrapped
+// by an earlier `up` — Bootstrap treats that as success, not failure
+// (UP-003): the account was provisioned and its credentials already
+// emitted, once, on that earlier run; account.Password is a fresh secret
+// generated for this call and is never used or emitted in this case, since
+// re-emitting it would hand the operator a password the account doesn't
+// actually have.
 func Bootstrap(ctx context.Context, runner Runner, job *events.Job, account AdminAccount) error {
 	job.Started(StepAdminBootstrap, "creating first admin account")
 
@@ -39,6 +55,12 @@ func Bootstrap(ctx context.Context, runner Runner, job *events.Job, account Admi
 		detail := "command failed with no output"
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			detail = msg
+		}
+		if strings.Contains(detail, alreadyExistsMarker) {
+			job.Emit(StepAdminBootstrap, events.StateSucceeded, fmt.Sprintf(
+				"admin account %s already exists, leaving it as-is", account.Username,
+			))
+			return nil
 		}
 		job.Emit(StepAdminBootstrap, events.StateFailed, fmt.Sprintf("create admin account: %s", detail))
 		return fmt.Errorf("forge: create admin account: %s", detail)

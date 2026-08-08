@@ -41,7 +41,10 @@
     "INIT-003": "landed",
     "UP-001": "landed",
     "UP-002": "landed",
-    "UP-003": "open",
+    "UP-003": {
+      "state": "partial",
+      "remaining": "configureTLS still re-issues a fresh certificate from a new ACME account on every up, risking Let's Encrypt's duplicate-certificate rate limit on repeated re-runs. The read side to fix it exists (the certificate init persists via INIT-003, and the renewal-aware acme.EnsureValid from ACME-002), but there is no write side: keystore.Writer.Store refuses to overwrite existing key material by design, the same invariant that keeps SECRET_KEY/INTERNAL_TOKEN/the SSH host key from silently rotating, so a renewed certificate has nowhere to be persisted back to. Needs an architecture decision (Evan's call) on how a renewal-eligible key gets a distinct update path without loosening that guarantee for keys that must never rotate silently. See docs/tech-spec.md 'Known gap' under Deployment."
+    },
     "IMPT-001": "landed",
     "IMPT-002": "open",
     "IMPT-003": "open",

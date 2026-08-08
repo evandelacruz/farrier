@@ -65,6 +65,87 @@ func TestWithBindMountRejectsUnknownService(t *testing.T) {
 	}
 }
 
+func TestWithEnvSetsVariableOnNamedService(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	out, err := WithEnv(files, "forgejo", "FARRIER_APP_INI_CHECKSUM", "deadbeef")
+	if err != nil {
+		t.Fatalf("WithEnv: %v", err)
+	}
+
+	var spec composeSpec
+	if err := yaml.Unmarshal(out[ComposeFile], &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	forgejo, ok := spec.Services["forgejo"]
+	if !ok {
+		t.Fatalf("missing forgejo service: %+v", spec.Services)
+	}
+	if forgejo.Environment["FARRIER_APP_INI_CHECKSUM"] != "deadbeef" {
+		t.Errorf("forgejo environment = %v, want FARRIER_APP_INI_CHECKSUM=deadbeef", forgejo.Environment)
+	}
+	// Render's own FARRIER_DOMAIN entry must survive the merge.
+	if forgejo.Environment["FARRIER_DOMAIN"] == "" {
+		t.Errorf("forgejo environment = %v, lost FARRIER_DOMAIN", forgejo.Environment)
+	}
+
+	caddy, ok := spec.Services["caddy"]
+	if !ok {
+		t.Fatalf("missing caddy service: %+v", spec.Services)
+	}
+	if _, set := caddy.Environment["FARRIER_APP_INI_CHECKSUM"]; set {
+		t.Errorf("caddy environment = %v, want FARRIER_APP_INI_CHECKSUM unset", caddy.Environment)
+	}
+}
+
+func TestWithEnvChangesOutputWhenValueChanges(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	a, err := WithEnv(files, "forgejo", "FARRIER_APP_INI_CHECKSUM", "aaaa")
+	if err != nil {
+		t.Fatalf("WithEnv: %v", err)
+	}
+	b, err := WithEnv(files, "forgejo", "FARRIER_APP_INI_CHECKSUM", "bbbb")
+	if err != nil {
+		t.Fatalf("WithEnv: %v", err)
+	}
+	if string(a[ComposeFile]) == string(b[ComposeFile]) {
+		t.Error("WithEnv produced identical output for different values — a content-only app.ini change would never force a recreate")
+	}
+}
+
+func TestWithEnvDoesNotMutateInput(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	before := string(files[ComposeFile])
+
+	if _, err := WithEnv(files, "forgejo", "FARRIER_APP_INI_CHECKSUM", "deadbeef"); err != nil {
+		t.Fatalf("WithEnv: %v", err)
+	}
+
+	if string(files[ComposeFile]) != before {
+		t.Errorf("input file mutated by WithEnv")
+	}
+}
+
+func TestWithEnvRejectsUnknownService(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if _, err := WithEnv(files, "nonexistent", "KEY", "value"); err == nil {
+		t.Fatal("WithEnv: want error for unknown service, got nil")
+	}
+}
+
 func TestWithPortsAddsPortToNamedService(t *testing.T) {
 	files, err := Render(testManifest())
 	if err != nil {

@@ -2,7 +2,9 @@
 // (spec.md "Stateless vs. stateful" — the forge app, CI orchestration, and
 // runners) to a target host given only an ssh://user@host address and a
 // bundle. It also implements UP-002: ending that deployment with the forge
-// serving HTTPS at the bundle domain.
+// serving HTTPS at the bundle domain, and UP-003: re-running Up against a
+// host it has already deployed to is safe and converges that host to the
+// bundle definition, rather than requiring a fresh host every time.
 //
 // It is the sequencing layer over packages that already do the real work:
 // orchestrate (SSH transport, Compose rendering and convergence, ORCH-001
@@ -15,6 +17,8 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"path"
@@ -48,6 +52,12 @@ const hostConfigDir = "forge"
 
 // appINIFilename is the file Up ships app.ini under, inside hostConfigDir.
 const appINIFilename = "app.ini"
+
+// appINIChecksumEnv is the environment variable Up sets on the forgejo
+// service to a checksum of the app.ini it just shipped (see WithEnv's doc
+// comment for why: a bind-mounted file's content isn't otherwise part of
+// what `docker compose up -d` decides to recreate on).
+const appINIChecksumEnv = "FARRIER_APP_INI_CHECKSUM"
 
 // readyTimeout bounds how long Up waits for the forgejo container to
 // accept `docker compose exec` after Converge starts it.
@@ -91,6 +101,15 @@ type Options struct {
 // commands, provisions the first admin account, and waits for Caddy to
 // accept commands so the forge is serving HTTPS and usable in a browser
 // before Up returns.
+//
+// Every step is safe to repeat against a host Up has already deployed to
+// (UP-003): CheckHost and waitReady are read-only, configureForge always
+// re-ships app.ini and re-derives its checksum so a changed manifest is
+// visible to Converge (WithEnv's doc comment), orchestrate.Converge is
+// idempotent by construction (its own doc comment), and forge.Bootstrap
+// treats an admin account that already exists as done rather than a
+// failure. Nothing here reads back what's already running before deciding
+// what to do — the bundle alone determines the outcome, same as Converge.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
 // exactly once, after every step below has run (or the first one fails),
@@ -194,6 +213,12 @@ func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir 
 	compose, err := orchestrate.WithBindMount(b.Compose, forge.Service, hostPath, forge.AppINIPath)
 	if err != nil {
 		return nil, fmt.Errorf("mount app.ini: %w", err)
+	}
+
+	sum := sha256.Sum256(appINI)
+	compose, err = orchestrate.WithEnv(compose, forge.Service, appINIChecksumEnv, hex.EncodeToString(sum[:]))
+	if err != nil {
+		return nil, fmt.Errorf("set app.ini checksum: %w", err)
 	}
 	return compose, nil
 }
