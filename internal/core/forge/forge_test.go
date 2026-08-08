@@ -135,7 +135,7 @@ func TestBootstrapEmitsCredentialsExactlyOnce(t *testing.T) {
 
 func TestBootstrapFailureEmitsFailedStepAndReturnsError(t *testing.T) {
 	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
-	runner := &fakeRunner{stderr: "user already exists", err: errors.New("exit status 1")}
+	runner := &fakeRunner{stderr: "database is locked", err: errors.New("exit status 1")}
 	job := events.NewJob()
 
 	err := Bootstrap(context.Background(), runner, job, account)
@@ -151,7 +151,7 @@ func TestBootstrapFailureEmitsFailedStepAndReturnsError(t *testing.T) {
 	if last.State != events.StateFailed {
 		t.Errorf("event 1 state = %v, want failed", last.State)
 	}
-	if !strings.Contains(last.Detail, "user already exists") {
+	if !strings.Contains(last.Detail, "database is locked") {
 		t.Errorf("failed detail %q missing stderr", last.Detail)
 	}
 	if strings.Contains(last.Detail, account.Password.Reveal()) {
@@ -159,6 +159,41 @@ func TestBootstrapFailureEmitsFailedStepAndReturnsError(t *testing.T) {
 	}
 	if job.Done() {
 		t.Error("Bootstrap ended the job on a step failure; it should leave the terminal event to the caller")
+	}
+}
+
+// TestBootstrapSkipsWhenAdminAccountAlreadyExists exercises UP-003: a
+// second `up` against a host that's already been bootstrapped hits this
+// exact failure from `forgejo admin user create` (Forgejo's
+// ErrUserAlreadyExist, surfaced by the CLI as "Command error: user already
+// exists [name: admin]" on stderr) and must treat it as done, not a
+// failure — and must never emit account.Password, since the account
+// doesn't actually have that password.
+func TestBootstrapSkipsWhenAdminAccountAlreadyExists(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{stderr: "Command error: user already exists [name: admin]", err: errors.New("exit status 1")}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil (already-bootstrapped host is not a failure)", err)
+	}
+
+	got := job.Events()
+	if len(got) != 2 {
+		t.Fatalf("got %d events, want 2 (started, succeeded): %+v", len(got), got)
+	}
+	last := got[len(got)-1]
+	if last.State != events.StateSucceeded {
+		t.Errorf("event 1 state = %v, want succeeded", last.State)
+	}
+	if !strings.Contains(last.Detail, account.Username) {
+		t.Errorf("succeeded detail %q missing username", last.Detail)
+	}
+	if strings.Contains(last.Detail, account.Password.Reveal()) {
+		t.Error("skip-path event leaked a password the account doesn't have")
+	}
+	if job.Done() {
+		t.Error("Bootstrap ended the job; it should leave the terminal event to the caller")
 	}
 }
 
