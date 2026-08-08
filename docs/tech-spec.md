@@ -192,9 +192,28 @@ original, untouched Caddyfile at `caddy.ConfigPath` to release.
 traffic (a local capture, a drill).
 
 `Run` produces the plain, unencrypted snapshot the rest of this section's
-pipeline builds on: encryption (BKUP-003), verification at creation
-(BKUP-004), and writing the result to an S3-compatible URI or filesystem
-path (BKUP-005) are separate, not yet implemented.
+pipeline builds on: verification at creation (BKUP-004) and writing the
+result to an S3-compatible URI or filesystem path (BKUP-005) are separate,
+not yet implemented.
+
+## Snapshot encryption (BKUP-003)
+
+`internal/core/backup.Encrypt` turns the plain directory `Run` wrote into
+the one age-encrypted archive per backup this section's "Snapshot format"
+describes: it tars every file under the snapshot directory straight into an
+`age.Encrypt` writer — the plaintext tar is never staged as a second copy on
+disk — and writes the result to a caller-supplied destination path, so
+nothing captured leaves the host unencrypted. It takes an `age.Recipient`,
+not the operator's identity: encryption never needs the private half, only
+its recipient's public key, which any holder of the identity (`filippo.io/age`'s
+`X25519Identity.Recipient()`) can derive from `initialize.KeyAgeBackupKey`
+without exposing it. `Encrypt` emits its own CORE-002 `StepEncrypt` event on
+the job it's given but does not end the job — like `forge.Bootstrap` and
+`forge.ReconcileCI`, it is a step a future orchestrator composes alongside
+`Run` (and, once they land, BKUP-004's verification and BKUP-005's write)
+under one job whose terminal event that orchestrator owns. On failure it
+removes any partial file it left at the destination path, so a truncated
+archive is never mistaken for a real backup.
 
 ## Driver interfaces
 

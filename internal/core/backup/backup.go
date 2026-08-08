@@ -12,10 +12,11 @@
 // append-only) object store, so the hold stays database-only regardless of
 // how much git data the instance holds (BKUP-002, docs/spec.md "Backups").
 //
-// Run produces a plain, unencrypted snapshot directory. Encryption
-// (BKUP-003), verification at creation (BKUP-004), and writing the result
-// to an S3-compatible URI or filesystem path (BKUP-005) are separate
-// requirements layered on top of what Run produces here.
+// Run produces a plain, unencrypted snapshot directory; Encrypt (BKUP-003)
+// turns it into the single age-encrypted archive that actually leaves the
+// host. Verification at creation (BKUP-004) and writing the result to an
+// S3-compatible URI or filesystem path (BKUP-005) are separate requirements
+// layered on top of what Run and Encrypt produce here.
 package backup
 
 import (
