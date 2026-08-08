@@ -86,7 +86,7 @@ func (a *S3Adapter) List(ctx context.Context, prefix string) ([]Object, error) {
 		if info.Err != nil {
 			return nil, fmt.Errorf("blob: s3: list: %w", info.Err)
 		}
-		objects = append(objects, Object{Key: info.Key, Size: info.Size})
+		objects = append(objects, Object{Key: info.Key, Size: info.Size, Modified: info.LastModified})
 	}
 	return objects, nil
 }

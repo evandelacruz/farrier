@@ -26,6 +26,7 @@ internal/core/        the engine — all logic lives here
   blob/               blob adapter interface + shipped adapters
   registry/           resolves a container image reference to its digest (init's image pinning)
   events/             the job/progress event model
+  status/             `status` command logic: instance health, last-backup age, replication lag
 internal/api/         loopback HTTP server, RPC endpoints, SSE
 web/                  dashboard (embedded into the binary via go:embed)
 docs/                 this documentation
@@ -186,7 +187,15 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 - **Keystore:** `Resolve(keyName) → secret`, every driver; `Store(keyName,
   secret) → error` on `file` only (INIT-003's generated key material has
   nowhere else defined to land). Shipped: `file`, `command`.
-- **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`.
+- **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every
+  `List` result carries `Modified`, the time an object was last written —
+  `local` reads it from the filesystem's mtime, `s3` from the endpoint's
+  `Last-Modified`, and the exec protocol's `list` method result carries it
+  as an additional `modified` field alongside `key` and `size`. This is an
+  addition to the published `Adapter` interface (`blob.Object`); a
+  third-party exec adapter written before this addition simply omits the
+  field, which decodes as the zero time, meaning unknown — never treated
+  as "very old" (see "Status" below).
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
 
@@ -259,6 +268,36 @@ Re-running `up` against a host it has already deployed to converges the host to 
 The default branch travels automatically as part of the git migration; there is no separate step for it. `Run` owns the job's terminal event the way `deploy.Up` does. `cmd/farrier import` is the CLI skin: `-target` addresses the Farrier instance and `-source` the origin, `-owner`/`-name` set the repository's home on the target, and `-mirror`/`-mirror-interval` opt into continuous sync. The two API tokens are never CLI flags — `FARRIER_TARGET_TOKEN` and `FARRIER_SOURCE_TOKEN` in the process environment, read the same way `init`'s ACME DNS-01 provider reads its own credentials (see "Bundle creation" above), so neither token is ever visible in `ps` output or shell history.
 
 IMPT-003 (per-repository batch reporting and no partially-registered repository on failure) is not implemented yet; today's `import` migrates one repository per invocation and reports that one outcome.
+
+## Status (`status`, STAT-002)
+
+`internal/core/status.ReplicationLag` reports replication lag for one
+golden-path destination (spec.md "Replication lag") directly against
+`state.BlobExporter` — the read side of `blob.Adapter` — with no
+bundle-level destination config of its own: the caller passes in whichever
+`blob.Adapter` the golden-path destination resolves to, or `nil` when there
+isn't one.
+
+- **Measured:** the newest object's `Modified` time (see "Driver
+  interfaces" above) across the destination is the last backup; now minus
+  that is the lag.
+- **No backups:** the destination is real but holds no objects yet.
+- **Unmeasured:** `dest` is `nil` — either no golden-path destination is
+  configured, or the operator runs their own replication topology outside
+  the system's measurement (spec.md "Replication lag") — or every object
+  present has an unknown `Modified` time. All three report the same
+  `LagUnmeasured` state rather than a fabricated number, since nothing here
+  can tell "no golden-path destination" apart from "operator-assembled
+  transport" from a `blob.Adapter` alone.
+
+This lands ahead of `backup --to` (BKUP-005): today nothing calls
+`ReplicationLag` with a non-nil destination, since no destination is
+persisted anywhere yet. Once BKUP-005 lands, the caller that resolves the
+bundle's configured destination into a `blob.Adapter` starts passing it
+here, and lag reporting lights up with no further change to this function.
+STAT-001 (instance health, TLS validity, disk headroom, last-backup age)
+and the CLI/API/dashboard surfaces for `status` are separate, not yet
+implemented.
 
 ## API
 

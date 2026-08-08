@@ -12,16 +12,28 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 // ErrNotFound is returned by Get when key does not exist in the adapter's
 // backing store.
 var ErrNotFound = errors.New("blob: not found")
 
-// Object describes one stored object: its key and size in bytes.
+// Object describes one stored object: its key, size in bytes, and when it
+// was last written.
+//
+// Modified is what STAT-002's replication-lag reporting is built on: the
+// newest object's Modified time across a destination is the last backup,
+// now minus that is the lag. local and s3 always populate it (from the
+// filesystem's mtime and the endpoint's Last-Modified, respectively); a
+// third-party exec adapter (CORE-003) populates it by returning a
+// "modified" field from its "list" method, and an older one that predates
+// the field simply omits it, which decodes as the zero value — callers
+// must treat a zero Modified as "unknown", never as "very old".
 type Object struct {
-	Key  string
-	Size int64
+	Key      string
+	Size     int64
+	Modified time.Time
 }
 
 // Adapter is the storage-adapter abstraction: List, Get, and Put all

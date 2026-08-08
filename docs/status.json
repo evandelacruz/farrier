@@ -69,7 +69,7 @@
     "DRIL-002": "open",
     "DRIL-003": "open",
     "STAT-001": "open",
-    "STAT-002": "open",
+    "STAT-002": "landed",
     "API-001": {"state": "partial", "remaining": "wire POST /backup, /restore, /promote, /upgrade, /drill, /import, and GET /status once their core operations land (BKUP-*, RSTR-*, FAIL-*, UPGR-*, DRIL-*, IMPT-*, STAT-*); the API package, loopback binding, job dispatch, and SSE framing are done"},
     "API-002": "landed",
     "UI-001": "open",
