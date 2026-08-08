@@ -385,6 +385,11 @@ func TestRunPropagatesDatabaseError(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap the database exporter's error", err)
 	}
 	assertJobFailed(t, job)
+	// Run must not re-attribute a failure captureUnderHold already
+	// emitted (StepDatabase here) to StepPushHold as well — a database
+	// failure under an otherwise clean hold is one real failure and must
+	// produce exactly one failed step in the CORE-002 stream.
+	assertOneFailedStep(t, job, StepDatabase)
 }
 
 func TestRunPropagatesGitListError(t *testing.T) {
@@ -479,6 +484,7 @@ func TestRunPropagatesPushHoldEngageError(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap the engage error", err)
 	}
 	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepPushHold)
 }
 
 func TestRunPropagatesPushHoldReleaseError(t *testing.T) {
@@ -494,6 +500,7 @@ func TestRunPropagatesPushHoldReleaseError(t *testing.T) {
 		t.Errorf("error = %v, want it to wrap the release error", err)
 	}
 	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepPushHold)
 }
 
 func TestRunPropagatesRefsError(t *testing.T) {
@@ -509,6 +516,7 @@ func TestRunPropagatesRefsError(t *testing.T) {
 		t.Errorf("error = %v, want it to name acme/gadgets and wrap the refs error", err)
 	}
 	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepRecordRefs)
 }
 
 func TestRunReleasesPushHoldWhenCeilingExpires(t *testing.T) {
@@ -619,5 +627,22 @@ func assertJobFailed(t *testing.T, job *events.Job) {
 	last := evs[len(evs)-1]
 	if last.Step != "" || last.State != events.StateFailed {
 		t.Errorf("last event = %+v, want a job-terminal failed event", last)
+	}
+}
+
+// assertOneFailedStep checks that exactly one step (as opposed to the
+// job-terminal event, which carries no step) failed in job's event stream,
+// and that it's wantStep — a real failure must attribute to exactly one
+// step in the CORE-002 stream, never the failing step plus StepPushHold.
+func assertOneFailedStep(t *testing.T, job *events.Job, wantStep string) {
+	t.Helper()
+	var failedSteps []string
+	for _, ev := range job.Events() {
+		if ev.State == events.StateFailed && ev.Step != "" {
+			failedSteps = append(failedSteps, ev.Step)
+		}
+	}
+	if len(failedSteps) != 1 || failedSteps[0] != wantStep {
+		t.Errorf("failed steps = %v, want exactly [%s]", failedSteps, wantStep)
 	}
 }

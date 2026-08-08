@@ -103,7 +103,13 @@ func Run(ctx context.Context, job *events.Job, params Params) (*Manifest, error)
 
 	dbComponent, refComponents, remotes, err := captureUnderHold(ctx, job, params)
 	if err != nil {
-		return fail(job, StepPushHold, err)
+		// captureUnderHold has already emitted the one step event that
+		// attributes this failure (StepPushHold for an Engage/Release
+		// error, StepDatabase or StepRecordRefs for a capture error under
+		// the hold) — failJob only marks the job terminal, so a failure
+		// here still produces exactly one failed step in the CORE-002
+		// stream.
+		return failJob(job, err)
 	}
 	job.Emit(StepPushHold, events.StateSucceeded, "pushes released")
 	components = append(components, dbComponent)
@@ -188,6 +194,7 @@ func captureUnderHold(ctx context.Context, job *events.Job, params Params) (dbCo
 	job.Started(StepPushHold, "holding git pushes")
 	if err = params.PushHold.Engage(ctx); err != nil {
 		err = fmt.Errorf("backup: engage push hold: %w", err)
+		job.Emit(StepPushHold, events.StateFailed, err.Error())
 		return
 	}
 
@@ -205,10 +212,15 @@ func captureUnderHold(ctx context.Context, job *events.Job, params Params) (dbCo
 		}
 		releaseErr = fmt.Errorf("backup: release push hold: %w", releaseErr)
 		if err != nil {
+			// The capture underneath already emitted its own failed step
+			// (StepDatabase or StepRecordRefs) — the release failure is
+			// folded into that same error, not attributed to a step of
+			// its own, so this still produces exactly one failed step.
 			err = fmt.Errorf("%w (also failed to release push hold: %v)", err, releaseErr)
 			return
 		}
 		err = releaseErr
+		job.Emit(StepPushHold, events.StateFailed, err.Error())
 	}()
 
 	job.Started(StepDatabase, "capturing database")
@@ -237,6 +249,14 @@ func captureUnderHold(ctx context.Context, job *events.Job, params Params) (dbCo
 
 func fail(job *events.Job, step string, err error) (*Manifest, error) {
 	job.Emit(step, events.StateFailed, err.Error())
+	job.Failed(err.Error())
+	return nil, err
+}
+
+// failJob marks job terminally failed without emitting an additional step
+// event — for a caller whose failure path has already attributed exactly
+// one step itself (captureUnderHold).
+func failJob(job *events.Job, err error) (*Manifest, error) {
 	job.Failed(err.Error())
 	return nil, err
 }
