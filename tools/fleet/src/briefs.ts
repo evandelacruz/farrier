@@ -19,8 +19,9 @@ const QUALITY_BLOCK = `
 - Do **not** run the full \`go test ./...\`. CI runs the whole suite, plus the
   build, on every PR into main and will report failures on the PR.
   Repeating it here mostly rebuilds packages you did not touch.
-- The PR must end **ready for review, never draft.** A draft is not reviewed, so
-  leaving one is a failed handoff. See "When to push" for the lifecycle.
+- **Never open a PR as a draft.** REST cannot take one back out of draft, and
+  the GraphQL mutation that can is on a budget the fleet routinely exhausts —
+  so a draft can strand finished work permanently. See "When to push".
 - If the solution is not simple, step back and reconsider the approach. Be
   willing to change approach when it makes the future better. Do not force
   round pegs into square holes.
@@ -121,7 +122,24 @@ git merge origin/main
 Do not skip the merge step. Reviewers treat missing main commits as a blocker.
 `.trim();
 
-/** New implementers sync to latest main, then claim the ID with a draft PR. */
+/**
+ * New implementers sync to latest main, then claim the ID by opening the PR
+ * ready for review — never as a draft.
+ *
+ * Draft was the obvious claiming vehicle (a draft is not reviewed, so it costs
+ * nothing to open one early) and it is a trap. Draft state is create-time-only
+ * in REST: `POST /pulls` accepts `draft`, `PATCH /pulls/{n}` silently ignores
+ * it — 200, no error, PR unchanged. The only way back out of draft is the
+ * GraphQL `markPullRequestReadyForReview` mutation, and the GraphQL budget is
+ * 5000 points/hr shared across every session on the account, routinely
+ * exhausted by the fleet. An agent that drafts, works, and then cannot flip
+ * ready leaves its finished work invisible: a draft is never reviewed and
+ * never lands.
+ *
+ * Opening ready-from-start removes the transition entirely, so no part of the
+ * lifecycle depends on GraphQL. Review suppression during the work is the
+ * `conductor:working` lock's job instead of draft state's.
+ */
 const SYNC_WITH_MAIN_IMPLEMENT = `
 ## First step — start from latest main (mandatory)
 
@@ -144,48 +162,74 @@ git merge origin/main
 - Then claim the ID immediately, **before writing any implementation code** —
   see "Second step".
 
-## Second step — claim the ID with a draft PR (mandatory, before coding)
+## Second step — claim the ID by opening the PR (mandatory, before coding)
 
-Write \`.github/branch-notes/<slug>.md\`, commit it, push the branch, and open a
-**draft** PR with the requirement ID in the title. Do this before you implement
+Write \`.github/branch-notes/<slug>.md\`, commit it, push the branch, and open
+the PR with the requirement ID in the title. Do this before you implement
 anything.
 
 \`\`\`bash
 git push -u origin HEAD          # branch note only
+
+# Open it READY, never as a draft. Then take the lock in the same breath.
+curl -sS -X POST -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  https://api.github.com/repos/evandelacruz/farrier/pulls \\
+  -d '{"title":"<ID>: <what you are building>","head":"<branch>","base":"main","body":"...","draft":false}'
+
+curl -sS -X POST -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  https://api.github.com/repos/evandelacruz/farrier/issues/<n>/labels \\
+  -d '{"labels":["conductor:working"]}'
 \`\`\`
 
-The draft PR is the only signal that this ID is claimed. Until it exists, a
+The open PR is the only signal that this ID is claimed. Until it exists, a
 conductor pass has no way to see you working — the plan reads open PRs, not
 running sessions — so a second agent can be assigned the same ID and build the
 same thing in parallel. That has happened repeatedly and each occurrence costs
 one of the two implementations entirely.
 
-A draft is the right vehicle because it is **not reviewed**: it claims the ID
-without spending a review on an empty branch.
+**Never open it as a draft.** Draft is create-time-only in REST: \`PATCH\` on a
+pull request silently ignores \`draft\` — 200, no error, nothing changes — and
+the only way out of draft is a GraphQL mutation. The GraphQL budget is shared
+across every agent on this account and is routinely exhausted, so an agent that
+drafts and then cannot flip ready leaves finished work invisible forever. Open
+ready and there is no transition to lose.
+
+\`conductor:working\` is what keeps reviewers off the PR while you build. Drop it
+at the very end (see "When to push"), and that drop is the handoff.
 `.trim();
 
 const WHEN_TO_PUSH_IMPLEMENT = `
 ## When to push
 
-You have already pushed once, to open the draft PR that claims the ID
-("Second step"). That push does not trigger review — drafts are not reviewed.
+You have already pushed once, to open the PR that claims the ID ("Second step").
+That PR is already ready for review — there is no draft to flip, and no
+GraphQL call anywhere in this lifecycle.
 
-From there, push whenever it helps; nothing reviews a draft. If you merged main
-mid-work, do not treat that merge alone as a reason to push.
+Push again **once**, when the slice is complete and its tests pass. Do not push
+after a mid-work merge from main on its own. Every push while
+\`conductor:working\` is set is yours; the label is what tells reviewers the PR
+is still being built.
 
-**When the slice is complete and its tests pass, mark the PR ready for review.**
-That transition is what triggers the automated reviewer, and it is the whole
-handoff — a draft left as a draft is never reviewed and never lands.
+**The handoff is dropping \`conductor:working\` after your final push** — not any
+state change on the PR itself:
 
 \`\`\`bash
 git push origin HEAD
+
+curl -sS -X DELETE -H "Authorization: Bearer \$GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  https://api.github.com/repos/evandelacruz/farrier/issues/<n>/labels/conductor:working
 \`\`\`
 
-Then mark it ready with \`mcp__github__update_pull_request\`, \`draft: false\`.
+Drop the label on **every** exit path, including when you halt without
+finishing. A lock with no session behind it parks the PR until a human clears
+it by hand.
 
-An automated reviewer reads the ready PR and posts findings you will get a
-chance to fix. Reviewing your own diff first is **not** your job — mark it ready
-when the work is done and let the review happen.
+An automated reviewer reads the PR and posts findings you will get a chance to
+fix. Reviewing your own diff first is **not** your job — push when the work is
+done and let the review happen.
 `.trim();
 
 const WHEN_TO_PUSH_FIX = `
@@ -297,8 +341,8 @@ export function buildImplementerPrompt(
     "## Done means",
     "- The full MUST for each listed ID is met (schema, API, tests as needed)",
     "- Tests that exercise the behavior",
-    "- PR claimed as a draft before coding, and **flipped to ready** at the end,",
-    "  with the IDs in the title or body — a draft left as a draft is never reviewed",
+    "- PR opened **ready** before coding, with the IDs in the title or body,",
+    "  and `conductor:working` dropped at the end — that drop is the handoff",
     "- docs/status.json flipped to `landed` for each ID — or",
     "  `{\"state\":\"partial\",\"remaining\":\"...\"}` if a deliberate slice remains",
   ].join("\n");
