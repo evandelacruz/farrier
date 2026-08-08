@@ -27,7 +27,7 @@ type Runner interface {
 // ...]", surfaced by the CLI as "Command error: <that>" on stderr. Bootstrap
 // matches on it to tell "this host is already bootstrapped" (UP-003: safe
 // to repeat) apart from a genuine failure.
-const alreadyExistsMarker = "already exists"
+const alreadyExistsMarker = "user already exists"
 
 // Bootstrap creates account on the running forgejo service by running
 // `forgejo admin user create` through runner, then emits the account's
