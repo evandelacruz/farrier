@@ -19,8 +19,8 @@ const QUALITY_BLOCK = `
 - Do **not** run the full \`go test ./...\`. CI runs the whole suite, plus the
   build, on every PR into main and will report failures on the PR.
   Repeating it here mostly rebuilds packages you did not touch.
-- Open the PR as **ready for review, not draft.** If tooling defaults to draft,
-  mark it ready before finishing.
+- The PR must end **ready for review, never draft.** A draft is not reviewed, so
+  leaving one is a failed handoff. See "When to push" for the lifecycle.
 - If the solution is not simple, step back and reconsider the approach. Be
   willing to change approach when it makes the future better. Do not force
   round pegs into square holes.
@@ -121,9 +121,9 @@ git merge origin/main
 Do not skip the merge step. Reviewers treat missing main commits as a blocker.
 `.trim();
 
-/** New implementers sync to latest main — no PR or review threads yet. */
+/** New implementers sync to latest main, then claim the ID with a draft PR. */
 const SYNC_WITH_MAIN_IMPLEMENT = `
-## First step — start from latest main (mandatory, do not push yet)
+## First step — start from latest main (mandatory)
 
 \`\`\`bash
 git fetch origin main
@@ -141,25 +141,51 @@ git merge origin/main
 \`\`\`
 
 - Prefer merge over rebase unless merge fails and you document why you switched.
-- **Do not push yet.** Wait until implementation and tests are done
-  (see "When to push").
+- Then claim the ID immediately, **before writing any implementation code** —
+  see "Second step".
+
+## Second step — claim the ID with a draft PR (mandatory, before coding)
+
+Write \`.github/branch-notes/<slug>.md\`, commit it, push the branch, and open a
+**draft** PR with the requirement ID in the title. Do this before you implement
+anything.
+
+\`\`\`bash
+git push -u origin HEAD          # branch note only
+\`\`\`
+
+The draft PR is the only signal that this ID is claimed. Until it exists, a
+conductor pass has no way to see you working — the plan reads open PRs, not
+running sessions — so a second agent can be assigned the same ID and build the
+same thing in parallel. That has happened repeatedly and each occurrence costs
+one of the two implementations entirely.
+
+A draft is the right vehicle because it is **not reviewed**: it claims the ID
+without spending a review on an empty branch.
 `.trim();
 
 const WHEN_TO_PUSH_IMPLEMENT = `
 ## When to push
 
-Push **once**, after implementation and tests are done.
-There are no review threads until you push and open the PR — do not wait for
-feedback that does not exist yet. If you merged main mid-work, do not push
-immediately after that merge alone; wait until the slice is complete.
+You have already pushed once, to open the draft PR that claims the ID
+("Second step"). That push does not trigger review — drafts are not reviewed.
 
-An automated reviewer reads every push and posts findings you will get a chance
-to fix. Reviewing your own diff before pushing is **not** your job — push when
-the work is done and let the review happen.
+From there, push whenever it helps; nothing reviews a draft. If you merged main
+mid-work, do not treat that merge alone as a reason to push.
+
+**When the slice is complete and its tests pass, mark the PR ready for review.**
+That transition is what triggers the automated reviewer, and it is the whole
+handoff — a draft left as a draft is never reviewed and never lands.
 
 \`\`\`bash
 git push origin HEAD
 \`\`\`
+
+Then mark it ready with \`mcp__github__update_pull_request\`, \`draft: false\`.
+
+An automated reviewer reads the ready PR and posts findings you will get a
+chance to fix. Reviewing your own diff first is **not** your job — mark it ready
+when the work is done and let the review happen.
 `.trim();
 
 const WHEN_TO_PUSH_FIX = `
@@ -172,6 +198,9 @@ code review.
 \`\`\`bash
 git push origin HEAD
 \`\`\`
+
+This PR already exists and is already ready for review. Leave it that way —
+never flip it to draft, which would stop every further review on it.
 `.trim();
 
 export function buildImplementerPrompt(
@@ -268,10 +297,10 @@ export function buildImplementerPrompt(
     "## Done means",
     "- The full MUST for each listed ID is met (schema, API, tests as needed)",
     "- Tests that exercise the behavior",
-    "- PR opened ready for review with IDs in the title or body",
+    "- PR claimed as a draft before coding, and **flipped to ready** at the end,",
+    "  with the IDs in the title or body — a draft left as a draft is never reviewed",
     "- docs/status.json flipped to `landed` for each ID — or",
     "  `{\"state\":\"partial\",\"remaining\":\"...\"}` if a deliberate slice remains",
-    "- Single push after work and tests are complete (not after merge alone)",
   ].join("\n");
 }
 

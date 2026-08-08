@@ -15,11 +15,23 @@ test("SYNC_WITH_MAIN requires merge origin/main before other work", () => {
   assert.doesNotMatch(SYNC_WITH_MAIN, /push origin HEAD.*merge/s);
 });
 
-test("implementer brief pushes after implementation, not after review feedback", () => {
+test("implementer brief claims the ID with a draft PR before coding", () => {
   const prompt = buildImplementerPrompt(["BKUP-002"]);
   assert.match(prompt, /When to push/i);
-  assert.match(prompt, /Push \*\*once\*\*, after implementation and tests are done/i);
-  assert.match(prompt, /no review threads until you push/i);
+  // The claim happens before implementation, and it is a draft — a draft is
+  // not reviewed, so it costs nothing and makes the ID visible to the next
+  // conductor pass, which reads open PRs rather than running sessions.
+  assert.match(prompt, /claim the ID with a draft PR \(mandatory, before coding\)/i);
+  assert.match(prompt, /branch-notes/);
+  assert.match(prompt, /only signal that this ID is claimed/i);
+  assert.match(prompt, /mark the PR ready for review/i);
+  assert.match(prompt, /draft: false/);
+  // The claiming push must come before the "When to push" section, so an agent
+  // reading top-to-bottom claims first and implements second.
+  assert.ok(
+    prompt.indexOf("claim the ID with a draft PR") < prompt.indexOf("## When to push"),
+    "claim step comes before the push section",
+  );
   assert.match(prompt, /start from latest main/i);
   // One branch, named by the assignment — never a copy of another PR's.
   assert.match(prompt, /stay on it and bring main in/i);
@@ -69,9 +81,9 @@ test("no writer brief asks the agent to review its own diff", () => {
 
 test("the implementer is told the reviewer will read the push", () => {
   // Removing self-review only works if the agent knows review still happens;
-  // otherwise "push when done" reads as "nobody checks this".
+  // otherwise "mark it ready when done" reads as "nobody checks this".
   const prompt = buildImplementerPrompt(["BKUP-002"]);
-  assert.match(prompt, /An automated reviewer reads every push/i);
+  assert.match(prompt, /An automated reviewer reads the ready PR/i);
   assert.match(prompt, /not\*\* your job/i);
 });
 
