@@ -94,6 +94,34 @@ func TestExpiryWarning(t *testing.T) {
 	}
 }
 
+func TestParseCertificate(t *testing.T) {
+	certPEM, notBefore, notAfter := generateTestCertChain(t, "forge.example.com")
+	keyPEM := []byte("fake-key-pem")
+
+	cert, err := ParseCertificate("forge.example.com", certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("ParseCertificate: %v", err)
+	}
+	if cert.Domain != "forge.example.com" {
+		t.Errorf("Domain = %q, want forge.example.com", cert.Domain)
+	}
+	if !cert.NotBefore.Equal(notBefore) || !cert.NotAfter.Equal(notAfter) {
+		t.Errorf("NotBefore/NotAfter = %v/%v, want %v/%v", cert.NotBefore, cert.NotAfter, notBefore, notAfter)
+	}
+	if string(cert.Certificate) != string(certPEM) {
+		t.Error("Certificate does not round-trip the input PEM")
+	}
+	if string(cert.PrivateKey) != string(keyPEM) {
+		t.Error("PrivateKey does not round-trip the input PEM")
+	}
+}
+
+func TestParseCertificateInvalidPEM(t *testing.T) {
+	if _, err := ParseCertificate("forge.example.com", []byte("not a certificate"), nil); err == nil {
+		t.Fatal("expected an error for invalid certificate PEM")
+	}
+}
+
 func TestEnsureValid(t *testing.T) {
 	now := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	fresh := &Certificate{NotBefore: now.Add(-time.Hour), NotAfter: now.Add(90 * 24 * time.Hour)}
