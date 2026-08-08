@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,14 +131,31 @@ func (f *fakeHost) CheckHost(ctx context.Context) error {
 	return f.checkHostErr
 }
 
-func testBundle() *bundle.Bundle {
+// testdataAbs resolves a path under testdata/ to an absolute one. Driver
+// config carries the literal string a caller gives it into the bundle
+// manifest (bundle.DriverRef.Config), so — since XCUT-001 requires the
+// file keystore driver and local blob adapter to reject relative paths
+// (they'd re-resolve against whatever directory a later command happens to
+// run from) — testBundle must hand them an absolute path even though the
+// fixture itself lives at a fixed, relative location in the repo.
+func testdataAbs(t testing.TB, rel string) string {
+	t.Helper()
+	abs, err := filepath.Abs(rel)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q): %v", rel, err)
+	}
+	return abs
+}
+
+func testBundle(t testing.TB) *bundle.Bundle {
+	t.Helper()
 	return &bundle.Bundle{
 		Manifest: *bundle.NewManifest("example.com", map[string]string{
 			"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
 			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
 		}, bundle.DriverConfig{
-			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": "testdata/keys"}},
-			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": "testdata/blobs"}},
+			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": testdataAbs(t, "testdata/keys")}},
+			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": testdataAbs(t, "testdata/blobs")}},
 		}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"}),
 		Compose: map[string][]byte{
 			"docker-compose.yml": []byte("services:\n  forgejo:\n    image: x\n  caddy:\n    image: y\n"),
@@ -160,7 +178,7 @@ func TestUpSucceeds(t *testing.T) {
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{}
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
+	err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
 	if err != nil {
 		t.Fatalf("Up: %v", err)
 	}
@@ -243,7 +261,7 @@ func TestUpPublishesCaddyHTTPSPort(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -274,7 +292,7 @@ func TestUpFailsWhenCertIssuanceFails(t *testing.T) {
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{err: errors.New("dns-01 challenge failed")}
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
+	err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
 	if err == nil {
 		t.Fatal("Up: want error when certificate issuance fails, got nil")
 	}
@@ -304,7 +322,7 @@ func TestUpReusesPersistedCertificateWithoutIssuing(t *testing.T) {
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{reuse: true}
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -343,7 +361,7 @@ func TestUpReportsRenewedCertificateNotPersisted(t *testing.T) {
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{}
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -368,7 +386,7 @@ func TestUpRetriesUntilForgejoReady(t *testing.T) {
 	host.execFailures = 2
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -388,7 +406,7 @@ func TestUpFailsWhenDockerUnreachable(t *testing.T) {
 	host.checkHostErr = errors.New("no docker")
 	job := events.NewJob()
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"})
+	err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier"})
 	if err == nil {
 		t.Fatal("Up: want error when Docker is unreachable, got nil")
 	}
@@ -408,7 +426,7 @@ func TestUpFailsWhenAdminCreateFails(t *testing.T) {
 	host.adminCreateErr = errors.New("create failed")
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err == nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err == nil {
 		t.Fatal("Up: want error when admin bootstrap fails, got nil")
 	}
 }
@@ -422,7 +440,7 @@ func TestUpSucceedsWhenAlreadyDeployed(t *testing.T) {
 	host.adminCreateStderr = "Command error: user already exists [name: admin]"
 	job := events.NewJob()
 
-	err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier"))
+	err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier"))
 	if err != nil {
 		t.Fatalf("Up: %v, want nil on a host that's already bootstrapped", err)
 	}
@@ -446,7 +464,7 @@ func TestUpEmbedsAppINIChecksumSoContentChangesForceRecreate(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -476,7 +494,7 @@ func TestUpRejectsNilBundle(t *testing.T) {
 
 func TestUpRejectsEmptyRemoteDir(t *testing.T) {
 	job := events.NewJob()
-	if err := Up(context.Background(), job, newFakeHost(), testBundle(), Options{}); err == nil {
+	if err := Up(context.Background(), job, newFakeHost(), testBundle(t), Options{}); err == nil {
 		t.Fatal("Up: want error for empty remote directory, got nil")
 	}
 }

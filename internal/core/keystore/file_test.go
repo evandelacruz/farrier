@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,22 @@ func TestFileDriverResolveCanceledContextErrors(t *testing.T) {
 func TestNewFileDriverRequiresPath(t *testing.T) {
 	if _, err := New("file", map[string]any{}); err == nil {
 		t.Fatal("New: want error for missing config.path, got nil")
+	}
+}
+
+// TestNewFileDriverRejectsRelativePath proves XCUT-001's constraint at the
+// keystore file driver: config.path must be absolute. A relative path
+// bakes into the bundle manifest at init and would silently re-resolve
+// against whatever directory a later command happens to run from — a
+// different one on another machine, or even the same machine from a
+// different shell session — instead of failing loudly or staying put.
+func TestNewFileDriverRejectsRelativePath(t *testing.T) {
+	_, err := New("file", map[string]any{"path": "relative/keys"})
+	if err == nil {
+		t.Fatal("New: want error for relative config.path, got nil")
+	}
+	if !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("New: err = %v, want it to mention the path must be absolute", err)
 	}
 }
 

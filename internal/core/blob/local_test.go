@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+// TestNewLocalRejectsRelativeRoot proves XCUT-001's constraint at the local
+// blob adapter, the same one the keystore file driver enforces: root must
+// be absolute. A relative root would silently re-resolve against whatever
+// directory the current process happens to be running from, which differs
+// across machines and invocations.
+func TestNewLocalRejectsRelativeRoot(t *testing.T) {
+	_, err := NewLocal("relative/blobs")
+	if err == nil {
+		t.Fatal("NewLocal: want error for relative root, got nil")
+	}
+}
+
 func TestLocalPutGetRoundTrip(t *testing.T) {
 	a, err := NewLocal(t.TempDir())
 	if err != nil {

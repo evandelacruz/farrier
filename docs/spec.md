@@ -112,6 +112,8 @@ The bundle configuration (manifest, Compose definitions, pinned versions) is a p
 
 The driver interface is published; the plugin posture matches DNS drivers and blob adapters. Teammate onboarding is: clone the bundle repo, obtain the key through the team's keystore.
 
+The `file` driver's path — and the `local` blob adapter's, the same shape of config — must be absolute (XCUT-001). The manifest carries that path as the literal string an operator gave it; a relative one would silently re-resolve against whatever directory a command happens to run from, which differs by machine and even by shell session on the same machine. A teammate who wants `file` to work needs the key material reachable at the same absolute path everywhere they run Farrier from — a synced folder mounted consistently, not a path relative to wherever they happened to clone the bundle repo.
+
 ## What the system owns: verified restores
 
 The CLI answers one question at restore and promote time: is this state a valid, complete, mutually consistent bundle?
