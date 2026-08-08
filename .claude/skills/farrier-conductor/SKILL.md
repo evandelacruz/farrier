@@ -358,6 +358,22 @@ the webhook's reviewer is claiming the PR at the same moment, the loser hits
 writing anything — GitHub enforces that mutex server-side, which is a better
 guard than any interval would be, and it costs one session start.
 
+**Do not add `conductor:reviewing` before firing.** The reviewer takes that
+lock itself, and it reads the label on entry as *another reviewer already has
+this PR* — so a conductor that pre-sets it makes the reviewer exit immediately,
+having done nothing, and leaves the label behind. The PR then looks like a
+review is in flight when none ever started, which is exactly the stall §3b
+exists to clear.
+
+This is the opposite of §3's implementer flow, and the asymmetry is easy to get
+wrong: the conductor takes `conductor:working` **before** firing an implementer,
+but never takes `conductor:reviewing` for a reviewer. Fire the reviewer against
+a PR with no reviewing lock on it and let the routine claim its own.
+
+If a PR is already carrying a stale `conductor:reviewing` — a reviewer that died,
+or one a conductor stranded this way — delete it first, then fire. A lock with
+no session behind it never expires on its own.
+
 **"Carries a verdict" is the load-bearing part, and a review existing is not
 enough.** A reviewer posts its inline findings as a review with an empty body,
 then writes the summary and sets the verdict label. Kill it between those two
