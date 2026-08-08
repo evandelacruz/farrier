@@ -40,6 +40,8 @@ Everything in the system is one of two things: disposable software or precious s
 - **Stateless:** forge app, CI orchestration, runners. Rebuilt from the bundle definition on any host in seconds.
 - **Stateful:** repos, database, secrets, blobs, key material. Lives in one primary location.
 
+The split is only real if the two live in different places. Containers are the disposable half and are recreated freely — every converge ships the whole Compose definition and lets `docker compose` reconcile — so no stateful kind may live inside one. State lives on the host filesystem, bind-mounted into the container that serves it, and survives a container being replaced or removed.
+
 ## The four kinds of state
 
 State is decomposed into four kinds because each has a natural export and replication mechanism. A backup is complete when all four are present and mutually consistent, and the bundle manifest declares each kind with its checksums.

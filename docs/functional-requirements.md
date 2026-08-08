@@ -11,6 +11,8 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - CORE-001–003 precede everything.
 - KEY, BLOB, and STATE precede BKUP.
 - BKUP precedes RSTR; RSTR precedes FAIL, UPGR, and DRIL.
+- BKUP-006 precedes the remaining STAT work — STAT-001's last-backup age and STAT-002's measured lag both need a caller that resolves a real destination.
+- UP-004 precedes RSTR-001: restore has nowhere to put git data until `up` pins forge state to a host directory.
 - ORCH and FORGE precede UP.
 - DNS-001 precedes FAIL-004; ACME-001 precedes INIT-002.
 - API-001 precedes all UI.
@@ -76,6 +78,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **UP-001** · `up` must deploy the full stateless layer given only `ssh://user@host` and a bundle.
 - **UP-002** · `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately.
 - **UP-003** · Re-running `up` against a live host must be safe and must converge that host to the bundle definition.
+- **UP-004** · `up` must place every stateful kind — git repositories, the database, and blobs — on a host directory bind-mounted into the container that serves it, so recreating or replacing a container never destroys forge state.
 
 ## IMPT — repository import
 
@@ -90,6 +93,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **BKUP-003** · Every snapshot must be age-encrypted before leaving the host.
 - **BKUP-004** · `backup` must verify the snapshot at creation and exit nonzero, naming the specific defect, when verification fails.
 - **BKUP-005** · `backup` must write to an S3-compatible URI or a filesystem path.
+- **BKUP-006** · `backup` must exist as an operator-invokable command that runs BKUP-001 through BKUP-005 end to end against a destination the operator names, reporting progress as one CORE-002 job, and must be reachable from both the CLI and the API.
 
 ## RSTR — restore
 
