@@ -2,6 +2,7 @@ package keystore
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,6 +45,39 @@ func TestFileDriverResolveMissingKeyErrors(t *testing.T) {
 	d := FileDriver{Path: t.TempDir()}
 	if _, err := d.Resolve(context.Background(), "does_not_exist"); err == nil {
 		t.Fatal("Resolve: want error for missing file, got nil")
+	}
+}
+
+// TestFileDriverResolveMissingKeyWrapsErrNotFound confirms Resolve reports
+// a positive "not found" the way the Driver interface (keystore.go) and
+// guardedDriver.Store (guard.go) require: a missing file must be
+// distinguishable, via errors.Is, from any other resolve failure.
+func TestFileDriverResolveMissingKeyWrapsErrNotFound(t *testing.T) {
+	d := FileDriver{Path: t.TempDir()}
+	_, err := d.Resolve(context.Background(), "does_not_exist")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve: err = %v, want it to wrap ErrNotFound", err)
+	}
+}
+
+// TestFileDriverResolveOtherFailureDoesNotWrapErrNotFound is the other
+// side of the same contract: a failure that is not "file does not exist"
+// (here, keyName resolving to a directory rather than a file) must not be
+// mistaken for ErrNotFound, or guardedDriver.Store would treat an
+// indeterminate failure as "safe to overwrite."
+func TestFileDriverResolveOtherFailureDoesNotWrapErrNotFound(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "not_a_file"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	d := FileDriver{Path: dir}
+	_, err := d.Resolve(context.Background(), "not_a_file")
+	if err == nil {
+		t.Fatal("Resolve: want error reading a directory as a key, got nil")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve: err = %v, wrongly wraps ErrNotFound for a non-not-found failure", err)
 	}
 }
 
@@ -139,24 +173,26 @@ func TestFileDriverStoreCreatesMissingDirectory(t *testing.T) {
 	}
 }
 
-func TestFileDriverStoreRefusesToOverwriteExistingKey(t *testing.T) {
+// TestFileDriverStoreOverwritesWithoutGuard documents that the bare driver
+// has no overwrite guard of its own: that check moved up into New's
+// guardedDriver (guard_test.go), so every driver gets it once instead of
+// each driver implementing it separately.
+func TestFileDriverStoreOverwritesWithoutGuard(t *testing.T) {
 	dir := t.TempDir()
 	d := FileDriver{Path: dir}
 	if err := d.Store(context.Background(), "k", NewSecret("original")); err != nil {
 		t.Fatalf("Store: %v", err)
 	}
-
-	err := d.Store(context.Background(), "k", NewSecret("replacement"))
-	if err == nil {
-		t.Fatal("Store: want error overwriting an existing key, got nil")
+	if err := d.Store(context.Background(), "k", NewSecret("replacement")); err != nil {
+		t.Fatalf("Store: %v", err)
 	}
 
 	got, resolveErr := d.Resolve(context.Background(), "k")
 	if resolveErr != nil {
 		t.Fatalf("Resolve: %v", resolveErr)
 	}
-	if got.Reveal() != "original" {
-		t.Errorf("Reveal() = %q, want original value preserved", got.Reveal())
+	if got.Reveal() != "replacement" {
+		t.Errorf("Reveal() = %q, want the replacement value", got.Reveal())
 	}
 }
 
