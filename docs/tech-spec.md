@@ -388,6 +388,34 @@ Re-running `up` against a host it has already deployed to converges the host to 
 - Step 4 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
 - Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
 
+### Host state layout (UP-004)
+
+Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the container that serves it:
+
+```
+<RemoteDir>/state/git      → forgejo:/data/git/repositories
+<RemoteDir>/state/gitea    → forgejo:/data/gitea          (SQLite database, LFS objects)
+<RemoteDir>/state/blobs    → the local blob adapter's path, when the bundle uses one
+```
+
+This is what makes the stateless/stateful split in spec.md real. Without it every kind of state lives in the forgejo container's writable layer, and `Converge`'s `docker compose up -d --remove-orphans` — which recreates any service whose resolved config changed — destroys it. Host state being disposable applies to the *stateless* layer only; `<RemoteDir>/state` is the one directory on the host that is not.
+
+It is also what `state.SSHGitExporter` and `backup.SSHGitCapturer` already assume. Both run `find` and `tar -C <root>` directly over SSH with no `docker exec` wrapper, unlike `state.SSHDatabaseExporter`, which wraps because the database is reached through the running Forgejo process rather than as a file. Git capture was written against a host-visible repository root; UP-004 supplies it.
+
+## Snapshot orchestration (`backup`, BKUP-006)
+
+BKUP-001 through BKUP-005 are library functions — capture, encrypt, verify, write — and BKUP-006 is the command that composes them:
+
+1. Resolve the destination the operator named (`backup.OpenDestination`, BKUP-005) into a `blob.Adapter`.
+2. `backup.Run` — capture all four state kinds into a snapshot directory (BKUP-001, BKUP-002).
+3. `backup.Encrypt` — age-encrypt the directory into one archive (BKUP-003).
+4. `backup.Verify` — verify before anything leaves the host (BKUP-004).
+5. `backup.Write` — write the archive to the destination under `backup.SnapshotKey` (BKUP-005).
+
+The whole sequence is one CORE-002 job, so the CLI and the dashboard render the same progress from the same event stream, and the orchestrator owns the job's terminal event — the individual steps emit their own step events but never end the job. Reachable from `cmd/farrier backup` and `POST /backup` (API-001), both thin over the core.
+
+Until BKUP-006 lands, nothing in the tree calls any of BKUP-001..005, and `status` has no destination to report a last-backup age or replication lag against (STAT-001, STAT-002).
+
 ## Status (`status`, STAT-001, STAT-002)
 
 `internal/core/status.Check` is a synchronous read, not a job (tech-spec.md
@@ -407,10 +435,10 @@ instance's current state each time it's called, never a cached one:
    clock falls inside the certificate's validity window, expiring-soon at
    the same 14-day threshold ACME-002 sets for renewal warnings
    (`status.CertExpiryWarning`).
-3. **Disk headroom:** `df -Pk` on the host, default path `/` — no landed
-   decision yet pins forge state to a specific bind-mounted host
-   directory, so root is the only host-wide signal available without
-   guessing one.
+3. **Disk headroom:** `df -Pk` on the host, default path `/`. UP-004 pins
+   forge state to `<RemoteDir>/state`, so that is the path to measure once
+   UP-004 lands; until then root is the only host-wide signal available
+   without guessing one.
 4. **Replication lag (STAT-002):** `status.ReplicationLag` against
    `Options.Destination`, a `state.BlobExporter` — the read side of
    `blob.Adapter` — with no bundle-level destination config of its own:
