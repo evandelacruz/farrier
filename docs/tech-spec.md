@@ -17,6 +17,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, issue TLS cert, converge, bootstrap admin
+  importer/           `import` sequencing: calls Forgejo's migration API, with optional mirror sync (IMPT-001, IMPT-002)
   acme/               cert issuance and renewal (lego)
   caddy/              Caddy config rendering: the Caddyfile that terminates TLS with a core-issued certificate
   driver/             exec-based driver protocol (JSON on stdin/stdout), shared by dns/, keystore/, blob/
@@ -213,6 +214,19 @@ topology, arranged the same way they arrange the host itself (spec.md "What
 the operator owns") — `up` does not manage DNS records.
 
 Every step reports through the job's CORE-002 event stream; `deploy.Up` owns the job's terminal event. `cmd/farrier up` is the CLI skin: it connects over SSH, calls `deploy.Up`, and prints the same events a dashboard would render over SSE.
+
+## Importing repositories (`import`, IMPT-001, IMPT-002)
+
+`internal/core/importer.Run` calls Forgejo's own migration endpoint, `POST /api/v1/repos/migrate`, on the target instance's API — no git transport is reimplemented:
+
+1. Resolve the source service (`github` or `gitlab`) from the source URL's host, or take it from an explicit override for self-hosted sources the host doesn't name.
+2. Derive the target repository name from the source URL's last path segment unless one is given explicitly.
+3. Call `POST /api/v1/repos/migrate` with `clone_addr`, `auth_token` (the source token), `repo_owner`, `repo_name`, `lfs: true` (IMPT-001's LFS objects), and `private`. Issue, pull-request, wiki, and release history are always requested `false` — spec.md "Importing repositories" leaves that history on the source forge unconditionally, so it is never a caller option.
+4. When `Mirror` is set (IMPT-002), the same request also carries `mirror: true` and, if given, `mirror_interval` — Forgejo re-pulls the source on that cadence with no further Farrier involvement.
+
+The default branch travels automatically as part of the git migration; there is no separate step for it. `Run` owns the job's terminal event the way `deploy.Up` does. `cmd/farrier import` is the CLI skin: `-target`/`-target-token` address the Farrier instance, `-source`/`-source-token` the origin, `-owner`/`-name` the repository's home on the target, and `-mirror`/`-mirror-interval` opt into continuous sync.
+
+IMPT-003 (per-repository batch reporting and no partially-registered repository on failure) is not implemented yet; today's `import` migrates one repository per invocation and reports that one outcome.
 
 ## API
 
