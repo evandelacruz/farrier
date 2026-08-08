@@ -85,7 +85,7 @@ The instance is single-tenant: CI exists to run the team's own code, isolated at
 
 ## Importing repositories
 
-`import` wraps Forgejo's built-in migration to bring existing repositories in from GitHub or GitLab: code, full history, LFS objects, default branch, and optional mirror sync. Actions workflows arrive with the repo — they live in the repo tree and Forgejo Actions speaks GitHub Actions syntax, so CI largely ports as-is. CI secrets are re-entered by the operator on the new instance. Import covers repositories; issue and pull-request history stay on the source forge.
+`import` wraps Forgejo's built-in migration to bring existing repositories in from GitHub or GitLab: code, full history, LFS objects, default branch, and optional mirror sync. Actions workflows arrive with the repo — they live in the repo tree and Forgejo Actions speaks GitHub Actions syntax, so CI largely ports as-is. CI secrets are re-entered by the operator on the new instance. Import covers repositories; issue and pull-request history stay on the source forge. Importing a batch reports each repository's own success or failure rather than one pass/fail for the whole run, and a repository whose migration fails is never left half-registered on the target.
 
 ## Version pinning
 
