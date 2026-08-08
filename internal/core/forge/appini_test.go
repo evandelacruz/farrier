@@ -20,6 +20,7 @@ func validManifest() *bundle.Manifest {
 			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": "/keys/bundle.key"}},
 			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": "/data/blobs"}},
 		},
+		bundle.ACMEConfig{DNSProvider: "manual"},
 	)
 }
 
