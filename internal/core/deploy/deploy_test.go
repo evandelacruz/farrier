@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,19 +131,58 @@ func (f *fakeHost) CheckHost(ctx context.Context) error {
 	return f.checkHostErr
 }
 
-func testBundle() *bundle.Bundle {
+// testBundle returns a bundle whose keystore points at a fresh copy of
+// testdata/keys, private to the calling test. Up's TLS step can now
+// persist a renewed certificate back through the keystore (ACME-002), so
+// tests must not point the "file" driver straight at the checked-in
+// fixture — writing there would corrupt it for every other test and leave
+// the working tree dirty after a single `go test` run.
+func testBundle(t *testing.T) *bundle.Bundle {
+	t.Helper()
+	keysDir := t.TempDir()
+	copyFixtureFiles(t, "testdata/keys", keysDir)
 	return &bundle.Bundle{
 		Manifest: *bundle.NewManifest("example.com", map[string]string{
 			"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
 			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
 		}, bundle.DriverConfig{
-			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": "testdata/keys"}},
+			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
 			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": "testdata/blobs"}},
 		}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"}),
 		Compose: map[string][]byte{
 			"docker-compose.yml": []byte("services:\n  forgejo:\n    image: x\n  caddy:\n    image: y\n"),
 		},
 	}
+}
+
+// copyFixtureFiles copies every file directly under src into dst, so a
+// test gets its own writable copy of a checked-in fixture directory.
+func copyFixtureFiles(t *testing.T, src, dst string) {
+	t.Helper()
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatalf("read %s: %v", src, err)
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(src, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s/%s: %v", src, entry.Name(), err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, entry.Name()), data, 0o600); err != nil {
+			t.Fatalf("write %s/%s: %v", dst, entry.Name(), err)
+		}
+	}
+}
+
+// keystorePath returns the directory b's "file" keystore driver was
+// configured with, so a test can inspect what Up persisted there.
+func keystorePath(t *testing.T, b *bundle.Bundle) string {
+	t.Helper()
+	path, ok := b.Manifest.Drivers.Keystore.Config["path"].(string)
+	if !ok {
+		t.Fatal("bundle keystore driver has no string \"path\" config")
+	}
+	return path
 }
 
 func drain(job *events.Job) []events.Event {
@@ -160,7 +200,7 @@ func TestUpSucceeds(t *testing.T) {
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{}
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
+	err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
 	if err != nil {
 		t.Fatalf("Up: %v", err)
 	}
@@ -243,7 +283,7 @@ func TestUpPublishesCaddyHTTPSPort(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -274,7 +314,7 @@ func TestUpFailsWhenCertIssuanceFails(t *testing.T) {
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{err: errors.New("dns-01 challenge failed")}
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
+	err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
 	if err == nil {
 		t.Fatal("Up: want error when certificate issuance fails, got nil")
 	}
@@ -303,8 +343,9 @@ func TestUpReusesPersistedCertificateWithoutIssuing(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{reuse: true}
+	b := testBundle(t)
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+	if err := Up(context.Background(), job, host, b, Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -312,12 +353,12 @@ func TestUpReusesPersistedCertificateWithoutIssuing(t *testing.T) {
 		t.Errorf("cert issuer calls = %d, want 0 — a fresh persisted certificate must not be reissued", len(issuer.calls))
 	}
 
-	persistedCert, err := os.ReadFile("testdata/keys/tls_certificate")
+	persistedCert, err := os.ReadFile(filepath.Join(keystorePath(t, b), "tls_certificate"))
 	if err != nil {
-		t.Fatalf("read testdata certificate: %v", err)
+		t.Fatalf("read persisted certificate: %v", err)
 	}
 	if host.files["/opt/farrier/caddy/tls.crt"] != string(persistedCert) {
-		t.Error("shipped certificate does not match the persisted testdata certificate")
+		t.Error("shipped certificate does not match the persisted certificate")
 	}
 
 	evs := drain(job)
@@ -332,18 +373,18 @@ func TestUpReusesPersistedCertificateWithoutIssuing(t *testing.T) {
 	}
 }
 
-// TestUpReportsRenewedCertificateNotPersisted exercises the rare branch
-// where the persisted certificate is due for renewal: Up must still
-// succeed, using the freshly issued certificate for this deploy, and must
-// tell the operator through the event stream that the renewal was not
-// persisted back to the keystore (persisting it is ACME-002's gap, not
-// UP-003's).
-func TestUpReportsRenewedCertificateNotPersisted(t *testing.T) {
+// TestUpPersistsRenewedCertificate exercises ACME-002's close: on the rare
+// branch where the persisted certificate is due for renewal, Up must not
+// only use the freshly issued certificate for this deploy but also write
+// it back to the keystore, so the next Up sees the renewal instead of
+// deciding the same certificate is due all over again.
+func TestUpPersistsRenewedCertificate(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 	issuer := &fakeCertIssuer{}
+	b := testBundle(t)
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+	if err := Up(context.Background(), job, host, b, Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -351,15 +392,56 @@ func TestUpReportsRenewedCertificateNotPersisted(t *testing.T) {
 		t.Error("Up did not ship the freshly issued certificate for this deploy")
 	}
 
+	gotCert, err := os.ReadFile(filepath.Join(keystorePath(t, b), "tls_certificate"))
+	if err != nil {
+		t.Fatalf("read persisted certificate: %v", err)
+	}
+	if string(gotCert) != "fake-cert-pem" {
+		t.Errorf("persisted certificate = %q, want the renewed certificate", gotCert)
+	}
+	gotKey, err := os.ReadFile(filepath.Join(keystorePath(t, b), "tls_private_key"))
+	if err != nil {
+		t.Fatalf("read persisted private key: %v", err)
+	}
+	if string(gotKey) != "fake-key-pem" {
+		t.Errorf("persisted private key = %q, want the renewed private key", gotKey)
+	}
+
 	evs := drain(job)
-	var sawNotPersisted bool
+	var sawPersisted bool
 	for _, ev := range evs {
-		if ev.Step == StepConfigureTLS && ev.State == events.StateSucceeded && strings.Contains(ev.Detail, "not persisted") {
-			sawNotPersisted = true
+		if ev.Step == StepConfigureTLS && ev.State == events.StateSucceeded && strings.Contains(ev.Detail, "persisted") {
+			sawPersisted = true
 		}
 	}
-	if !sawNotPersisted {
-		t.Errorf("no configure-tls success event reporting the renewal was not persisted, events: %+v", evs)
+	if !sawPersisted {
+		t.Errorf("no configure-tls success event reporting the renewal was persisted, events: %+v", evs)
+	}
+}
+
+// TestUpFailsWhenKeystoreCannotPersistRenewedCertificate exercises the
+// defensive branch in persistRenewedCertificate: init requires a
+// Writer-capable keystore driver (initialize.Run), but if a bundle's
+// keystore target is later reconfigured to one that isn't (e.g.
+// "command", read-only by design per KEY-002), a renewal due at deploy
+// time must fail clearly rather than silently serve a certificate it
+// can't save.
+func TestUpFailsWhenKeystoreCannotPersistRenewedCertificate(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+	issuer := &fakeCertIssuer{}
+	b := testBundle(t)
+	b.Manifest.Drivers.Keystore = bundle.DriverRef{
+		Driver: "command",
+		Config: map[string]any{"command": `cat testdata/keys/"$FARRIER_KEY_NAME"`},
+	}
+
+	err := Up(context.Background(), job, host, b, Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
+	if err == nil {
+		t.Fatal("Up: want error when the keystore driver cannot persist a renewed certificate, got nil")
+	}
+	if !strings.Contains(err.Error(), "persist renewed") {
+		t.Errorf("error = %v, want it to name the persistence failure", err)
 	}
 }
 
@@ -368,7 +450,7 @@ func TestUpRetriesUntilForgejoReady(t *testing.T) {
 	host.execFailures = 2
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -388,7 +470,7 @@ func TestUpFailsWhenDockerUnreachable(t *testing.T) {
 	host.checkHostErr = errors.New("no docker")
 	job := events.NewJob()
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"})
+	err := Up(context.Background(), job, host, testBundle(t), Options{RemoteDir: "/opt/farrier"})
 	if err == nil {
 		t.Fatal("Up: want error when Docker is unreachable, got nil")
 	}
@@ -408,7 +490,7 @@ func TestUpFailsWhenAdminCreateFails(t *testing.T) {
 	host.adminCreateErr = errors.New("create failed")
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err == nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err == nil {
 		t.Fatal("Up: want error when admin bootstrap fails, got nil")
 	}
 }
@@ -422,7 +504,7 @@ func TestUpSucceedsWhenAlreadyDeployed(t *testing.T) {
 	host.adminCreateStderr = "Command error: user already exists [name: admin]"
 	job := events.NewJob()
 
-	err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier"))
+	err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier"))
 	if err != nil {
 		t.Fatalf("Up: %v, want nil on a host that's already bootstrapped", err)
 	}
@@ -446,7 +528,7 @@ func TestUpEmbedsAppINIChecksumSoContentChangesForceRecreate(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -476,7 +558,7 @@ func TestUpRejectsNilBundle(t *testing.T) {
 
 func TestUpRejectsEmptyRemoteDir(t *testing.T) {
 	job := events.NewJob()
-	if err := Up(context.Background(), job, newFakeHost(), testBundle(), Options{}); err == nil {
+	if err := Up(context.Background(), job, newFakeHost(), testBundle(t), Options{}); err == nil {
 		t.Fatal("Up: want error for empty remote directory, got nil")
 	}
 }

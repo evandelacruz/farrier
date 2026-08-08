@@ -29,6 +29,9 @@ func (d FileDriver) Resolve(ctx context.Context, keyName string) (Secret, error)
 	}
 	data, err := os.ReadFile(full)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return Secret{}, fmt.Errorf("keystore: file: key %q not found at %s: %w", keyName, full, ErrNotFound)
+		}
 		return Secret{}, fmt.Errorf("keystore: file: resolve key %q: %w", keyName, err)
 	}
 	if len(data) == 0 {
@@ -38,12 +41,11 @@ func (d FileDriver) Resolve(ctx context.Context, keyName string) (Secret, error)
 }
 
 // Store writes secret to Path/keyName, creating Path if it doesn't exist
-// yet. It refuses to overwrite a key that already has content: key
-// material is bundle identity (spec.md "Identity lives in the bundle, not
-// the host"), so silently replacing it — the way a second `init` run
-// against an existing keystore target could — would change what every
-// existing clone, backup, and restore expects without anyone deciding to
-// rotate it.
+// yet, overwriting whatever was there. It has no overwrite guard of its
+// own: New wraps every Writer-implementing driver, this one included, in
+// the rotation-policy guard (guardedDriver) that refuses to overwrite key
+// material not declared rotating (spec.md "Identity" > "Key material") —
+// enforced once, above the driver, rather than inside each one.
 func (d FileDriver) Store(ctx context.Context, keyName string, secret Secret) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -51,11 +53,6 @@ func (d FileDriver) Store(ctx context.Context, keyName string, secret Secret) er
 	full, err := d.resolvePath(keyName)
 	if err != nil {
 		return err
-	}
-	if data, err := os.ReadFile(full); err == nil && len(data) > 0 {
-		return fmt.Errorf("keystore: file: key %q already exists at %s, refusing to overwrite", keyName, full)
-	} else if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("keystore: file: check existing key %q: %w", keyName, err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {

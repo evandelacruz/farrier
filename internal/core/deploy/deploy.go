@@ -157,7 +157,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		return fmt.Errorf("deploy: configure tls: %w", err)
 	}
 	if renewed {
-		job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal and a fresh one was issued for this deploy; it was not persisted to the keystore (ACME-002)")
+		job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal; a fresh one was issued and persisted to the keystore (ACME-002)")
 	} else {
 		job.Emit(StepConfigureTLS, events.StateSucceeded, "persisted certificate reused and caddy configured")
 	}

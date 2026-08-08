@@ -86,14 +86,18 @@ func RunBatch(ctx context.Context, job *events.Job, opts BatchOptions) (BatchRes
 // never written to a file, so a manifest never carries a token — Manifest
 // entries layer over a defaults Options that already has TargetBaseURL,
 // TargetToken, and SourceToken set.
+//
+// It also doubles as the wire shape for POST /import's batch "repos" field
+// (internal/api), so the field tags cover both YAML (the -file manifest)
+// and JSON (the API request body).
 type ManifestEntry struct {
-	Source         string `yaml:"source"`
-	Service        string `yaml:"service,omitempty"`
-	Owner          string `yaml:"owner,omitempty"`
-	Name           string `yaml:"name,omitempty"`
-	Private        *bool  `yaml:"private,omitempty"`
-	Mirror         *bool  `yaml:"mirror,omitempty"`
-	MirrorInterval string `yaml:"mirrorInterval,omitempty"`
+	Source         string `yaml:"source" json:"source"`
+	Service        string `yaml:"service,omitempty" json:"service,omitempty"`
+	Owner          string `yaml:"owner,omitempty" json:"owner,omitempty"`
+	Name           string `yaml:"name,omitempty" json:"name,omitempty"`
+	Private        *bool  `yaml:"private,omitempty" json:"private,omitempty"`
+	Mirror         *bool  `yaml:"mirror,omitempty" json:"mirror,omitempty"`
+	MirrorInterval string `yaml:"mirrorInterval,omitempty" json:"mirrorInterval,omitempty"`
 }
 
 // Manifest is a batch import's repository list (IMPT-003): one file
