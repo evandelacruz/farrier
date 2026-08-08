@@ -70,7 +70,7 @@
     "DRIL-003": "open",
     "STAT-001": {"state": "partial", "remaining": "last-backup age reporting: needs the snapshot listing/naming convention that BKUP-001..005 (not yet landed) will define for its destination"},
     "STAT-002": {"state": "partial", "remaining": "measured lag needs the backup destination BKUP-005 persists; core ReplicationLag and the CLI unmeasured path are done"},
-    "API-001": {"state": "partial", "remaining": "wire POST /backup, /restore, /promote, /upgrade, /drill, /import, and GET /status once their core operations land (BKUP-*, RSTR-*, FAIL-*, UPGR-*, DRIL-*, IMPT-*, STAT-*); the API package, loopback binding, job dispatch, and SSE framing are done"},
+    "API-001": {"state": "partial", "remaining": "wire POST /backup once BKUP-004 (verify) and BKUP-005 (write to destination) land; wire POST /restore, /promote, /upgrade, /drill once their core operations land (RSTR-*, FAIL-*, UPGR-*, DRIL-*); POST /init, POST /up, POST /import, and GET /status are wired"},
     "API-002": "landed",
     "UI-001": "open",
     "UI-002": "open",
