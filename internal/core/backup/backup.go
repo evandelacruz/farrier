@@ -6,11 +6,12 @@
 // file (tech-spec.md "Snapshot format"). It is the core logic behind the
 // `backup` CLI command.
 //
-// Run produces a plain, unencrypted snapshot directory. The push-hold
-// window around git capture (BKUP-002), encryption (BKUP-003), verification
-// at creation (BKUP-004), and writing the result to an S3-compatible URI or
+// Run produces a plain, unencrypted snapshot directory; Encrypt (BKUP-003)
+// turns it into the single age-encrypted archive that actually leaves the
+// host. The push-hold window around git capture (BKUP-002), verification at
+// creation (BKUP-004), and writing the result to an S3-compatible URI or
 // filesystem path (BKUP-005) are separate requirements layered on top of
-// what Run produces here.
+// what Run and Encrypt produce here.
 package backup
 
 import (
