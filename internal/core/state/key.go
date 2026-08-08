@@ -16,10 +16,15 @@ import (
 // declaring its own, so a name change in one place can't silently drift out
 // of sync with the other.
 const (
-	KeyTLSCertificate       = "tls_certificate"
-	KeyTLSIssuerCertificate = "tls_issuer_certificate"
-	KeyTLSPrivateKey        = "tls_private_key"
-	KeySSHHostKey           = "ssh_host_key"
+	KeyTLSCertificate = "tls_certificate"
+	KeyTLSPrivateKey  = "tls_private_key"
+	KeySSHHostKey     = "ssh_host_key"
+	// KeySSHHostKeyPublic is KeySSHHostKey's public half, in
+	// authorized-keys format — matches initialize.KeySSHHostKeyPublic's
+	// value; declared separately here to keep state decoupled from
+	// initialize (tech-spec.md "Repository layout"), the same reason
+	// KeyTLSCertificate et al. are declared here rather than imported.
+	KeySSHHostKeyPublic = "ssh_host_key.pub"
 )
 
 // keyNames is the fixed, ordered set every bundle's key material consists of
@@ -29,7 +34,10 @@ const (
 // what Names enumerates, since a keystore.Driver (tech-spec "Keystore
 // driver config": file, command, or an out-of-tree exec driver) only ever
 // resolves a name it's given — none of the three shipped drivers can list
-// what they hold.
+// what they hold. This must stay in sync with initialize.keyMaterialOrder
+// (minus the age backup key, see below): a name here that init never stores
+// makes every real backup fail on resolve, and a name init stores that isn't
+// here is silently left out of every backup.
 //
 // The age backup key (spec.md "Key custody") is deliberately not in this
 // set: it encrypts the backup, so it is never captured into one, and it is
@@ -39,9 +47,9 @@ var keyNames = []string{
 	forge.KeyInternalToken,
 	forge.KeyLFSJWTSecret,
 	KeyTLSCertificate,
-	KeyTLSIssuerCertificate,
 	KeyTLSPrivateKey,
 	KeySSHHostKey,
+	KeySSHHostKeyPublic,
 }
 
 // KeyExporter exposes a bundle's key material (STATE-004, spec.md "Identity"
