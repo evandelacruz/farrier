@@ -82,8 +82,8 @@ func runImport(args []string) int {
 
 	// Resolve everything that can fail without a job — reading and
 	// validating a batch manifest — before starting one: a job that never
-	// runs never emits its terminal event, and printEvents below would
-	// then block forever waiting for a stream that never closes.
+	// runs never emits its terminal event, and runJob below would then
+	// block forever waiting for a stream that never closes.
 	var repos []importer.Options
 	if *file != "" {
 		manifestRepos, err := loadManifest(*file, defaults)
@@ -95,25 +95,17 @@ func runImport(args []string) int {
 	}
 
 	job := events.NewJob()
-	sub, cancel := job.Subscribe()
-	defer cancel()
-
-	done := make(chan struct{})
-	go func() {
-		printEvents(sub)
-		close(done)
-	}()
-
-	var err error
-	if *file != "" {
-		_, err = importer.RunBatch(context.Background(), job, importer.BatchOptions{Repos: repos})
-	} else {
+	err := runJob(job, func() error {
+		if *file != "" {
+			_, runErr := importer.RunBatch(context.Background(), job, importer.BatchOptions{Repos: repos})
+			return runErr
+		}
 		opts := defaults
 		opts.SourceURL = *sourceURL
 		opts.RepoName = *name
-		_, err = importer.Run(context.Background(), job, opts)
-	}
-	<-done
+		_, runErr := importer.Run(context.Background(), job, opts)
+		return runErr
+	})
 
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: import: %v\n", err)
