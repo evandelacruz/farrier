@@ -25,7 +25,19 @@ type GitCapturer interface {
 	// Archive returns a tar stream of the bare repository remote points at.
 	// The caller must Close the returned reader.
 	Archive(ctx context.Context, remote state.Remote) (io.ReadCloser, error)
+
+	// Refs returns a tar stream of just the bare repository's mutable ref
+	// state — HEAD, packed-refs (if present), and everything under refs/
+	// — the only part of a bare repository a push actually changes. Run
+	// calls Refs during the push hold, deferring the much larger
+	// (immutable, append-only) object store Archive captures to after the
+	// hold releases (BKUP-002, docs/spec.md "Backups").
+	Refs(ctx context.Context, remote state.Remote) (io.ReadCloser, error)
 }
+
+// refEntries are the bare-repository paths that hold ref state, relative to
+// the repository root.
+var refEntries = []string{"HEAD", "packed-refs", "refs"}
 
 // LocalGitCapturer tars a bare repository directly from disk, given a
 // Remote whose URL is an absolute filesystem path — what
@@ -53,11 +65,59 @@ func (LocalGitCapturer) Archive(ctx context.Context, remote state.Remote) (io.Re
 	return pr, nil
 }
 
+// Refs walks root and tars only refEntries — HEAD, packed-refs, refs/ —
+// skipping any that don't exist (packed-refs, in particular, is absent
+// until the repository has been packed at least once).
+func (LocalGitCapturer) Refs(ctx context.Context, remote state.Remote) (io.ReadCloser, error) {
+	root := remote.URL
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, fmt.Errorf("backup: local git capturer: stat %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("backup: local git capturer: %s is not a directory", root)
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		pw.CloseWithError(tarRefEntries(ctx, pw, root))
+	}()
+	return pr, nil
+}
+
 // tarDir writes every file under root into w as a tar archive, with entry
 // names relative to root.
 func tarDir(ctx context.Context, w io.Writer, root string) error {
 	tw := tar.NewWriter(w)
-	err := filepath.Walk(root, func(path string, fi os.FileInfo, err error) error {
+	if err := tarWalk(ctx, tw, root, root); err != nil {
+		return err
+	}
+	return tw.Close()
+}
+
+// tarRefEntries writes only refEntries found under root into w as a tar
+// archive, with entry names relative to root.
+func tarRefEntries(ctx context.Context, w io.Writer, root string) error {
+	tw := tar.NewWriter(w)
+	for _, entry := range refEntries {
+		full := filepath.Join(root, entry)
+		if _, err := os.Stat(full); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if err := tarWalk(ctx, tw, root, full); err != nil {
+			return err
+		}
+	}
+	return tw.Close()
+}
+
+// tarWalk walks start (a file or directory under root) and writes every
+// entry it finds into tw, with names relative to root.
+func tarWalk(ctx context.Context, tw *tar.Writer, root, start string) error {
+	return filepath.Walk(start, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -93,10 +153,6 @@ func tarDir(ctx context.Context, w io.Writer, root string) error {
 		_, err = io.Copy(tw, f)
 		return err
 	})
-	if err != nil {
-		return err
-	}
-	return tw.Close()
 }
 
 // SSHGitCapturer tars a bare repository on a remote forge host over an
@@ -124,6 +180,36 @@ func (c SSHGitCapturer) Archive(ctx context.Context, remote state.Remote) (io.Re
 	go func() {
 		var stderr strings.Builder
 		command := fmt.Sprintf("tar -C %s -cf - .", gitShellQuote(dir))
+		runErr := c.Runner.Run(ctx, command, pw, &stderr)
+		if runErr != nil {
+			runErr = fmt.Errorf("%w%s", runErr, gitCommandStderrSuffix(stderr.String()))
+		}
+		pw.CloseWithError(runErr)
+	}()
+	return pr, nil
+}
+
+// Refs streams a tar of just HEAD, packed-refs (if present), and refs/
+// from the remote directory over Runner, the SSH-side counterpart of
+// LocalGitCapturer.Refs. It builds the file list in-shell rather than
+// relying on a GNU-tar-only flag like --ignore-failed-read, since the
+// forge host's tar implementation isn't guaranteed to be GNU tar.
+func (c SSHGitCapturer) Refs(ctx context.Context, remote state.Remote) (io.ReadCloser, error) {
+	if c.Runner == nil {
+		return nil, errors.New("backup: ssh git capturer: runner is required")
+	}
+	dir, err := repoPath(remote.URL)
+	if err != nil {
+		return nil, fmt.Errorf("backup: ssh git capturer: %w", err)
+	}
+
+	pr, pw := io.Pipe()
+	go func() {
+		var stderr strings.Builder
+		command := fmt.Sprintf(
+			"cd %s && entries=HEAD; [ -e packed-refs ] && entries=\"$entries packed-refs\"; [ -d refs ] && entries=\"$entries refs\"; tar -cf - $entries",
+			gitShellQuote(dir),
+		)
 		runErr := c.Runner.Run(ctx, command, pw, &stderr)
 		if runErr != nil {
 			runErr = fmt.Errorf("%w%s", runErr, gitCommandStderrSuffix(stderr.String()))

@@ -65,6 +65,57 @@ func TestLocalGitCapturerArchivesDirectory(t *testing.T) {
 	}
 }
 
+func TestLocalGitCapturerRefsCapturesOnlyMutableRefState(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "HEAD"), "ref: refs/heads/main\n")
+	mustWriteFile(t, filepath.Join(root, "packed-refs"), "deadbeef refs/heads/old\n")
+	mustWriteFile(t, filepath.Join(root, "refs", "heads", "main"), "deadbeef\n")
+	mustWriteFile(t, filepath.Join(root, "objects", "pack", "pack-x.pack"), "pack-bytes")
+
+	capturer := LocalGitCapturer{}
+	rc, err := capturer.Refs(context.Background(), state.Remote{Name: "acme/widgets", URL: root})
+	if err != nil {
+		t.Fatalf("Refs: %v", err)
+	}
+	defer rc.Close()
+
+	got := readTarFiles(t, rc)
+	want := map[string]string{
+		"HEAD":            "ref: refs/heads/main\n",
+		"packed-refs":     "deadbeef refs/heads/old\n",
+		"refs/heads/main": "deadbeef\n",
+	}
+	for name, content := range want {
+		if got[name] != content {
+			t.Errorf("tar entry %q = %q, want %q", name, got[name], content)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("tar entries = %v, want exactly %v (objects/ must not appear)", got, want)
+	}
+}
+
+func TestLocalGitCapturerRefsSkipsMissingPackedRefs(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "HEAD"), "ref: refs/heads/main\n")
+	mustWriteFile(t, filepath.Join(root, "refs", "heads", "main"), "deadbeef\n")
+
+	capturer := LocalGitCapturer{}
+	rc, err := capturer.Refs(context.Background(), state.Remote{Name: "acme/widgets", URL: root})
+	if err != nil {
+		t.Fatalf("Refs: %v", err)
+	}
+	defer rc.Close()
+
+	got := readTarFiles(t, rc)
+	if _, ok := got["packed-refs"]; ok {
+		t.Errorf("tar entries = %v, packed-refs should be absent, not present", got)
+	}
+	if got["HEAD"] != "ref: refs/heads/main\n" {
+		t.Errorf("HEAD = %q, want %q", got["HEAD"], "ref: refs/heads/main\n")
+	}
+}
+
 func TestLocalGitCapturerMissingDirectory(t *testing.T) {
 	capturer := LocalGitCapturer{}
 	_, err := capturer.Archive(context.Background(), state.Remote{Name: "acme/widgets", URL: filepath.Join(t.TempDir(), "missing")})
@@ -108,6 +159,42 @@ func TestSSHGitCapturerRunsTarInRemoteDirectory(t *testing.T) {
 	want := "tar -C '/data/git/acme/widgets.git' -cf - ."
 	if runner.command != want {
 		t.Fatalf("command = %q, want %q", runner.command, want)
+	}
+}
+
+func TestSSHGitCapturerRefsRunsTarOverJustRefState(t *testing.T) {
+	runner := &fakeRunner{stdout: []byte("fake-refs-tar-bytes")}
+	capturer := SSHGitCapturer{Runner: runner}
+
+	remote := state.Remote{Name: "acme/widgets", URL: "ssh://farrier@forge.example.com:2222/data/git/acme/widgets.git"}
+	rc, err := capturer.Refs(context.Background(), remote)
+	if err != nil {
+		t.Fatalf("Refs: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read refs archive: %v", err)
+	}
+	if string(got) != "fake-refs-tar-bytes" {
+		t.Fatalf("archive content = %q, want %q", got, "fake-refs-tar-bytes")
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if !strings.Contains(runner.command, "cd '/data/git/acme/widgets.git'") {
+		t.Fatalf("command = %q, want it to cd into the repository directory", runner.command)
+	}
+	if !strings.Contains(runner.command, "tar -cf - $entries") {
+		t.Fatalf("command = %q, want it to tar the collected ref entries", runner.command)
+	}
+}
+
+func TestSSHGitCapturerRefsRequiresRunner(t *testing.T) {
+	capturer := SSHGitCapturer{}
+	_, err := capturer.Refs(context.Background(), state.Remote{Name: "acme/widgets", URL: "ssh://farrier@forge.example.com/data/git/acme/widgets.git"})
+	if err == nil {
+		t.Fatal("Refs: want error with no runner, got nil")
 	}
 }
 
