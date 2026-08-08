@@ -109,6 +109,25 @@ func TestReplicationLagUnknownModifiedTimesAreUnmeasured(t *testing.T) {
 	}
 }
 
+func TestReplicationLagFutureModifiedIsSkewNotNegativeAge(t *testing.T) {
+	now := time.Now()
+	f := &fakeExporter{objects: []blob.Object{{Key: "a", Modified: now.Add(90 * time.Second)}}}
+
+	lag, err := ReplicationLag(context.Background(), f, now)
+	if err != nil {
+		t.Fatalf("ReplicationLag: %v", err)
+	}
+	if lag.State != LagMeasured {
+		t.Fatalf("State = %q, want %q", lag.State, LagMeasured)
+	}
+	if lag.Age != 0 {
+		t.Errorf("Age = %v, want 0", lag.Age)
+	}
+	if lag.Skew != 90*time.Second {
+		t.Errorf("Skew = %v, want %v", lag.Skew, 90*time.Second)
+	}
+}
+
 func TestReplicationLagPropagatesListError(t *testing.T) {
 	f := &fakeExporter{err: errors.New("boom")}
 
