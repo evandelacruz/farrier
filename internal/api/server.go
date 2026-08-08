@@ -14,8 +14,11 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/importer"
 	"github.com/evandelacruz/farrier/internal/core/initialize"
+	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
+	"github.com/evandelacruz/farrier/internal/core/status"
 )
 
 // DefaultAddr is the loopback address the API binds by default
@@ -40,15 +43,20 @@ type Host interface {
 type Server struct {
 	jobs *events.Store
 
-	initRun    func(ctx context.Context, job *events.Job, params initialize.Params) (*bundle.Bundle, error)
-	loadBundle func(dir string) (*bundle.Bundle, error)
-	dial       func(ctx context.Context, target string, opts orchestrate.Options) (Host, error)
-	deployUp   func(ctx context.Context, job *events.Job, host deploy.Host, b *bundle.Bundle, opts deploy.Options) error
+	initRun        func(ctx context.Context, job *events.Job, params initialize.Params) (*bundle.Bundle, error)
+	loadBundle     func(dir string) (*bundle.Bundle, error)
+	dial           func(ctx context.Context, target string, opts orchestrate.Options) (Host, error)
+	deployUp       func(ctx context.Context, job *events.Job, host deploy.Host, b *bundle.Bundle, opts deploy.Options) error
+	importRun      func(ctx context.Context, job *events.Job, opts importer.Options) (importer.Result, error)
+	importRunBatch func(ctx context.Context, job *events.Job, opts importer.BatchOptions) (importer.BatchResult, error)
+	statusCheck    func(ctx context.Context, opts status.Options) (status.Report, error)
+	newKeystore    func(driverName string, config map[string]any) (keystore.Driver, error)
 }
 
 // New returns a Server wired to the real core implementations: the same
-// initialize.Run, bundle.Load, orchestrate.Connect, and deploy.Up the CLI
-// calls directly.
+// initialize.Run, bundle.Load, orchestrate.Connect, deploy.Up,
+// importer.Run/RunBatch, status.Check, and keystore.New the CLI calls
+// directly.
 func New() *Server {
 	return &Server{
 		jobs:       events.NewStore(),
@@ -57,19 +65,25 @@ func New() *Server {
 		dial: func(ctx context.Context, target string, opts orchestrate.Options) (Host, error) {
 			return orchestrate.Connect(ctx, target, opts)
 		},
-		deployUp: deploy.Up,
+		deployUp:       deploy.Up,
+		importRun:      importer.Run,
+		importRunBatch: importer.RunBatch,
+		statusCheck:    status.Check,
+		newKeystore:    keystore.New,
 	}
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
-// and GET /jobs/{id}/events, the RPC verbs for every core operation
-// currently implemented (tech-spec.md "API"). Verbs for operations not yet
-// landed in internal/core (backup, restore, promote, upgrade, drill,
-// import, status) are added here as each one lands.
+// POST /import, GET /status, and GET /jobs/{id}/events, the RPC verbs for
+// every core operation currently implemented (tech-spec.md "API"). Verbs
+// for operations not yet landed in internal/core (backup, restore,
+// promote, upgrade, drill) are added here as each one lands.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
 	mux.HandleFunc("POST /up", s.handleUp)
+	mux.HandleFunc("POST /import", s.handleImport)
+	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /jobs/{id}/events", s.handleJobEvents)
 	return mux
 }

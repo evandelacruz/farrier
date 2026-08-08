@@ -89,16 +89,38 @@ future dashboard render the same progress.
   secret) error`) is the write side of a keystore `Driver`, additive to the
   read-only interface tech-spec's Driver interfaces section documents.
   `FileDriver` implements it — its storage is an unambiguous directory on
-  disk, so `Store` just writes `path/keyName` (creating `path` if needed)
-  and refuses to overwrite a key that already has content, so a second
-  `init` run against an already-populated keystore target fails loudly
-  instead of silently rotating bundle identity. `CommandDriver`
-  deliberately does not implement `Writer`: KEY-002 defines it as reading
-  the stdout of an operator-specified command, with no generic notion of
-  "write a secret here." `initialize.Run` discovers write support with a
-  type assertion and fails, naming the driver, when it's missing —
-  `init` against a command-backed keystore requires the operator to
-  provision key material there some other way first.
+  disk, so `Store` just writes `path/keyName` (creating `path` if needed).
+  `CommandDriver` deliberately does not implement `Writer`: KEY-002 defines
+  it as reading the stdout of an operator-specified command, with no
+  generic notion of "write a secret here." `initialize.Run` discovers
+  write support with a type assertion and fails, naming the driver, when
+  it's missing — `init` against a command-backed keystore requires the
+  operator to provision key material there some other way first.
+- **Rotation registry and the overwrite guard:** `FileDriver.Store` has no
+  overwrite guard of its own. `keystore.New` wraps any driver it builds
+  that implements `Writer` in an internal `guardedDriver`, so the guard
+  applies once, above every driver, regardless of which one a keystore
+  target names — an out-of-tree exec driver (CORE-003, a separate process
+  speaking JSON over stdin/stdout) gets the same protection without having
+  to implement it itself. `guardedDriver.Store` consults
+  `keystore.Rotates(keyName)`, backed by a fixed registry in
+  `internal/core/keystore/rotation.go`: `keystore.KeyTLSCertificate` and
+  `keystore.KeyTLSPrivateKey` are the only names it returns true for
+  (spec.md "Identity" > "Key material"). For every other name — including
+  one nobody has registered — it checks whether `Resolve` already finds
+  content at `keyName` and refuses to overwrite if so; a rotating name is
+  always allowed to overwrite. The check is fail-closed on the `Resolve`
+  call itself: `Driver.Resolve` must return an error satisfying
+  `errors.Is(err, keystore.ErrNotFound)` when it has positively determined
+  `keyName` is absent, and any other error — permission denied, an I/O
+  error, a timeout or malformed response from a CORE-003 exec driver —
+  means the check failed, not that the key is missing, so `Store` refuses
+  and reports rather than treating an indeterminate failure as "safe to
+  write." This is why a second `init` run against an already-populated
+  keystore target still fails loudly on the first key it tries to store
+  (`forge.KeySecretKey` first, `keyMaterialOrder`) instead of silently
+  rotating bundle identity — the same property the old `FileDriver`-local
+  guard gave, now enforced centrally.
 - **Images:** `forgejo` and `caddy` default to their `:latest` tag on their
   canonical registry (`codeberg.org/forgejo/forgejo`, `docker.io/library/caddy`)
   and can be overridden per component. Every reference, default or override,
@@ -191,10 +213,11 @@ original, untouched Caddyfile at `caddy.ConfigPath` to release.
 `backup.NoopPushHold` covers topologies with no proxy in front of git
 traffic (a local capture, a drill).
 
-`Run` produces the plain, unencrypted snapshot the rest of this section's
-pipeline builds on: verification at creation (BKUP-004) and writing the
-result to an S3-compatible URI or filesystem path (BKUP-005) are separate,
-not yet implemented.
+`Run` also verifies the snapshot it just captured before returning (BKUP-004,
+below), and `Encrypt` (BKUP-003, below) turns that verified snapshot into the
+single age-encrypted archive that actually leaves the host. Writing the
+result to an S3-compatible URI or filesystem path (BKUP-005) is the one
+piece still separate and not yet implemented.
 
 ## Snapshot encryption (BKUP-003)
 
@@ -210,10 +233,51 @@ its recipient's public key, which any holder of the identity (`filippo.io/age`'s
 without exposing it. `Encrypt` emits its own CORE-002 `StepEncrypt` event on
 the job it's given but does not end the job — like `forge.Bootstrap` and
 `forge.ReconcileCI`, it is a step a future orchestrator composes alongside
-`Run` (and, once they land, BKUP-004's verification and BKUP-005's write)
-under one job whose terminal event that orchestrator owns. On failure it
-removes any partial file it left at the destination path, so a truncated
-archive is never mistaken for a real backup.
+`Run` (and, once it lands, BKUP-005's write) under one job whose terminal
+event that orchestrator owns. On failure it removes any partial file it left
+at the destination path, so a truncated archive is never mistaken for a real
+backup.
+
+## Snapshot verification (BKUP-004)
+
+`backup.Verify(ctx, dir, manifest, keyNames)` implements the "Verification
+at creation and at restore runs the same code path" check above, against
+the plain snapshot directory `Run` produces. It runs three checks and
+aggregates every defect it finds into one `*backup.VerifyError` — the check
+that found it, the component or reference it's about, and what's wrong —
+rather than stopping at the first one, so a single verify pass reports
+everything wrong instead of one defect per rerun:
+
+- **Completeness:** the manifest declares a checksum algorithm `Verify`
+  knows how to check, exactly one database component, and every name in
+  `keyNames` (the caller's `state.KeyExporter.Names()`) captured as a key
+  component.
+- **Checksums:** every component's file on disk, recomputed, matches the
+  checksum the manifest recorded for it at capture time. A file that's
+  missing or unreadable is reported the same way as a mismatch.
+- **Cross-consistency:** opens the snapshot's own captured `db.sqlite` and
+  checks that every row Forgejo's database holds resolves to a component
+  this same snapshot captured — `repository` rows (`owner_name`,
+  `lower_name`) against the git components `captureGitRefs` and
+  `captureGitObjects` write per repository, and `lfs_meta_object.oid` /
+  `attachment.uuid` against blob component names, matched by containment
+  rather than an exact key so the check stays decoupled from whichever
+  `blob.Adapter` layout the operator configured. A `db.sqlite` that won't
+  even open (corrupt, truncated) is itself reported as a defect. CI
+  artifacts and avatars are not yet cross-checked — their storage-key
+  convention isn't established anywhere in this codebase, and this is a
+  documented scope limit, not a silent gap.
+
+`Run` calls `Verify` immediately after writing `snapshot-manifest.json`
+(`StepVerify`) and fails the job — naming every defect found — if it
+returns an error. This is the fails-loudly-at-backup-time guarantee
+spec.md "Verification" describes, running today against the plain snapshot
+since `Run` doesn't call `Encrypt` itself — encryption (above) is still a
+separate step a future orchestrator composes alongside `Run`. The capture
+order above ultimately places `verify` after `encrypt`: once that
+orchestration lands, it must run `Verify` against the decrypted form of
+what's about to be written, not leave it checking the pre-encryption
+snapshot alone.
 
 ## Driver interfaces
 
@@ -222,7 +286,11 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 - **DNS:** `Set(record, value, ttl)`, `Delete(record)`. Shipped: `cloudflare`, `rfc2136`.
 - **Keystore:** `Resolve(keyName) → secret`, every driver; `Store(keyName,
   secret) → error` on `file` only (INIT-003's generated key material has
-  nowhere else defined to land). Shipped: `file`, `command`.
+  nowhere else defined to land) — gated by the rotation registry
+  `keystore.New` wraps every `Writer`-capable driver with (see "Bundle
+  creation" above), so `Store` refuses to overwrite key material that
+  isn't the TLS certificate or its private key. Shipped: `file`,
+  `command`.
 - **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every
   `List` result carries `Modified`, the time an object was last written —
   `local` reads it from the filesystem's mtime, `s3` from the endpoint's
@@ -240,13 +308,15 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 - **`file`** (`config.path`): a local directory. `Resolve(keyName)` reads
   `path/keyName` and returns its bytes verbatim — one file per piece of key
   material. `Store(keyName, secret)` writes the same file, creating `path`
-  if needed, and refuses to overwrite a key that already has content.
-  `config.path` must be absolute — `keystore.New` rejects a relative one at
-  construction (XCUT-001), since the manifest carries it as a literal
-  string re-resolved fresh on every call; relative, it would silently point
-  at a different location depending on the working directory a later `up`
-  or `status` happens to run from. The `local` blob adapter's `config.path`
-  is the same shape and carries the same requirement (`blob.NewLocal`).
+  if needed; the rotation guard that refuses to overwrite non-rotating key
+  material sits above the driver, not in it (see "Rotation registry and the
+  overwrite guard" above). `config.path` must be absolute — `keystore.New`
+  rejects a relative one at construction (XCUT-001), since the manifest
+  carries it as a literal string re-resolved fresh on every call; relative,
+  it would silently point at a different location depending on the working
+  directory a later `up` or `status` happens to run from. The `local` blob
+  adapter's `config.path` is the same shape and carries the same
+  requirement (`blob.NewLocal`).
 - **`command`** (`config.command`): one shell command, run via `sh -c`.
   `Resolve(keyName)` sets `FARRIER_KEY_NAME` in the command's environment
   and returns its trimmed stdout — one command branches on the env var to
@@ -293,7 +363,7 @@ Re-running `up` against a host it has already deployed to converges the host to 
 
 - Steps 1, 5, and 7 are read-only probes.
 - Step 2 always re-ships the current `app.ini` and re-derives its checksum. `docker compose up -d` (step 4) decides whether to recreate a service by diffing its resolved config — image, environment, volumes, labels — never the bytes of a file a bind mount happens to point at, so without the checksum a content-only `app.ini` change would ship to disk without the running container ever picking it up. Carrying the checksum as an environment variable puts that content into the diff `docker compose` already does.
-- Step 3 reuses the persisted certificate until it's actually due for renewal, so an ordinary re-run never reaches the ACME server and never risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week). On the rare renewal-due branch, the freshly issued certificate is used for that deploy but not persisted back to the keystore — `keystore.Writer.Store` refuses to overwrite existing key material by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity") — so `up` reports the renewal through the job's event stream and the next `up` decides again from the same persisted certificate. Giving a renewal-eligible key a distinct update path past that invariant is ACME-002's gap, tracked separately.
+- Step 3 reuses the persisted certificate until it's actually due for renewal, so an ordinary re-run never reaches the ACME server and never risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week). On the rare renewal-due branch (ACME-002), the freshly issued certificate is used for that deploy and also persisted back to the keystore, through `deploy.persistRenewedCertificate` and the same `keystore.Writer.Store` that refuses to overwrite `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key — the TLS certificate and its private key are the rotation registry's one declared exception (spec.md "Identity" > "Key material"), so `Store` allows the overwrite there while every other key stays protected. `up` reports the renewal and persistence through the job's event stream, and the next `up` decides again from the freshly persisted certificate rather than re-renewing.
 - Step 4 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
 - Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
 

@@ -174,7 +174,7 @@ func validParams(t *testing.T) Params {
 			{Name: "acme/gadgets", URL: "/data/git/acme/gadgets.git"},
 		}},
 		GitCapturer: &fakeGitCapturer{},
-		Database:    &fakeDatabaseExporter{data: []byte("sqlite-bytes")},
+		Database:    &fakeDatabaseExporter{data: newTestDatabaseBytes(t, defaultTestRepos, nil, nil)},
 		Blobs: &fakeBlobExporter{
 			objects: []blob.Object{{Key: "avatars/2.png", Size: 2}, {Key: "lfs/1", Size: 1}},
 			content: map[string][]byte{"avatars/2.png": []byte("avatar-bytes"), "lfs/1": []byte("lfs-bytes")},
@@ -241,8 +241,9 @@ func TestRunWritesACompleteSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read db.sqlite: %v", err)
 	}
-	if string(dbContent) != "sqlite-bytes" {
-		t.Errorf("db.sqlite content = %q, want %q", dbContent, "sqlite-bytes")
+	wantDBContent := params.Database.(*fakeDatabaseExporter).data
+	if !bytes.Equal(dbContent, wantDBContent) {
+		t.Errorf("db.sqlite content does not match what the database exporter returned")
 	}
 
 	keyContent, err := os.ReadFile(filepath.Join(params.Dir, keysDir, "secret_key"))
@@ -311,7 +312,7 @@ func TestRunCapturesStepsInOrder(t *testing.T) {
 			order = append(order, ev.Step)
 		}
 	}
-	want := []string{StepValidate, StepPushHold, StepDatabase, StepRecordRefs, StepGit, StepBlobs, StepKeys, StepWriteManifest}
+	want := []string{StepValidate, StepPushHold, StepDatabase, StepRecordRefs, StepGit, StepBlobs, StepKeys, StepWriteManifest, StepVerify}
 	if len(order) != len(want) {
 		t.Fatalf("started steps = %v, want %v", order, want)
 	}
@@ -543,6 +544,28 @@ type blockingDatabaseExporter struct{}
 func (blockingDatabaseExporter) Snapshot(ctx context.Context) (io.ReadCloser, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func TestRunFailsWhenSnapshotFailsVerification(t *testing.T) {
+	params := validParams(t)
+	// A repository row with no matching remote/component — Run's own
+	// capture is internally consistent, but the database it captured
+	// disagrees with it, which is exactly what verification (BKUP-004) is
+	// supposed to catch.
+	params.Database = &fakeDatabaseExporter{
+		data: newTestDatabaseBytes(t, append(append([][2]string{}, defaultTestRepos...), [2]string{"acme", "orphan"}), nil, nil),
+	}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "acme/orphan") {
+		t.Errorf("error = %v, want it to name the unmatched repository", err)
+	}
+	assertJobFailed(t, job)
+	assertOneFailedStep(t, job, StepVerify)
 }
 
 func TestRunPropagatesBlobListError(t *testing.T) {

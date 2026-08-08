@@ -69,6 +69,8 @@ Generated at `init`, carried through every backup and restore:
 - TLS certificates, issued and renewed by the core via ACME DNS-01 — a standby holds a valid cert before any traffic points at it
 - SSH host keys, installed at restore so clients see an unchanged host identity
 
+Key material is non-rotating by default: once `init` writes a piece of it, nothing may silently overwrite it, the same guarantee that keeps a second `init` from clobbering a live instance's identity. The TLS certificate and its private key are the one declared exception — an ACME-issued certificate is required to rotate before it expires. Every other piece above, plus the age backup key (spec.md "Key custody"), never rotates. A keystore driver's write side enforces this from a fixed rotation registry, consulted above the driver rather than trusted to it, so a piece of key material nobody has explicitly declared rotating defaults to protected.
+
 ### Runners across relocation
 
 Runner registrations live in the database, and runners dial out to the domain. After promotion, remote runners reconnect automatically; colocated runners restart with the bundle.

@@ -19,13 +19,28 @@ package keystore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
 
+// ErrNotFound is the sentinel a Driver's Resolve must wrap (via %w, so
+// errors.Is sees it) when — and only when — it has positively determined
+// that keyName has no key material yet. Any other Resolve error (a
+// permission error, an I/O error, a timeout or malformed response from a
+// CORE-003 exec driver) means resolution itself failed and must not be
+// mistaken for "nothing here yet, safe to write": guardedDriver.Store
+// (guard.go) relies on exactly this distinction to stay fail-closed for
+// non-rotating key material, and inferring it from an error string or
+// treating every error alike would silently defeat that guarantee.
+var ErrNotFound = errors.New("keystore: key not found")
+
 // Driver resolves one named piece of key material to its Secret.
 // Implementations must never log, cache to disk, or otherwise persist a
-// resolved secret anywhere outside memory (KEY-003).
+// resolved secret anywhere outside memory (KEY-003). Resolve must return
+// an error satisfying errors.Is(err, ErrNotFound) when keyName is
+// positively absent, and a different (non-ErrNotFound) error for any other
+// failure — see ErrNotFound.
 type Driver interface {
 	Resolve(ctx context.Context, keyName string) (Secret, error)
 }
@@ -50,7 +65,24 @@ type Writer interface {
 // treated as an out-of-tree driver executable reached through the
 // CORE-003 exec protocol, configured the same way driver.Exec itself is:
 // config.path is the executable, config.args its fixed arguments.
+//
+// When the built driver implements Writer, New wraps it in the rotation
+// guard (guardedDriver) before returning it, so every caller's Store goes
+// through the same policy check no matter which driver they configured —
+// a caller that type-asserts the result for Writer still sees one, since
+// guardedDriver implements it too.
 func New(driverName string, config map[string]any) (Driver, error) {
+	d, err := newDriver(driverName, config)
+	if err != nil {
+		return nil, err
+	}
+	if w, ok := d.(Writer); ok {
+		return guardedDriver{Driver: d, writer: w}, nil
+	}
+	return d, nil
+}
+
+func newDriver(driverName string, config map[string]any) (Driver, error) {
 	switch driverName {
 	case "":
 		return nil, fmt.Errorf("keystore: driver name is required")
