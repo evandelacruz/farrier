@@ -15,15 +15,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
-)
-
-// keyTLSCertificate and keyTLSPrivateKey are the key names init persists
-// the bundle's TLS certificate and private key under (INIT-003). Declared
-// here rather than imported from internal/core/state, the same
-// decoupling state.go itself documents for these two names.
-const (
-	keyTLSCertificate = "tls_certificate"
-	keyTLSPrivateKey  = "tls_private_key"
+	"github.com/evandelacruz/farrier/internal/core/state"
 )
 
 // caddyConfigDir is the directory under RemoteDir Up writes Caddy's
@@ -69,7 +61,7 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 }
 
 // configureTLS resolves the certificate init already persisted as bundle
-// key material (INIT-003, keyTLSCertificate/keyTLSPrivateKey) and hands it
+// key material (INIT-003, state.KeyTLSCertificate/state.KeyTLSPrivateKey) and hands it
 // to the renewal-aware acme.EnsureValid (ACME-002, via issuer) rather than
 // issuing a fresh certificate unconditionally: an ordinary re-run reuses
 // the persisted certificate untouched, so it never reaches the ACME server
@@ -158,13 +150,13 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 // case — it fails the same way configureForge does for the three Forgejo
 // secrets, rather than treating it as "nothing persisted yet."
 func resolvePersistedCertificate(ctx context.Context, driver keystore.Driver, domain string) (*acme.Certificate, error) {
-	certSecret, err := driver.Resolve(ctx, keyTLSCertificate)
+	certSecret, err := driver.Resolve(ctx, state.KeyTLSCertificate)
 	if err != nil {
-		return nil, fmt.Errorf("resolve persisted %s: %w", keyTLSCertificate, err)
+		return nil, fmt.Errorf("resolve persisted %s: %w", state.KeyTLSCertificate, err)
 	}
-	keySecret, err := driver.Resolve(ctx, keyTLSPrivateKey)
+	keySecret, err := driver.Resolve(ctx, state.KeyTLSPrivateKey)
 	if err != nil {
-		return nil, fmt.Errorf("resolve persisted %s: %w", keyTLSPrivateKey, err)
+		return nil, fmt.Errorf("resolve persisted %s: %w", state.KeyTLSPrivateKey, err)
 	}
 	cert, err := acme.ParseCertificate(domain, []byte(certSecret.Reveal()), []byte(keySecret.Reveal()))
 	if err != nil {

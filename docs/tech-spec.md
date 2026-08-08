@@ -17,6 +17,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, issue TLS cert, converge, bootstrap admin
+  status/             instance health: services up, TLS validity, disk headroom, last-backup age (STAT-001)
   importer/           `import` sequencing: calls Forgejo's migration API, with optional mirror sync (IMPT-001, IMPT-002)
   acme/               cert issuance and renewal (lego)
   caddy/              Caddy config rendering: the Caddyfile that terminates TLS with a core-issued certificate
@@ -245,6 +246,48 @@ Re-running `up` against a host it has already deployed to converges the host to 
 - Step 3 reuses the persisted certificate until it's actually due for renewal, so an ordinary re-run never reaches the ACME server and never risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week). On the rare renewal-due branch, the freshly issued certificate is used for that deploy but not persisted back to the keystore — `keystore.Writer.Store` refuses to overwrite existing key material by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity") — so `up` reports the renewal through the job's event stream and the next `up` decides again from the same persisted certificate. Giving a renewal-eligible key a distinct update path past that invariant is ACME-002's gap, tracked separately.
 - Step 4 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
 - Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
+
+## Status (`status`, STAT-001)
+
+`internal/core/status.Check` is a synchronous read, not a job (tech-spec.md
+"API": `GET /status` returns directly, no `jobId`) — it reflects the
+instance's current state each time it's called, never a cached one:
+
+1. **Services up:** `docker compose ps --all --format json` inside the
+   deployed project (`orchestrate.ComposeCommand`'s cd and
+   `COMPOSE_PROJECT_NAME`/`COMPOSE_FILE` prefix, the same one
+   `deploy`'s `composeRunner` builds for `forge.Bootstrap`), checked
+   against the two services `up` deploys today (`forge.Service`,
+   `caddy.Service`). A service whose container state isn't `"running"`, or
+   that has no container at all, reports down with docker compose's own
+   status string as detail.
+2. **TLS validity:** resolves `state.KeyTLSCertificate` through the
+   bundle's keystore driver and parses it as X.509 — valid when the host
+   clock falls inside the certificate's validity window, expiring-soon at
+   the same 14-day threshold ACME-002 sets for renewal warnings
+   (`status.CertExpiryWarning`).
+3. **Disk headroom:** `df -Pk` on the host, default path `/` — no landed
+   decision yet pins forge state to a specific bind-mounted host
+   directory, so root is the only host-wide signal available without
+   guessing one.
+
+`status.Check` returns an error naming which of the three failed rather
+than a partially-filled report — consistent with the rest of the core's
+"fail loudly, name the reason" posture (`ORCH-001`'s `CheckHost`,
+`BKUP-004`). `cmd/farrier status` is the CLI skin: it connects over SSH,
+calls `status.Check`, and prints the report; its exit code reflects
+whether the report could be produced, not whether the instance it
+describes is healthy.
+
+**Last-backup age is not implemented yet.** STAT-001 also requires it, but
+finding the most recent snapshot needs a stable convention for what
+`backup` (BKUP-001..005, not yet landed) writes to its destination and how
+`status` locates it there — `backup`'s destination is a per-invocation
+`--to` flag (spec.md "Golden path"), not bundle-persisted config, and
+`blob.Object` (BLOB-001/002) carries no timestamp today. That convention
+belongs to backup's own design, not something `status` should invent
+ahead of it; `docs/status.json` carries STAT-001 as partial with this as
+the remaining slice.
 
 ## Importing repositories (`import`, IMPT-001, IMPT-002)
 
