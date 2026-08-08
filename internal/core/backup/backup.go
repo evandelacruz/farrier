@@ -14,9 +14,10 @@
 //
 // Run produces a plain, unencrypted snapshot directory; Encrypt (BKUP-003)
 // turns it into the single age-encrypted archive that actually leaves the
-// host. Verification at creation (BKUP-004) and writing the result to an
-// S3-compatible URI or filesystem path (BKUP-005) are separate requirements
-// layered on top of what Run and Encrypt produce here.
+// host, and Write (BKUP-005) puts that archive at OpenDestination's
+// resolved S3-compatible URI or filesystem path. Verification at creation
+// (BKUP-004) is a separate requirement layered on top of what Run, Encrypt,
+// and Write produce here.
 package backup
 
 import (
