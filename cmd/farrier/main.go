@@ -19,6 +19,7 @@ import (
 var commands = map[string]func(args []string) int{
 	"init":   runInit,
 	"up":     runUp,
+	"status": runStatus,
 	"import": runImport,
 }
 
