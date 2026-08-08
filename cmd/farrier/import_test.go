@@ -3,10 +3,11 @@ package main
 import "testing"
 
 func TestRunImportRequiresTarget(t *testing.T) {
+	t.Setenv("FARRIER_TARGET_TOKEN", "t")
+	t.Setenv("FARRIER_SOURCE_TOKEN", "s")
 	code := withSilencedStderr(t, func() int {
 		return runImport([]string{
-			"-target-token", "t", "-source", "https://github.com/acme/widgets",
-			"-source-token", "s", "-owner", "acme",
+			"-source", "https://github.com/acme/widgets", "-owner", "acme",
 		})
 	})
 	if code != 2 {
@@ -15,22 +16,24 @@ func TestRunImportRequiresTarget(t *testing.T) {
 }
 
 func TestRunImportRequiresTargetToken(t *testing.T) {
+	t.Setenv("FARRIER_SOURCE_TOKEN", "s")
 	code := withSilencedStderr(t, func() int {
 		return runImport([]string{
 			"-target", "https://git.example.com", "-source", "https://github.com/acme/widgets",
-			"-source-token", "s", "-owner", "acme",
+			"-owner", "acme",
 		})
 	})
 	if code != 2 {
-		t.Errorf("runImport without -target-token: exit code = %d, want 2", code)
+		t.Errorf("runImport without FARRIER_TARGET_TOKEN: exit code = %d, want 2", code)
 	}
 }
 
 func TestRunImportRequiresSource(t *testing.T) {
+	t.Setenv("FARRIER_TARGET_TOKEN", "t")
+	t.Setenv("FARRIER_SOURCE_TOKEN", "s")
 	code := withSilencedStderr(t, func() int {
 		return runImport([]string{
-			"-target", "https://git.example.com", "-target-token", "t",
-			"-source-token", "s", "-owner", "acme",
+			"-target", "https://git.example.com", "-owner", "acme",
 		})
 	})
 	if code != 2 {
@@ -39,22 +42,25 @@ func TestRunImportRequiresSource(t *testing.T) {
 }
 
 func TestRunImportRequiresSourceToken(t *testing.T) {
+	t.Setenv("FARRIER_TARGET_TOKEN", "t")
 	code := withSilencedStderr(t, func() int {
 		return runImport([]string{
-			"-target", "https://git.example.com", "-target-token", "t",
+			"-target", "https://git.example.com",
 			"-source", "https://github.com/acme/widgets", "-owner", "acme",
 		})
 	})
 	if code != 2 {
-		t.Errorf("runImport without -source-token: exit code = %d, want 2", code)
+		t.Errorf("runImport without FARRIER_SOURCE_TOKEN: exit code = %d, want 2", code)
 	}
 }
 
 func TestRunImportRequiresOwner(t *testing.T) {
+	t.Setenv("FARRIER_TARGET_TOKEN", "t")
+	t.Setenv("FARRIER_SOURCE_TOKEN", "s")
 	code := withSilencedStderr(t, func() int {
 		return runImport([]string{
-			"-target", "https://git.example.com", "-target-token", "t",
-			"-source", "https://github.com/acme/widgets", "-source-token", "s",
+			"-target", "https://git.example.com",
+			"-source", "https://github.com/acme/widgets",
 		})
 	})
 	if code != 2 {
@@ -63,10 +69,12 @@ func TestRunImportRequiresOwner(t *testing.T) {
 }
 
 func TestRunImportFailsAgainstUnreachableTarget(t *testing.T) {
+	t.Setenv("FARRIER_TARGET_TOKEN", "t")
+	t.Setenv("FARRIER_SOURCE_TOKEN", "s")
 	code := withSilencedStderr(t, func() int {
 		return runImport([]string{
-			"-target", "https://127.0.0.1:1", "-target-token", "t",
-			"-source", "https://github.com/acme/widgets", "-source-token", "s",
+			"-target", "https://127.0.0.1:1",
+			"-source", "https://github.com/acme/widgets",
 			"-owner", "acme",
 		})
 	})

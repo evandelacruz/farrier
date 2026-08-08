@@ -17,12 +17,17 @@ import (
 // Forgejo's migration API on the target instance to bring one repository in
 // from GitHub or GitLab, optionally as a continuous mirror, and prints the
 // same job event stream a dashboard would render over SSE.
+//
+// The target and source API tokens are read from FARRIER_TARGET_TOKEN and
+// FARRIER_SOURCE_TOKEN in the process environment, never from a CLI flag —
+// argv is visible to any local user via ps and lands in shell history, and
+// `import` follows the same credentials-from-environment pattern `init`
+// already uses for its ACME DNS-01 provider (tech-spec.md "Bundle
+// creation").
 func runImport(args []string) int {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	targetURL := fs.String("target", "", "base URL of the Farrier instance, e.g. https://git.example.com (required)")
-	targetToken := fs.String("target-token", "", "API token for the target instance (required)")
 	sourceURL := fs.String("source", "", "clone URL of the repository to import (required)")
-	sourceToken := fs.String("source-token", "", "access token for the source forge (required)")
 	service := fs.String("service", "", "source service: github or gitlab (default: autodetected from -source's host)")
 	owner := fs.String("owner", "", "owner (user or organization) the repository lands under on the target instance (required)")
 	name := fs.String("name", "", "repository name on the target instance (default: derived from -source)")
@@ -33,22 +38,31 @@ func runImport(args []string) int {
 		return 2
 	}
 
+	targetToken := os.Getenv("FARRIER_TARGET_TOKEN")
+	sourceToken := os.Getenv("FARRIER_SOURCE_TOKEN")
+
 	for flagName, value := range map[string]string{
-		"target": *targetURL, "target-token": *targetToken,
-		"source": *sourceURL, "source-token": *sourceToken,
-		"owner": *owner,
+		"target": *targetURL, "source": *sourceURL, "owner": *owner,
 	} {
 		if strings.TrimSpace(value) == "" {
 			fmt.Fprintf(os.Stderr, "farrier: import: -%s is required\n", flagName)
 			return 2
 		}
 	}
+	for envName, value := range map[string]string{
+		"FARRIER_TARGET_TOKEN": targetToken, "FARRIER_SOURCE_TOKEN": sourceToken,
+	} {
+		if strings.TrimSpace(value) == "" {
+			fmt.Fprintf(os.Stderr, "farrier: import: %s must be set in the environment\n", envName)
+			return 2
+		}
+	}
 
 	opts := importer.Options{
 		TargetBaseURL: *targetURL,
-		TargetToken:   keystore.NewSecret(*targetToken),
+		TargetToken:   keystore.NewSecret(targetToken),
 		SourceURL:     *sourceURL,
-		SourceToken:   keystore.NewSecret(*sourceToken),
+		SourceToken:   keystore.NewSecret(sourceToken),
 		Service:       *service,
 		RepoOwner:     *owner,
 		RepoName:      *name,
