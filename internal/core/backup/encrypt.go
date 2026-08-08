@@ -27,9 +27,9 @@ const StepEncrypt = "encrypt"
 // identity, only its public recipient half.
 //
 // Encrypt emits its own StepEncrypt event on job but, like forge.Bootstrap
-// and forge.ReconcileCI, does not end job: a backup job composes Run and
-// Encrypt (and, once they land, verification and the write to destination)
-// under one job whose terminal event the caller owns.
+// and forge.ReconcileCI, does not end job: a backup job composes Run,
+// Encrypt, and Write (and, once it lands, BKUP-004's verification) under
+// one job whose terminal event the caller owns.
 //
 // On failure Encrypt removes any partial file it left at destPath — a
 // truncated archive there could otherwise be mistaken for a real backup.

@@ -40,6 +40,8 @@ Everything in the system is one of two things: disposable software or precious s
 - **Stateless:** forge app, CI orchestration, runners. Rebuilt from the bundle definition on any host in seconds.
 - **Stateful:** repos, database, secrets, blobs, key material. Lives in one primary location.
 
+The split is only real if the two live in different places. Containers are the disposable half and are recreated freely — every converge ships the whole Compose definition and lets `docker compose` reconcile — so no stateful kind may live inside one. State lives on the host filesystem, bind-mounted into the container that serves it, and survives a container being replaced or removed.
+
 ## The four kinds of state
 
 State is decomposed into four kinds because each has a natural export and replication mechanism. A backup is complete when all four are present and mutually consistent, and the bundle manifest declares each kind with its checksums.
@@ -68,6 +70,8 @@ Generated at `init`, carried through every backup and restore:
 - LFS JWT secret
 - TLS certificates, issued and renewed by the core via ACME DNS-01 — a standby holds a valid cert before any traffic points at it
 - SSH host keys, installed at restore so clients see an unchanged host identity
+
+Key material is non-rotating by default: once `init` writes a piece of it, nothing may silently overwrite it, the same guarantee that keeps a second `init` from clobbering a live instance's identity. The TLS certificate and its private key are the one declared exception — an ACME-issued certificate is required to rotate before it expires. Every other piece above, plus the age backup key (spec.md "Key custody"), never rotates. A keystore driver's write side enforces this from a fixed rotation registry, consulted above the driver rather than trusted to it, so a piece of key material nobody has explicitly declared rotating defaults to protected.
 
 ### Runners across relocation
 
@@ -111,6 +115,8 @@ The bundle configuration (manifest, Compose definitions, pinned versions) is a p
 - **`command`:** any command that prints the key — one interface that covers 1Password CLI, Vault, `pass`, sops, cloud secret managers, and anything else the team already uses.
 
 The driver interface is published; the plugin posture matches DNS drivers and blob adapters. Teammate onboarding is: clone the bundle repo, obtain the key through the team's keystore.
+
+The `file` driver's path — and the `local` blob adapter's, the same shape of config — must be absolute (XCUT-001). The manifest carries that path as the literal string an operator gave it; a relative one would silently re-resolve against whatever directory a command happens to run from, which differs by machine and even by shell session on the same machine. A teammate who wants `file` to work needs the key material reachable at the same absolute path everywhere they run Farrier from — a synced folder mounted consistently, not a path relative to wherever they happened to clone the bundle repo.
 
 ## What the system owns: verified restores
 

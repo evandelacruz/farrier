@@ -12,7 +12,7 @@ internal/core/        the engine — all logic lives here
   bundle/             manifest, bundle directory, version pins
   initialize/         builds a bundle from a domain and driver targets (INIT-001)
   state/              the four state kinds and their export interfaces
-  backup/             snapshot creation, encryption, verification
+  backup/             snapshot creation, encryption, destination write, verification
   restore/            snapshot verification, rebuild, identity install
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
@@ -89,16 +89,38 @@ future dashboard render the same progress.
   secret) error`) is the write side of a keystore `Driver`, additive to the
   read-only interface tech-spec's Driver interfaces section documents.
   `FileDriver` implements it — its storage is an unambiguous directory on
-  disk, so `Store` just writes `path/keyName` (creating `path` if needed)
-  and refuses to overwrite a key that already has content, so a second
-  `init` run against an already-populated keystore target fails loudly
-  instead of silently rotating bundle identity. `CommandDriver`
-  deliberately does not implement `Writer`: KEY-002 defines it as reading
-  the stdout of an operator-specified command, with no generic notion of
-  "write a secret here." `initialize.Run` discovers write support with a
-  type assertion and fails, naming the driver, when it's missing —
-  `init` against a command-backed keystore requires the operator to
-  provision key material there some other way first.
+  disk, so `Store` just writes `path/keyName` (creating `path` if needed).
+  `CommandDriver` deliberately does not implement `Writer`: KEY-002 defines
+  it as reading the stdout of an operator-specified command, with no
+  generic notion of "write a secret here." `initialize.Run` discovers
+  write support with a type assertion and fails, naming the driver, when
+  it's missing — `init` against a command-backed keystore requires the
+  operator to provision key material there some other way first.
+- **Rotation registry and the overwrite guard:** `FileDriver.Store` has no
+  overwrite guard of its own. `keystore.New` wraps any driver it builds
+  that implements `Writer` in an internal `guardedDriver`, so the guard
+  applies once, above every driver, regardless of which one a keystore
+  target names — an out-of-tree exec driver (CORE-003, a separate process
+  speaking JSON over stdin/stdout) gets the same protection without having
+  to implement it itself. `guardedDriver.Store` consults
+  `keystore.Rotates(keyName)`, backed by a fixed registry in
+  `internal/core/keystore/rotation.go`: `keystore.KeyTLSCertificate` and
+  `keystore.KeyTLSPrivateKey` are the only names it returns true for
+  (spec.md "Identity" > "Key material"). For every other name — including
+  one nobody has registered — it checks whether `Resolve` already finds
+  content at `keyName` and refuses to overwrite if so; a rotating name is
+  always allowed to overwrite. The check is fail-closed on the `Resolve`
+  call itself: `Driver.Resolve` must return an error satisfying
+  `errors.Is(err, keystore.ErrNotFound)` when it has positively determined
+  `keyName` is absent, and any other error — permission denied, an I/O
+  error, a timeout or malformed response from a CORE-003 exec driver —
+  means the check failed, not that the key is missing, so `Store` refuses
+  and reports rather than treating an indeterminate failure as "safe to
+  write." This is why a second `init` run against an already-populated
+  keystore target still fails loudly on the first key it tries to store
+  (`forge.KeySecretKey` first, `keyMaterialOrder`) instead of silently
+  rotating bundle identity — the same property the old `FileDriver`-local
+  guard gave, now enforced centrally.
 - **Images:** `forgejo` and `caddy` default to their `:latest` tag on their
   canonical registry (`codeberg.org/forgejo/forgejo`, `docker.io/library/caddy`)
   and can be overridden per component. Every reference, default or override,
@@ -193,9 +215,9 @@ traffic (a local capture, a drill).
 
 `Run` also verifies the snapshot it just captured before returning (BKUP-004,
 below), and `Encrypt` (BKUP-003, below) turns that verified snapshot into the
-single age-encrypted archive that actually leaves the host. Writing the
-result to an S3-compatible URI or filesystem path (BKUP-005) is the one
-piece still separate and not yet implemented.
+single age-encrypted archive that actually leaves the host. `Write`
+(BKUP-005, below) streams that archive to the resolved S3-compatible URI or
+filesystem path — see "Snapshot destination" below.
 
 ## Snapshot encryption (BKUP-003)
 
@@ -211,9 +233,9 @@ its recipient's public key, which any holder of the identity (`filippo.io/age`'s
 without exposing it. `Encrypt` emits its own CORE-002 `StepEncrypt` event on
 the job it's given but does not end the job — like `forge.Bootstrap` and
 `forge.ReconcileCI`, it is a step a future orchestrator composes alongside
-`Run` (and, once it lands, BKUP-005's write) under one job whose terminal
-event that orchestrator owns. On failure it removes any partial file it left
-at the destination path, so a truncated archive is never mistaken for a real
+`Run`, `Write`, and `Verify` under one job whose terminal event that
+orchestrator owns. On failure it removes any partial file it left at the
+destination path, so a truncated archive is never mistaken for a real
 backup.
 
 ## Snapshot verification (BKUP-004)
@@ -250,12 +272,39 @@ everything wrong instead of one defect per rerun:
 (`StepVerify`) and fails the job — naming every defect found — if it
 returns an error. This is the fails-loudly-at-backup-time guarantee
 spec.md "Verification" describes, running today against the plain snapshot
-since `Run` doesn't call `Encrypt` itself — encryption (above) is still a
-separate step a future orchestrator composes alongside `Run`. The capture
-order above ultimately places `verify` after `encrypt`: once that
-orchestration lands, it must run `Verify` against the decrypted form of
-what's about to be written, not leave it checking the pre-encryption
+since `Run` doesn't call `Encrypt` itself — encryption and write (above,
+below) are still separate steps a future orchestrator composes alongside
+`Run`. The capture order above ultimately places `verify` after `encrypt`:
+once that orchestration lands, it must run `Verify` against the decrypted
+form of what's about to be written, not leave it checking the pre-encryption
 snapshot alone.
+
+## Snapshot destination (BKUP-005)
+
+`internal/core/backup.OpenDestination` resolves the golden path's `backup
+--to <uri>` (spec.md "Golden path") into a `blob.Adapter`: a value starting
+with `s3://` selects the `s3` adapter (BLOB-002), anything else is a
+filesystem directory path and selects the `local` adapter (BLOB-001) —
+"an S3-compatible URI or a filesystem path." An `s3://` URI has the shape
+`s3://<bucket>[/<key-prefix>]?endpoint=<host[:port]>[&region=<region>][&pathStyle=true][&ssl=false]`;
+`endpoint` is required, since no single default covers every S3-compatible
+service, and credentials come from the `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` environment variables — never the URI or a CLI flag
+— the same posture IMPT-001's source and target tokens take. An optional
+key-prefix segment scopes a shared bucket to one bundle, wrapping the `s3`
+adapter in a `prefixedAdapter` that adds the prefix on `Put`/`Get` and
+strips it back off `List` results, so it behaves exactly like an adapter
+dedicated to that prefix alone.
+
+`internal/core/backup.Write` streams `Encrypt`'s archive to the resolved
+destination under the key `SnapshotKey(timestamp)` names —
+`<capture-time>.age`, UTC, sortable both lexicographically and
+chronologically — completing BKUP-005. Like `Run` and `Encrypt`, `Write`
+emits its own `StepWrite` event but does not end the job. This is also the
+snapshot listing/naming convention "Status" below was waiting on: every
+object a destination holds is a snapshot, so `status`'s replication-lag and
+last-backup-age lookups can keep listing a destination's whole namespace
+(as `ReplicationLag` already does) rather than parsing names.
 
 ## Driver interfaces
 
@@ -264,7 +313,11 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 - **DNS:** `Set(record, value, ttl)`, `Delete(record)`. Shipped: `cloudflare`, `rfc2136`.
 - **Keystore:** `Resolve(keyName) → secret`, every driver; `Store(keyName,
   secret) → error` on `file` only (INIT-003's generated key material has
-  nowhere else defined to land). Shipped: `file`, `command`.
+  nowhere else defined to land) — gated by the rotation registry
+  `keystore.New` wraps every `Writer`-capable driver with (see "Bundle
+  creation" above), so `Store` refuses to overwrite key material that
+  isn't the TLS certificate or its private key. Shipped: `file`,
+  `command`.
 - **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every
   `List` result carries `Modified`, the time an object was last written —
   `local` reads it from the filesystem's mtime, `s3` from the endpoint's
@@ -282,7 +335,15 @@ ACME DNS-01 uses lego's own provider set and is independent of the DNS driver in
 - **`file`** (`config.path`): a local directory. `Resolve(keyName)` reads
   `path/keyName` and returns its bytes verbatim — one file per piece of key
   material. `Store(keyName, secret)` writes the same file, creating `path`
-  if needed, and refuses to overwrite a key that already has content.
+  if needed; the rotation guard that refuses to overwrite non-rotating key
+  material sits above the driver, not in it (see "Rotation registry and the
+  overwrite guard" above). `config.path` must be absolute — `keystore.New`
+  rejects a relative one at construction (XCUT-001), since the manifest
+  carries it as a literal string re-resolved fresh on every call; relative,
+  it would silently point at a different location depending on the working
+  directory a later `up` or `status` happens to run from. The `local` blob
+  adapter's `config.path` is the same shape and carries the same
+  requirement (`blob.NewLocal`).
 - **`command`** (`config.command`): one shell command, run via `sh -c`.
   `Resolve(keyName)` sets `FARRIER_KEY_NAME` in the command's environment
   and returns its trimmed stdout — one command branches on the env var to
@@ -329,9 +390,37 @@ Re-running `up` against a host it has already deployed to converges the host to 
 
 - Steps 1, 5, and 7 are read-only probes.
 - Step 2 always re-ships the current `app.ini` and re-derives its checksum. `docker compose up -d` (step 4) decides whether to recreate a service by diffing its resolved config — image, environment, volumes, labels — never the bytes of a file a bind mount happens to point at, so without the checksum a content-only `app.ini` change would ship to disk without the running container ever picking it up. Carrying the checksum as an environment variable puts that content into the diff `docker compose` already does.
-- Step 3 reuses the persisted certificate until it's actually due for renewal, so an ordinary re-run never reaches the ACME server and never risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week). On the rare renewal-due branch, the freshly issued certificate is used for that deploy but not persisted back to the keystore — `keystore.Writer.Store` refuses to overwrite existing key material by design, the same invariant that keeps `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key from silently rotating (spec.md "Identity") — so `up` reports the renewal through the job's event stream and the next `up` decides again from the same persisted certificate. Giving a renewal-eligible key a distinct update path past that invariant is ACME-002's gap, tracked separately.
+- Step 3 reuses the persisted certificate until it's actually due for renewal, so an ordinary re-run never reaches the ACME server and never risks Let's Encrypt's duplicate-certificate rate limit (about 5 certificates with identical SANs per week). On the rare renewal-due branch (ACME-002), the freshly issued certificate is used for that deploy and also persisted back to the keystore, through `deploy.persistRenewedCertificate` and the same `keystore.Writer.Store` that refuses to overwrite `SECRET_KEY`, `INTERNAL_TOKEN`, and the SSH host key — the TLS certificate and its private key are the rotation registry's one declared exception (spec.md "Identity" > "Key material"), so `Store` allows the overwrite there while every other key stays protected. `up` reports the renewal and persistence through the job's event stream, and the next `up` decides again from the freshly persisted certificate rather than re-renewing.
 - Step 4 is idempotent by construction: `Converge` always ships the full Compose definition and replaces the remote directory wholesale, so `docker compose up -d --remove-orphans` reconciles from scratch on every call.
 - Step 6 treats "the admin account already exists" (Forgejo's `admin user create` failing on a duplicate username) as done, not a failure, and does not re-emit or reuse the fresh password it generated for that call — the account already has its original password, handed to the operator on the run that actually created it.
+
+### Host state layout (UP-004)
+
+Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the container that serves it:
+
+```
+<RemoteDir>/state/git      → forgejo:/data/git/repositories
+<RemoteDir>/state/gitea    → forgejo:/data/gitea          (SQLite database, LFS objects)
+<RemoteDir>/state/blobs    → the local blob adapter's path, when the bundle uses one
+```
+
+This is what makes the stateless/stateful split in spec.md real. Without it every kind of state lives in the forgejo container's writable layer, and `Converge`'s `docker compose up -d --remove-orphans` — which recreates any service whose resolved config changed — destroys it. Host state being disposable applies to the *stateless* layer only; `<RemoteDir>/state` is the one directory on the host that is not.
+
+It is also what `state.SSHGitExporter` and `backup.SSHGitCapturer` already assume. Both run `find` and `tar -C <root>` directly over SSH with no `docker exec` wrapper, unlike `state.SSHDatabaseExporter`, which wraps because the database is reached through the running Forgejo process rather than as a file. Git capture was written against a host-visible repository root; UP-004 supplies it.
+
+## Snapshot orchestration (`backup`, BKUP-006)
+
+BKUP-001 through BKUP-005 are library functions — capture, encrypt, verify, write — and BKUP-006 is the command that composes them:
+
+1. Resolve the destination the operator named (`backup.OpenDestination`, BKUP-005) into a `blob.Adapter`.
+2. `backup.Run` — capture all four state kinds into a snapshot directory (BKUP-001, BKUP-002).
+3. `backup.Encrypt` — age-encrypt the directory into one archive (BKUP-003).
+4. `backup.Verify` — verify before anything leaves the host (BKUP-004).
+5. `backup.Write` — write the archive to the destination under `backup.SnapshotKey` (BKUP-005).
+
+The whole sequence is one CORE-002 job, so the CLI and the dashboard render the same progress from the same event stream, and the orchestrator owns the job's terminal event — the individual steps emit their own step events but never end the job. Reachable from `cmd/farrier backup` and `POST /backup` (API-001), both thin over the core.
+
+Until BKUP-006 lands, nothing in the tree calls any of BKUP-001..005, and `status` has no destination to report a last-backup age or replication lag against (STAT-001, STAT-002).
 
 ## Status (`status`, STAT-001, STAT-002)
 
@@ -352,10 +441,10 @@ instance's current state each time it's called, never a cached one:
    clock falls inside the certificate's validity window, expiring-soon at
    the same 14-day threshold ACME-002 sets for renewal warnings
    (`status.CertExpiryWarning`).
-3. **Disk headroom:** `df -Pk` on the host, default path `/` — no landed
-   decision yet pins forge state to a specific bind-mounted host
-   directory, so root is the only host-wide signal available without
-   guessing one.
+3. **Disk headroom:** `df -Pk` on the host, default path `/`. UP-004 pins
+   forge state to `<RemoteDir>/state`, so that is the path to measure once
+   UP-004 lands; until then root is the only host-wide signal available
+   without guessing one.
 4. **Replication lag (STAT-002):** `status.ReplicationLag` against
    `Options.Destination`, a `state.BlobExporter` — the read side of
    `blob.Adapter` — with no bundle-level destination config of its own:
@@ -375,13 +464,16 @@ instance's current state each time it's called, never a cached one:
      golden-path destination" apart from "operator-assembled transport"
      from a `blob.Adapter` alone.
 
-   This lands ahead of `backup --to` (BKUP-005): today `cmd/farrier
-   status` always passes a `nil` `Destination`, since no destination is
-   persisted anywhere yet, so the CLI always prints `unmeasured`. Once
-   BKUP-005 lands, the caller that resolves the bundle's configured
-   destination into a `blob.Adapter` starts passing it in, and lag
-   reporting lights up with no further change to `status.Check` or its
-   CLI skin.
+   `backup.OpenDestination` (BKUP-005, "Snapshot destination" above) is now
+   what resolves a destination into a `blob.Adapter`, but no CLI/API
+   orchestrator wires `backup --to` end to end yet (that composes `Run`,
+   `Encrypt`, `Write`, and BKUP-004's still-unimplemented verification), so
+   today `cmd/farrier status` always passes a `nil` `Destination`, since no
+   destination is persisted anywhere yet, and the CLI always prints
+   `unmeasured`. Once that orchestrator exists, the caller resolves the
+   bundle's configured destination through `backup.OpenDestination` and
+   starts passing it in, and lag reporting lights up with no further change
+   to `status.Check` or its CLI skin.
 
 `status.Check` returns an error naming which of the four failed rather
 than a partially-filled report — consistent with the rest of the core's
@@ -393,13 +485,14 @@ describes is healthy.
 
 **Last-backup age is not implemented yet.** STAT-001 also requires it —
 distinct from STAT-002's replication lag, since it's the age of the
-bundle's own last backup rather than a destination's — but finding the
-most recent snapshot needs a stable convention for what `backup`
-(BKUP-001..005, not yet landed) writes to its destination and how
-`status` locates it there. `blob.Object.Modified` (BLOB-001/002) now
-carries the timestamp that convention will read; what's still missing is
-the snapshot listing/naming convention itself, which belongs to backup's
-own design, not something `status` should invent ahead of it.
+bundle's own last backup rather than a destination's — but still needs the
+same no-CLI-orchestrator-yet caller described just above to resolve a
+destination and pass it in. The snapshot listing/naming convention itself
+is no longer missing: `backup.SnapshotKey` (BKUP-005, "Snapshot
+destination" above) is what `backup` writes to its destination and what
+`status` will locate the newest entry through, the same way
+`ReplicationLag` already does — by listing the destination and taking the
+newest `Modified` time, not by parsing a name.
 `docs/status.json` carries STAT-001 as partial with this as the
 remaining slice.
 

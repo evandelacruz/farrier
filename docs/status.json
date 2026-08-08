@@ -27,10 +27,7 @@
     "FORGE-003": "landed",
     "FORGE-004": "landed",
     "ACME-001": "landed",
-    "ACME-002": {
-      "state": "partial",
-      "remaining": "Renewal is decided but cannot be persisted. acme.EnsureValid correctly reports when a certificate is due (two-thirds of lifetime) and issues a replacement, and status warns inside 14 days of expiry, but a renewed certificate has nowhere to go: keystore.Writer.Store refuses to overwrite a key that already has content by design, the same invariant that keeps SECRET_KEY/INTERNAL_TOKEN/the SSH host key from silently rotating (spec.md 'Identity'). Renewal therefore returns a valid certificate to its caller while the bundle keeps the old one, and the next call renews again. Closing this needs a write path for renewal-eligible key material that does not loosen the no-overwrite guarantee for keys that must never rotate, which is an open decision. This is not what makes re-running up unsafe: UP-003 is closed by reading the persisted certificate through EnsureValid, which needs no write at all."
-    },
+    "ACME-002": "landed",
     "DNS-001": "landed",
     "DNS-002": "landed",
     "DNS-003": "landed",
@@ -45,6 +42,7 @@
     "UP-001": "landed",
     "UP-002": "landed",
     "UP-003": "landed",
+    "UP-004": "open",
     "IMPT-001": "landed",
     "IMPT-002": "landed",
     "IMPT-003": "landed",
@@ -52,7 +50,8 @@
     "BKUP-002": "landed",
     "BKUP-003": "landed",
     "BKUP-004": "landed",
-    "BKUP-005": "open",
+    "BKUP-005": "landed",
+    "BKUP-006": "open",
     "RSTR-001": "open",
     "RSTR-002": "open",
     "RSTR-003": "open",
@@ -68,13 +67,16 @@
     "DRIL-001": "open",
     "DRIL-002": "open",
     "DRIL-003": "open",
-    "STAT-001": {"state": "partial", "remaining": "last-backup age reporting: needs the snapshot listing/naming convention that BKUP-001..005 (not yet landed) will define for its destination"},
-    "STAT-002": {"state": "partial", "remaining": "measured lag needs the backup destination BKUP-005 persists; core ReplicationLag and the CLI unmeasured path are done"},
-    "API-001": {"state": "partial", "remaining": "wire POST /backup, /restore, /promote, /upgrade, /drill, /import, and GET /status once their core operations land (BKUP-*, RSTR-*, FAIL-*, UPGR-*, DRIL-*, IMPT-*, STAT-*); the API package, loopback binding, job dispatch, and SSE framing are done"},
+    "STAT-001": {"state": "partial", "remaining": "last-backup age reporting: the snapshot listing/naming convention now exists (backup.SnapshotKey, BKUP-005), but no caller yet resolves a real backup.OpenDestination and passes it into status.Options.Destination — that needs the `backup` CLI/API orchestrator, which doesn't exist yet even though Run, Encrypt, Write, and Verify (BKUP-001..005) are all landed individually"},
+    "STAT-002": {"state": "partial", "remaining": "measured lag needs a caller to resolve the operator's destination via backup.OpenDestination (BKUP-005) and pass it into status.Options.Destination; that caller is the not-yet-built `backup` CLI/API orchestrator, not status itself. core ReplicationLag and the CLI unmeasured path are done"},
+    "API-001": {"state": "partial", "remaining": "wire POST /backup once the `backup` CLI/API orchestrator composing Run, Encrypt, Write, and Verify (BKUP-001..005, all landed individually) exists; wire POST /restore, /promote, /upgrade, /drill once their core operations land (RSTR-*, FAIL-*, UPGR-*, DRIL-*); POST /init, POST /up, POST /import, and GET /status are wired"},
     "API-002": "landed",
     "UI-001": "open",
     "UI-002": "open",
-    "XCUT-001": "open",
+    "XCUT-001": {
+      "state": "partial",
+      "remaining": "The keystore file driver and local blob adapter now reject relative config.path (a real gap: it was baked into the manifest at init and silently re-resolved against whatever directory a later command ran from), and TestUpSucceedsFromBundleCopiedToAnotherDirectory proves `up` itself succeeds from a bundle physically relocated after the directory it was saved to no longer exists. That covers every operation landed so far that consumes a loaded bundle (init, up, status; import addresses instances directly and never touches a bundle). Extend the same relocated-bundle proof to backup, restore, promote, upgrade, and drill as each lands its own CLI/core path (BKUP-*, RSTR-*, FAIL-*, UPGR-*, DRIL-*, still open) — none of those exist yet to test."
+    },
     "XCUT-002": "landed"
   }
 }
