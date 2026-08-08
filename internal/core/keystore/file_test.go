@@ -104,6 +104,93 @@ func TestNewFileDriverRequiresPath(t *testing.T) {
 	}
 }
 
+func TestFileDriverStoreThenResolveRoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	d := FileDriver{Path: dir}
+
+	if err := d.Store(context.Background(), "forgejo_secret_key", NewSecret("supersecret")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	got, err := d.Resolve(context.Background(), "forgejo_secret_key")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Reveal() != "supersecret" {
+		t.Fatalf("Reveal() = %q, want %q", got.Reveal(), "supersecret")
+	}
+	info, err := os.Stat(filepath.Join(dir, "forgejo_secret_key"))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestFileDriverStoreCreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "keys")
+	d := FileDriver{Path: dir}
+
+	if err := d.Store(context.Background(), "k", NewSecret("v")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if got, err := d.Resolve(context.Background(), "k"); err != nil || got.Reveal() != "v" {
+		t.Fatalf("Resolve after Store = (%q, %v), want (\"v\", nil)", got.Reveal(), err)
+	}
+}
+
+func TestFileDriverStoreRefusesToOverwriteExistingKey(t *testing.T) {
+	dir := t.TempDir()
+	d := FileDriver{Path: dir}
+	if err := d.Store(context.Background(), "k", NewSecret("original")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	err := d.Store(context.Background(), "k", NewSecret("replacement"))
+	if err == nil {
+		t.Fatal("Store: want error overwriting an existing key, got nil")
+	}
+
+	got, resolveErr := d.Resolve(context.Background(), "k")
+	if resolveErr != nil {
+		t.Fatalf("Resolve: %v", resolveErr)
+	}
+	if got.Reveal() != "original" {
+		t.Errorf("Reveal() = %q, want original value preserved", got.Reveal())
+	}
+}
+
+func TestFileDriverStoreRejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+
+	d := FileDriver{Path: dir}
+	rel, err := filepath.Rel(dir, filepath.Join(outside, "secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Store(context.Background(), rel, NewSecret("nope")); err == nil {
+		t.Fatal("Store: want error for key name escaping configured path, got nil")
+	}
+}
+
+func TestFileDriverStoreEmptyKeyNameErrors(t *testing.T) {
+	d := FileDriver{Path: t.TempDir()}
+	if err := d.Store(context.Background(), "", NewSecret("v")); err == nil {
+		t.Fatal("Store: want error for empty key name, got nil")
+	}
+}
+
+func TestFileDriverStoreCanceledContextErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	d := FileDriver{Path: t.TempDir()}
+	if err := d.Store(ctx, "k", NewSecret("v")); err == nil {
+		t.Fatal("Store: want error for canceled context, got nil")
+	}
+}
+
 func TestNewFileDriverResolvesThroughFactory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "k"), []byte("v"), 0o600); err != nil {
