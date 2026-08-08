@@ -395,7 +395,7 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
 ```
 <RemoteDir>/state/git      → forgejo:/data/git/repositories
 <RemoteDir>/state/gitea    → forgejo:/data/gitea          (SQLite database, LFS objects)
-<RemoteDir>/state/blobs    → the local blob adapter's path, when the bundle uses one
+<RemoteDir>/state/blobs    created, not mounted — the local blob adapter's path, when the bundle uses one; no container reads it
 ```
 
 This is what makes the stateless/stateful split in spec.md real. Without it every kind of state lives in the forgejo container's writable layer, and `Converge`'s `docker compose up -d --remove-orphans` — which recreates any service whose resolved config changed — destroys it. Host state being disposable applies to the *stateless* layer only; `<RemoteDir>/state` is the one directory on the host that is not.
