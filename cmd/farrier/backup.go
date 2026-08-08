@@ -5,17 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path"
 
 	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
-	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/events"
-	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
-	"github.com/evandelacruz/farrier/internal/core/state"
 )
 
 // runBackup implements the `backup` command (BKUP-006): it connects to the
@@ -48,7 +44,8 @@ func runBackup(args []string) int {
 	}
 
 	dir := *workDir
-	if dir == "" {
+	autoWorkDir := dir == ""
+	if autoWorkDir {
 		dir, err = os.MkdirTemp("", "farrier-backup-*")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "farrier: backup: create work directory: %v\n", err)
@@ -63,6 +60,9 @@ func runBackup(args []string) int {
 		Timeout:        *timeout,
 	})
 	if err != nil {
+		if autoWorkDir {
+			os.RemoveAll(dir)
+		}
 		fmt.Fprintf(os.Stderr, "farrier: backup: %v\n", err)
 		return 1
 	}
@@ -90,9 +90,10 @@ func runBackup(args []string) int {
 
 // prepareBackup resolves everything backup.Options needs beyond flags: it
 // connects to target, builds the bundle's keystore and blob drivers, and
-// wires the SSH-backed state exporters and push hold the same way for both
-// the CLI and API skins (API-001). The returned cleanup func closes the SSH
-// connection; the caller must call it once done with opts.
+// hands them to backup.BuildOptions, which wires the SSH-backed state
+// exporters and push hold the same way for both the CLI and API skins
+// (API-001). The returned cleanup func closes the SSH connection; the
+// caller must call it once done with opts.
 func prepareBackup(ctx context.Context, b *bundle.Bundle, target, destination, remoteDir, workDir string, dialOpts orchestrate.Options) (backup.Options, func(), error) {
 	client, err := orchestrate.Connect(ctx, target, dialOpts)
 	if err != nil {
@@ -118,36 +119,6 @@ func prepareBackup(ctx context.Context, b *bundle.Bundle, target, destination, r
 		return backup.Options{}, nil, err
 	}
 
-	t := client.Target()
-	forgeContainer := "farrier-" + forge.Service
-	caddyContainer := "farrier-" + caddy.Service
-
-	opts := backup.Options{
-		WorkDir:        workDir,
-		ForgejoVersion: b.Manifest.Images[forge.Service],
-		Destination:    destination,
-		Identity:       identity,
-		Git: &state.SSHGitExporter{
-			Runner: client,
-			User:   t.User,
-			Host:   t.Host,
-			Port:   t.Port,
-			Root:   path.Join(remoteDir, "state", "git"),
-		},
-		GitCapturer: backup.SSHGitCapturer{Runner: client},
-		Database: &state.SSHDatabaseExporter{
-			Runner:    client,
-			Container: forgeContainer,
-			Path:      forge.DatabasePath,
-		},
-		Blobs: blobAdapter,
-		Keys:  &state.KeystoreKeyExporter{Driver: keystoreDriver},
-		PushHold: backup.CaddyPushHold{
-			Runner:    client,
-			Container: caddyContainer,
-			Domain:    b.Manifest.Domain,
-			Upstream:  fmt.Sprintf("%s:%d", forge.Service, forge.HTTPPort),
-		},
-	}
+	opts := backup.BuildOptions(client, b, remoteDir, workDir, destination, identity, blobAdapter, keystoreDriver)
 	return opts, cleanup, nil
 }

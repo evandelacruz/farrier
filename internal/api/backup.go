@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path"
 	"strings"
 	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
-	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/events"
-	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/state"
 )
@@ -91,7 +88,8 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		remoteDir = defaultRemoteDir
 	}
 	workDir := req.WorkDir
-	if workDir == "" {
+	autoWorkDir := workDir == ""
+	if autoWorkDir {
 		dir, err := os.MkdirTemp("", "farrier-backup-*")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, fmt.Errorf("create work directory: %w", err))
@@ -101,7 +99,7 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := s.jobs.New()
-	go s.runBackup(job, b, req.Target, req.To, remoteDir, workDir, orchestrate.Options{
+	go s.runBackup(job, b, req.Target, req.To, remoteDir, workDir, autoWorkDir, orchestrate.Options{
 		KeyFile:        req.SSHKeyFile,
 		KnownHostsFile: req.KnownHostsFile,
 		Timeout:        timeout,
@@ -110,14 +108,20 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // runBackup dials target, resolves the bundle's keystore and blob drivers
-// and age backup key, and wires the SSH-backed state exporters and push
-// hold backup.Backup needs, reporting failures on job directly since they
-// happen before Backup — which owns the job's terminal event on every
-// other path — is even called.
-func (s *Server) runBackup(job *events.Job, b *bundle.Bundle, target, destination, remoteDir, workDir string, dialOpts orchestrate.Options) {
+// and age backup key, and hands them to backup.BuildOptions, which wires
+// the SSH-backed state exporters and push hold backup.Backup needs,
+// reporting failures on job directly since they happen before Backup —
+// which owns the job's terminal event on every other path — is even
+// called. If autoWorkDir is set (handleBackup generated workDir itself
+// rather than the operator naming one), runBackup removes it on every path
+// that returns before backup.Backup takes ownership of cleaning it up.
+func (s *Server) runBackup(job *events.Job, b *bundle.Bundle, target, destination, remoteDir, workDir string, autoWorkDir bool, dialOpts orchestrate.Options) {
 	ctx := context.Background()
 	host, err := s.dialSSH(ctx, target, dialOpts)
 	if err != nil {
+		if autoWorkDir {
+			os.RemoveAll(workDir)
+		}
 		job.Failed(fmt.Sprintf("connect to %s: %v", target, err))
 		return
 	}
@@ -125,49 +129,31 @@ func (s *Server) runBackup(job *events.Job, b *bundle.Bundle, target, destinatio
 
 	keystoreDriver, err := s.newKeystore(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
+		if autoWorkDir {
+			os.RemoveAll(workDir)
+		}
 		job.Failed(fmt.Sprintf("build keystore driver: %v", err))
 		return
 	}
 
 	blobAdapter, err := s.newBlob(b.Manifest.Drivers.Blob.Driver, b.Manifest.Drivers.Blob.Config)
 	if err != nil {
+		if autoWorkDir {
+			os.RemoveAll(workDir)
+		}
 		job.Failed(fmt.Sprintf("build blob driver: %v", err))
 		return
 	}
 
 	identity, err := backup.ResolveIdentity(ctx, keystoreDriver)
 	if err != nil {
+		if autoWorkDir {
+			os.RemoveAll(workDir)
+		}
 		job.Failed(err.Error())
 		return
 	}
 
-	t := host.Target()
-	opts := backup.Options{
-		WorkDir:        workDir,
-		ForgejoVersion: b.Manifest.Images[forge.Service],
-		Destination:    destination,
-		Identity:       identity,
-		Git: &state.SSHGitExporter{
-			Runner: host,
-			User:   t.User,
-			Host:   t.Host,
-			Port:   t.Port,
-			Root:   path.Join(remoteDir, "state", "git"),
-		},
-		GitCapturer: backup.SSHGitCapturer{Runner: host},
-		Database: &state.SSHDatabaseExporter{
-			Runner:    host,
-			Container: "farrier-" + forge.Service,
-			Path:      forge.DatabasePath,
-		},
-		Blobs: blobAdapter,
-		Keys:  &state.KeystoreKeyExporter{Driver: keystoreDriver},
-		PushHold: backup.CaddyPushHold{
-			Runner:    host,
-			Container: "farrier-" + caddy.Service,
-			Domain:    b.Manifest.Domain,
-			Upstream:  fmt.Sprintf("%s:%d", forge.Service, forge.HTTPPort),
-		},
-	}
+	opts := backup.BuildOptions(host, b, remoteDir, workDir, destination, identity, blobAdapter, keystoreDriver)
 	s.backupRun(ctx, job, opts)
 }
