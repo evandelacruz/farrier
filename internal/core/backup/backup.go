@@ -20,9 +20,10 @@
 // guarantee spec.md "Verification" describes — rather than a silent,
 // unusable snapshot on disk. Encrypt (BKUP-003) turns Run's verified,
 // unencrypted snapshot directory into the single age-encrypted archive
-// that actually leaves the host. Writing the result to an S3-compatible
-// URI or filesystem path (BKUP-005) is still a separate requirement
-// layered on top of what Run and Encrypt produce here.
+// that actually leaves the host, and Write (BKUP-005) puts that archive
+// at OpenDestination's resolved S3-compatible URI or filesystem path.
+// Capture, verification, encryption, and write are a complete pipeline:
+// BKUP-001 through BKUP-005 are all implemented.
 package backup
 
 import (

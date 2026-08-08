@@ -12,7 +12,7 @@ internal/core/        the engine — all logic lives here
   bundle/             manifest, bundle directory, version pins
   initialize/         builds a bundle from a domain and driver targets (INIT-001)
   state/              the four state kinds and their export interfaces
-  backup/             snapshot creation, encryption, verification
+  backup/             snapshot creation, encryption, destination write, verification
   restore/            snapshot verification, rebuild, identity install
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
@@ -215,9 +215,9 @@ traffic (a local capture, a drill).
 
 `Run` also verifies the snapshot it just captured before returning (BKUP-004,
 below), and `Encrypt` (BKUP-003, below) turns that verified snapshot into the
-single age-encrypted archive that actually leaves the host. Writing the
-result to an S3-compatible URI or filesystem path (BKUP-005) is the one
-piece still separate and not yet implemented.
+single age-encrypted archive that actually leaves the host. `Write`
+(BKUP-005, below) streams that archive to the resolved S3-compatible URI or
+filesystem path — see "Snapshot destination" below.
 
 ## Snapshot encryption (BKUP-003)
 
@@ -233,9 +233,9 @@ its recipient's public key, which any holder of the identity (`filippo.io/age`'s
 without exposing it. `Encrypt` emits its own CORE-002 `StepEncrypt` event on
 the job it's given but does not end the job — like `forge.Bootstrap` and
 `forge.ReconcileCI`, it is a step a future orchestrator composes alongside
-`Run` (and, once it lands, BKUP-005's write) under one job whose terminal
-event that orchestrator owns. On failure it removes any partial file it left
-at the destination path, so a truncated archive is never mistaken for a real
+`Run`, `Write`, and `Verify` under one job whose terminal event that
+orchestrator owns. On failure it removes any partial file it left at the
+destination path, so a truncated archive is never mistaken for a real
 backup.
 
 ## Snapshot verification (BKUP-004)
@@ -272,12 +272,39 @@ everything wrong instead of one defect per rerun:
 (`StepVerify`) and fails the job — naming every defect found — if it
 returns an error. This is the fails-loudly-at-backup-time guarantee
 spec.md "Verification" describes, running today against the plain snapshot
-since `Run` doesn't call `Encrypt` itself — encryption (above) is still a
-separate step a future orchestrator composes alongside `Run`. The capture
-order above ultimately places `verify` after `encrypt`: once that
-orchestration lands, it must run `Verify` against the decrypted form of
-what's about to be written, not leave it checking the pre-encryption
+since `Run` doesn't call `Encrypt` itself — encryption and write (above,
+below) are still separate steps a future orchestrator composes alongside
+`Run`. The capture order above ultimately places `verify` after `encrypt`:
+once that orchestration lands, it must run `Verify` against the decrypted
+form of what's about to be written, not leave it checking the pre-encryption
 snapshot alone.
+
+## Snapshot destination (BKUP-005)
+
+`internal/core/backup.OpenDestination` resolves the golden path's `backup
+--to <uri>` (spec.md "Golden path") into a `blob.Adapter`: a value starting
+with `s3://` selects the `s3` adapter (BLOB-002), anything else is a
+filesystem directory path and selects the `local` adapter (BLOB-001) —
+"an S3-compatible URI or a filesystem path." An `s3://` URI has the shape
+`s3://<bucket>[/<key-prefix>]?endpoint=<host[:port]>[&region=<region>][&pathStyle=true][&ssl=false]`;
+`endpoint` is required, since no single default covers every S3-compatible
+service, and credentials come from the `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` environment variables — never the URI or a CLI flag
+— the same posture IMPT-001's source and target tokens take. An optional
+key-prefix segment scopes a shared bucket to one bundle, wrapping the `s3`
+adapter in a `prefixedAdapter` that adds the prefix on `Put`/`Get` and
+strips it back off `List` results, so it behaves exactly like an adapter
+dedicated to that prefix alone.
+
+`internal/core/backup.Write` streams `Encrypt`'s archive to the resolved
+destination under the key `SnapshotKey(timestamp)` names —
+`<capture-time>.age`, UTC, sortable both lexicographically and
+chronologically — completing BKUP-005. Like `Run` and `Encrypt`, `Write`
+emits its own `StepWrite` event but does not end the job. This is also the
+snapshot listing/naming convention "Status" below was waiting on: every
+object a destination holds is a snapshot, so `status`'s replication-lag and
+last-backup-age lookups can keep listing a destination's whole namespace
+(as `ReplicationLag` already does) rather than parsing names.
 
 ## Driver interfaces
 
@@ -403,13 +430,16 @@ instance's current state each time it's called, never a cached one:
      golden-path destination" apart from "operator-assembled transport"
      from a `blob.Adapter` alone.
 
-   This lands ahead of `backup --to` (BKUP-005): today `cmd/farrier
-   status` always passes a `nil` `Destination`, since no destination is
-   persisted anywhere yet, so the CLI always prints `unmeasured`. Once
-   BKUP-005 lands, the caller that resolves the bundle's configured
-   destination into a `blob.Adapter` starts passing it in, and lag
-   reporting lights up with no further change to `status.Check` or its
-   CLI skin.
+   `backup.OpenDestination` (BKUP-005, "Snapshot destination" above) is now
+   what resolves a destination into a `blob.Adapter`, but no CLI/API
+   orchestrator wires `backup --to` end to end yet (that composes `Run`,
+   `Encrypt`, `Write`, and BKUP-004's still-unimplemented verification), so
+   today `cmd/farrier status` always passes a `nil` `Destination`, since no
+   destination is persisted anywhere yet, and the CLI always prints
+   `unmeasured`. Once that orchestrator exists, the caller resolves the
+   bundle's configured destination through `backup.OpenDestination` and
+   starts passing it in, and lag reporting lights up with no further change
+   to `status.Check` or its CLI skin.
 
 `status.Check` returns an error naming which of the four failed rather
 than a partially-filled report — consistent with the rest of the core's
@@ -421,13 +451,14 @@ describes is healthy.
 
 **Last-backup age is not implemented yet.** STAT-001 also requires it —
 distinct from STAT-002's replication lag, since it's the age of the
-bundle's own last backup rather than a destination's — but finding the
-most recent snapshot needs a stable convention for what `backup`
-(BKUP-001..005, not yet landed) writes to its destination and how
-`status` locates it there. `blob.Object.Modified` (BLOB-001/002) now
-carries the timestamp that convention will read; what's still missing is
-the snapshot listing/naming convention itself, which belongs to backup's
-own design, not something `status` should invent ahead of it.
+bundle's own last backup rather than a destination's — but still needs the
+same no-CLI-orchestrator-yet caller described just above to resolve a
+destination and pass it in. The snapshot listing/naming convention itself
+is no longer missing: `backup.SnapshotKey` (BKUP-005, "Snapshot
+destination" above) is what `backup` writes to its destination and what
+`status` will locate the newest entry through, the same way
+`ReplicationLag` already does — by listing the destination and taking the
+newest `Modified` time, not by parsing a name.
 `docs/status.json` carries STAT-001 as partial with this as the
 remaining slice.
 
