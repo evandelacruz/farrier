@@ -252,7 +252,7 @@ returns an error. This is the fails-loudly-at-backup-time guarantee
 spec.md "Verification" describes, running today against the plain snapshot
 since `Run` doesn't call `Encrypt` itself — encryption (above) is still a
 separate step a future orchestrator composes alongside `Run`. The capture
-order above ultimately places `verify` before `encrypt`: once that
+order above ultimately places `verify` after `encrypt`: once that
 orchestration lands, it must run `Verify` against the decrypted form of
 what's about to be written, not leave it checking the pre-encryption
 snapshot alone.
