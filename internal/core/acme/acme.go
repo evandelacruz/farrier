@@ -148,6 +148,25 @@ func newClient(cfg Config) (*lego.Client, error) {
 	return client, nil
 }
 
+// ParseCertificate builds a Certificate from a PEM-encoded chain and
+// private key previously returned by Issue and persisted elsewhere — a
+// keystore, for instance — so a caller that resolved them back out can
+// hand the result to NeedsRenewal or EnsureValid the same way it would a
+// certificate Issue just returned.
+func ParseCertificate(domain string, certPEM, privateKeyPEM []byte) (*Certificate, error) {
+	leaf, err := certcrypto.ParsePEMCertificate(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("acme: parse certificate for %s: %w", domain, err)
+	}
+	return &Certificate{
+		Domain:      domain,
+		Certificate: certPEM,
+		PrivateKey:  privateKeyPEM,
+		NotBefore:   leaf.NotBefore,
+		NotAfter:    leaf.NotAfter,
+	}, nil
+}
+
 func newCertificate(res *certificate.Resource) (*Certificate, error) {
 	leaf, err := certcrypto.ParsePEMCertificate(res.Certificate)
 	if err != nil {

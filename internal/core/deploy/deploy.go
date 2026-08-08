@@ -87,15 +87,17 @@ type Options struct {
 	// Required.
 	RemoteDir string
 
-	// CertIssuer issues the TLS certificate Up hands to Caddy (UP-002).
-	// Nil uses the real ACME DNS-01 issuer (acme.Issue); tests substitute
-	// a fake so Up's sequencing is assertable without a real ACME server.
+	// CertIssuer resolves the TLS certificate Up hands to Caddy (UP-002),
+	// reusing the one init persisted unless it's due for renewal (UP-003).
+	// Nil uses the real ACME-backed issuer (acme.EnsureValid); tests
+	// substitute a fake so Up's sequencing is assertable without a real
+	// ACME server.
 	CertIssuer CertIssuer
 }
 
 // Up deploys b's full stateless layer to host (UP-001): it verifies Docker
 // is reachable, resolves the bundle's key material and renders and ships
-// Forgejo's app.ini, issues a TLS certificate for the bundle domain and
+// Forgejo's app.ini, resolves the bundle's persisted TLS certificate and
 // renders and ships Caddy's config (UP-002), converges the host to the
 // bundle's Compose definition plus that config, waits for Forgejo to accept
 // commands, provisions the first admin account, and waits for Caddy to
@@ -105,11 +107,13 @@ type Options struct {
 // Every step is safe to repeat against a host Up has already deployed to
 // (UP-003): CheckHost and waitReady are read-only, configureForge always
 // re-ships app.ini and re-derives its checksum so a changed manifest is
-// visible to Converge (WithEnv's doc comment), orchestrate.Converge is
-// idempotent by construction (its own doc comment), and forge.Bootstrap
-// treats an admin account that already exists as done rather than a
-// failure. Nothing here reads back what's already running before deciding
-// what to do — the bundle alone determines the outcome, same as Converge.
+// visible to Converge (WithEnv's doc comment), configureTLS reuses the
+// persisted certificate untouched unless it's actually due for renewal
+// (configureTLS's doc comment), orchestrate.Converge is idempotent by
+// construction (its own doc comment), and forge.Bootstrap treats an admin
+// account that already exists as done rather than a failure. Nothing here
+// reads back what's already running before deciding what to do — the
+// bundle alone determines the outcome, same as Converge.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
 // exactly once, after every step below has run (or the first one fails),
@@ -146,13 +150,17 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped")
 
-	job.Started(StepConfigureTLS, "issuing certificate and rendering caddy config")
-	compose, err = configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer))
+	job.Started(StepConfigureTLS, "resolving persisted certificate and rendering caddy config")
+	compose, renewed, err := configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer))
 	if err != nil {
 		job.Emit(StepConfigureTLS, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure tls: %w", err)
 	}
-	job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate issued and caddy configured")
+	if renewed {
+		job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal and a fresh one was issued for this deploy; it was not persisted to the keystore (ACME-002)")
+	} else {
+		job.Emit(StepConfigureTLS, events.StateSucceeded, "persisted certificate reused and caddy configured")
+	}
 
 	job.Started(StepConverge, "converging host to bundle definition")
 	deployed := &bundle.Bundle{Manifest: b.Manifest, Compose: compose}
