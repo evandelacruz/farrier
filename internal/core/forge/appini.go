@@ -19,10 +19,14 @@ const (
 	dbPath   = dataPath + "/gitea.db"
 	lfsPath  = dataPath + "/lfs"
 	repoRoot = "/data/git/repositories"
-	httpPort = 3000
 	sshPort  = 22
 	runUser  = "git"
 )
+
+// HTTPPort is the container-side port Forgejo's HTTP server listens on.
+// Exported so a caller wiring Caddy as the reverse proxy in front of it
+// (UP-002) can address this service without duplicating the port number.
+const HTTPPort = 3000
 
 // AppINIPath is the container-side path the official Forgejo image loads
 // its configuration from. A caller that deploys RenderAppINI's output
@@ -98,7 +102,7 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
 	fmt.Fprintf(&b, "PROTOCOL = http\n")
 	fmt.Fprintf(&b, "DOMAIN = %s\n", domain)
 	fmt.Fprintf(&b, "ROOT_URL = %s\n", rootURL)
-	fmt.Fprintf(&b, "HTTP_PORT = %d\n", httpPort)
+	fmt.Fprintf(&b, "HTTP_PORT = %d\n", HTTPPort)
 	fmt.Fprintf(&b, "SSH_DOMAIN = %s\n", domain)
 	fmt.Fprintf(&b, "SSH_PORT = %d\n", sshPort)
 	fmt.Fprintf(&b, "START_SSH_SERVER = true\n")

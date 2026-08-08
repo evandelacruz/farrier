@@ -11,10 +11,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
+	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
+
+// fakeCertIssuer satisfies CertIssuer without a real ACME server or DNS
+// provider, so tests can exercise Up's TLS-provisioning step deterministically.
+type fakeCertIssuer struct {
+	calls []acme.Config
+	err   error
+}
+
+func (f *fakeCertIssuer) Issue(cfg acme.Config) (*acme.Certificate, error) {
+	f.calls = append(f.calls, cfg)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &acme.Certificate{
+		Domain:      cfg.Domain,
+		Certificate: []byte("fake-cert-pem"),
+		PrivateKey:  []byte("fake-key-pem"),
+	}, nil
+}
+
+// testOptions is Options with a fakeCertIssuer wired in, for tests whose
+// Up call runs far enough to reach TLS provisioning.
+func testOptions(remoteDir string) Options {
+	return Options{RemoteDir: remoteDir, CertIssuer: &fakeCertIssuer{}}
+}
 
 func init() {
 	readyInterval = time.Millisecond
@@ -90,12 +117,13 @@ func testBundle() *bundle.Bundle {
 	return &bundle.Bundle{
 		Manifest: *bundle.NewManifest("example.com", map[string]string{
 			"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
+			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
 		}, bundle.DriverConfig{
 			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": "testdata/keys"}},
 			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": "testdata/blobs"}},
-		}),
+		}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"}),
 		Compose: map[string][]byte{
-			"docker-compose.yml": []byte("services:\n  forgejo:\n    image: x\n"),
+			"docker-compose.yml": []byte("services:\n  forgejo:\n    image: x\n  caddy:\n    image: y\n"),
 		},
 	}
 }
@@ -113,8 +141,9 @@ func drain(job *events.Job) []events.Event {
 func TestUpSucceeds(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
+	issuer := &fakeCertIssuer{}
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"})
+	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
 	if err != nil {
 		t.Fatalf("Up: %v", err)
 	}
@@ -136,7 +165,31 @@ func TestUpSucceeds(t *testing.T) {
 		t.Errorf("shipped app.ini missing INSTALL_LOCK: %s", appINI)
 	}
 
-	var sawCheckHost, sawComposeUp, sawExecReady, sawAdminCreate bool
+	if len(issuer.calls) != 1 {
+		t.Fatalf("cert issuer calls = %d, want 1", len(issuer.calls))
+	}
+	if got := issuer.calls[0]; got.Domain != "example.com" || got.DNSProvider != "manual" || got.Email != "ops@example.com" {
+		t.Errorf("issue call = %+v, want domain/provider/email from the manifest's ACME config", got)
+	}
+	if issuer.calls[0].AccountKey == nil {
+		t.Error("issue call carries no account key")
+	}
+
+	caddyfile, ok := host.files["/opt/farrier/caddy/Caddyfile"]
+	if !ok {
+		t.Fatalf("caddyfile not shipped, wrote: %v", keysOf(host.files))
+	}
+	if !strings.Contains(caddyfile, "example.com {") || !strings.Contains(caddyfile, "reverse_proxy forgejo:3000") {
+		t.Errorf("shipped caddyfile missing domain/upstream: %s", caddyfile)
+	}
+	if host.files["/opt/farrier/caddy/tls.crt"] != "fake-cert-pem" {
+		t.Errorf("certificate not shipped, wrote: %v", keysOf(host.files))
+	}
+	if host.files["/opt/farrier/caddy/tls.key"] != "fake-key-pem" {
+		t.Errorf("private key not shipped, wrote: %v", keysOf(host.files))
+	}
+
+	var sawCheckHost, sawComposeUp, sawExecForgejoReady, sawExecCaddyReady, sawAdminCreate bool
 	for _, cmd := range host.commands {
 		switch {
 		case strings.Contains(cmd, "docker version"):
@@ -147,7 +200,9 @@ func TestUpSucceeds(t *testing.T) {
 				t.Errorf("compose up command missing project name: %q", cmd)
 			}
 		case strings.Contains(cmd, "exec -T forgejo true"):
-			sawExecReady = true
+			sawExecForgejoReady = true
+		case strings.Contains(cmd, "exec -T caddy true"):
+			sawExecCaddyReady = true
 		case strings.Contains(cmd, "admin user create"):
 			sawAdminCreate = true
 			if !strings.Contains(cmd, "COMPOSE_PROJECT_NAME=farrier") {
@@ -155,9 +210,64 @@ func TestUpSucceeds(t *testing.T) {
 			}
 		}
 	}
-	if !sawCheckHost || !sawComposeUp || !sawExecReady || !sawAdminCreate {
-		t.Fatalf("missing a step: checkHost=%v composeUp=%v execReady=%v adminCreate=%v (commands: %v)",
-			sawCheckHost, sawComposeUp, sawExecReady, sawAdminCreate, host.commands)
+	if !sawCheckHost || !sawComposeUp || !sawExecForgejoReady || !sawExecCaddyReady || !sawAdminCreate {
+		t.Fatalf("missing a step: checkHost=%v composeUp=%v execForgejoReady=%v execCaddyReady=%v adminCreate=%v (commands: %v)",
+			sawCheckHost, sawComposeUp, sawExecForgejoReady, sawExecCaddyReady, sawAdminCreate, host.commands)
+	}
+}
+
+func TestUpPublishesCaddyHTTPSPort(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+
+	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	var sawComposeUp bool
+	for _, cmd := range host.commands {
+		if strings.Contains(cmd, "docker compose up -d") {
+			sawComposeUp = true
+		}
+	}
+	if !sawComposeUp {
+		t.Fatal("Up: never ran docker compose up")
+	}
+
+	composed, ok := host.files["/opt/farrier/compose.tmp/docker-compose.yml"]
+	if !ok {
+		t.Fatalf("compose file not shipped, wrote: %v", keysOf(host.files))
+	}
+	if !strings.Contains(composed, "443:443") {
+		t.Errorf("shipped compose missing caddy's published https port: %s", composed)
+	}
+	if !strings.Contains(composed, caddy.ConfigPath) || !strings.Contains(composed, caddy.CertPath) || !strings.Contains(composed, caddy.KeyPath) {
+		t.Errorf("shipped compose missing caddy's bind mounts: %s", composed)
+	}
+}
+
+func TestUpFailsWhenCertIssuanceFails(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+	issuer := &fakeCertIssuer{err: errors.New("dns-01 challenge failed")}
+
+	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier", CertIssuer: issuer})
+	if err == nil {
+		t.Fatal("Up: want error when certificate issuance fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "dns-01 challenge failed") {
+		t.Errorf("error = %v, want it to wrap the issuer's reason", err)
+	}
+
+	evs := drain(job)
+	last := evs[len(evs)-1]
+	if last.State != events.StateFailed || last.Step != "" {
+		t.Errorf("last event = %+v, want a job-terminal failure", last)
+	}
+	for _, cmd := range host.commands {
+		if strings.Contains(cmd, "docker compose up -d") {
+			t.Error("Up ran docker compose up after certificate issuance failed")
+		}
 	}
 }
 
@@ -166,7 +276,7 @@ func TestUpRetriesUntilForgejoReady(t *testing.T) {
 	host.execFailures = 2
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"}); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 
@@ -206,7 +316,7 @@ func TestUpFailsWhenAdminCreateFails(t *testing.T) {
 	host.adminCreateErr = errors.New("create failed")
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"}); err == nil {
+	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err == nil {
 		t.Fatal("Up: want error when admin bootstrap fails, got nil")
 	}
 }
@@ -220,7 +330,7 @@ func TestUpSucceedsWhenAlreadyDeployed(t *testing.T) {
 	host.adminCreateStderr = "Command error: user already exists [name: admin]"
 	job := events.NewJob()
 
-	err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"})
+	err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier"))
 	if err != nil {
 		t.Fatalf("Up: %v, want nil on a host that's already bootstrapped", err)
 	}
@@ -244,7 +354,7 @@ func TestUpEmbedsAppINIChecksumSoContentChangesForceRecreate(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 
-	if err := Up(context.Background(), job, host, testBundle(), Options{RemoteDir: "/opt/farrier"}); err != nil {
+	if err := Up(context.Background(), job, host, testBundle(), testOptions("/opt/farrier")); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 

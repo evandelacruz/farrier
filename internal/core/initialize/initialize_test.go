@@ -7,9 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/forge"
+	"github.com/evandelacruz/farrier/internal/core/keystore"
 )
 
 // fakeResolver pins every ref to a deterministic digest derived from the
@@ -34,18 +38,36 @@ func (f *fakeResolver) Resolve(ctx context.Context, ref string) (string, error) 
 
 // fakeProver simulates ACME DNS-01 zone-control proof (INIT-002), so tests
 // can exercise Run's pass/fail paths without a real ACME server or DNS
-// provider.
+// provider. On success it returns a fake certificate, standing in for the
+// one a real exchange would obtain — INIT-003 persists it as key material.
 type fakeProver struct {
 	calls []string
 	err   error
+	cert  *acme.Certificate
 }
 
-func (f *fakeProver) Prove(domain, dnsProvider, email string) error {
+func (f *fakeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
 	f.calls = append(f.calls, domain)
 	if f.err != nil {
-		return f.err
+		return nil, f.err
 	}
-	return nil
+	if f.cert != nil {
+		return f.cert, nil
+	}
+	return fakeCertificate(), nil
+}
+
+// fakeCertificate is a syntactically plausible (not cryptographically
+// real) certificate/key pair, good enough for tests that only assert
+// generateKeyMaterial persists whatever the Prover returns.
+func fakeCertificate() *acme.Certificate {
+	return &acme.Certificate{
+		Domain:      "example.com",
+		Certificate: []byte("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----\n"),
+		PrivateKey:  []byte("-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n"),
+		NotBefore:   time.Now(),
+		NotAfter:    time.Now().Add(90 * 24 * time.Hour),
+	}
 }
 
 func validParams(t *testing.T, resolver Resolver) Params {
@@ -292,13 +314,148 @@ func TestRunPropagatesResolverError(t *testing.T) {
 // deterministic while still proving acmeProver wires domain/provider/email
 // through to acme.Issue correctly.
 func TestAcmeProverWiring(t *testing.T) {
-	err := acmeProver{}.Prove("forge.example.com", "not-a-real-provider", "ops@example.com")
+	_, err := acmeProver{}.Prove("forge.example.com", "not-a-real-provider", "ops@example.com")
 	if err == nil {
 		t.Fatal("Prove: want error for an unrecognized DNS provider, got nil")
 	}
 	if !strings.Contains(err.Error(), "not-a-real-provider") {
 		t.Errorf("error %q does not name the bad provider", err)
 	}
+}
+
+// TestRunGeneratesAndStoresAllKeyMaterial exercises INIT-003 end to end
+// through the real file keystore driver: every key generateKeyMaterial
+// produces must land on disk, readable back through the same driver
+// Resolve uses at deploy time (forge.ResolveSecrets).
+func TestRunGeneratesAndStoresAllKeyMaterial(t *testing.T) {
+	keysDir := t.TempDir()
+	params := validParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	driver, err := keystore.New("file", map[string]any{"path": keysDir})
+	if err != nil {
+		t.Fatalf("keystore.New: %v", err)
+	}
+	wantKeys := []string{
+		forge.KeySecretKey,
+		forge.KeyInternalToken,
+		forge.KeyLFSJWTSecret,
+		KeyTLSCertificate,
+		KeyTLSPrivateKey,
+		KeySSHHostKey,
+		KeySSHHostKeyPublic,
+		KeyAgeBackupKey,
+	}
+	seen := make(map[string]string, len(wantKeys))
+	for _, name := range wantKeys {
+		secret, err := driver.Resolve(context.Background(), name)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", name, err)
+		}
+		if strings.TrimSpace(secret.Reveal()) == "" {
+			t.Errorf("%s resolved to an empty secret", name)
+		}
+		seen[name] = secret.Reveal()
+	}
+
+	for a := range seen {
+		for b := range seen {
+			if a != b && seen[a] == seen[b] {
+				t.Errorf("%s and %s share the same value, want distinct key material", a, b)
+			}
+		}
+	}
+
+	if !strings.Contains(seen[KeyAgeBackupKey], "AGE-SECRET-KEY-1") {
+		t.Errorf("age backup key = %q, want an AGE-SECRET-KEY-1... identity", seen[KeyAgeBackupKey])
+	}
+	if !strings.HasPrefix(seen[KeySSHHostKeyPublic], "ssh-ed25519 ") {
+		t.Errorf("ssh host public key = %q, want an ssh-ed25519 authorized-keys line", seen[KeySSHHostKeyPublic])
+	}
+	if seen[KeyTLSCertificate] != string(fakeCertificate().Certificate) {
+		t.Errorf("tls certificate = %q, want the certificate obtained during zone-control proof", seen[KeyTLSCertificate])
+	}
+	if seen[KeyTLSPrivateKey] != string(fakeCertificate().PrivateKey) {
+		t.Errorf("tls private key = %q, want the key obtained during zone-control proof", seen[KeyTLSPrivateKey])
+	}
+}
+
+func TestRunGeneratesKeysBeforeResolvingImages(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var keysStep, imagesStep = -1, -1
+	for i, ev := range job.Events() {
+		if ev.Step == StepGenerateKeys && ev.State == events.StateSucceeded {
+			keysStep = i
+		}
+		if ev.Step == StepResolveImages && ev.State == events.StateStarted {
+			imagesStep = i
+		}
+	}
+	if keysStep == -1 || imagesStep == -1 {
+		t.Fatalf("did not see both steps: keysStep=%d imagesStep=%d, events=%+v", keysStep, imagesStep, job.Events())
+	}
+	if keysStep >= imagesStep {
+		t.Errorf("generate-keys succeeded at event %d, resolve-images started at %d, want keys generated first", keysStep, imagesStep)
+	}
+}
+
+// TestRunRejectsKeystoreDriverWithoutWriteSupport exercises the deliberate
+// gap between the two shipped keystore drivers: file supports Store, but
+// command is read-only by design (KEY-002), so Run must fail clearly
+// rather than silently skip key generation.
+func TestRunRejectsKeystoreDriverWithoutWriteSupport(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "command", Config: map[string]any{"command": "true"}}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error for a keystore driver that cannot store key material, got nil")
+	}
+	if !strings.Contains(err.Error(), "command") {
+		t.Errorf("error = %v, want it to name the offending driver", err)
+	}
+	assertJobFailed(t, job)
+
+	var provedZoneControl bool
+	for _, ev := range job.Events() {
+		if ev.Step == StepProveZoneControl {
+			provedZoneControl = true
+		}
+	}
+	if provedZoneControl {
+		t.Error("Run proved zone control against a keystore driver it was always going to reject, want it to fail during validate")
+	}
+}
+
+func TestRunFailsWhenKeyMaterialAlreadyExists(t *testing.T) {
+	keysDir := t.TempDir()
+	if err := (keystore.FileDriver{Path: keysDir}).Store(context.Background(), forge.KeySecretKey, keystore.NewSecret("pre-existing")); err != nil {
+		t.Fatalf("seed existing key: %v", err)
+	}
+	params := validParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}}
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want error when key material already exists, got nil")
+	}
+	if !strings.Contains(err.Error(), forge.KeySecretKey) {
+		t.Errorf("error = %v, want it to name the pre-existing key", err)
+	}
+	assertJobFailed(t, job)
 }
 
 func assertJobFailed(t *testing.T, job *events.Job) {

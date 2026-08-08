@@ -1,16 +1,13 @@
 // Package initialize implements INIT-001: building a bundle from a DNS name
-// and a keystore target, and INIT-002: proving control of that domain's DNS
-// zone via an ACME DNS-01 challenge before the bundle is written. It is the
-// core logic behind the `init` CLI command — cmd/farrier's init command
-// parses flags and calls Run; every real decision (validation, zone-control
-// proof, image-digest resolution, manifest assembly) lives here so a future
-// API frontend (API-001) can call the same function and get the same
-// CORE-002 event stream.
-//
-// Key-material generation (INIT-003) is a separate requirement ID and lands
-// as a later addition to this package — Run does not perform it yet, so the
-// manifest it writes has no keys resolvable through its keystore driver
-// until INIT-003 lands.
+// and a keystore target; INIT-002: proving control of that domain's DNS
+// zone via an ACME DNS-01 challenge before the bundle is written; and
+// INIT-003: generating every piece of bundle key material and persisting
+// it through the bundle's keystore driver. It is the core logic behind the
+// `init` CLI command — cmd/farrier's init command parses flags and calls
+// Run; every real decision (validation, zone-control proof, key generation,
+// image-digest resolution, manifest assembly) lives here so a future API
+// frontend (API-001) can call the same function and get the same CORE-002
+// event stream.
 package initialize
 
 import (
@@ -34,6 +31,7 @@ import (
 const (
 	StepValidate         = "validate"
 	StepProveZoneControl = "prove-zone-control"
+	StepGenerateKeys     = "generate-keys"
 	StepResolveImages    = "resolve-images"
 	StepWrite            = "write"
 )
@@ -64,33 +62,35 @@ type Resolver interface {
 }
 
 // Prover proves control of domain's DNS zone via an ACME DNS-01 challenge
-// (INIT-002), returning the reason it couldn't when proof fails. Satisfied
-// by acmeProver, which backs it with a real ACME DNS-01 exchange (acme.Issue,
-// ACME-001); declared here so Run is testable without a real ACME server or
-// DNS provider.
+// (INIT-002), returning the reason it couldn't when proof fails, or the
+// certificate the exchange obtained when it succeeds — INIT-003's job is to
+// persist that certificate as bundle key material rather than let it go to
+// waste. Satisfied by acmeProver, which backs it with a real ACME DNS-01
+// exchange (acme.Issue, ACME-001); declared here so Run is testable without
+// a real ACME server or DNS provider.
 type Prover interface {
-	Prove(domain, dnsProvider, email string) error
+	Prove(domain, dnsProvider, email string) (*acme.Certificate, error)
 }
 
 // acmeProver is the production Prover: it runs a full ACME DNS-01 exchange
-// via acme.Issue, using an account key generated fresh for the proof. The
-// issued certificate itself is discarded — INIT-002 only needs the exchange
-// to succeed to know the operator controls the zone; persisting certificates
-// as bundle key material is INIT-003's job.
+// via acme.Issue, using an account key generated fresh for the proof. A
+// successful exchange both proves zone control (INIT-002) and produces the
+// certificate INIT-003 persists — one exchange serves both, rather than
+// proving control and then issuing a second certificate for the same
+// domain against the same provider.
 type acmeProver struct{}
 
-func (acmeProver) Prove(domain, dnsProvider, email string) error {
+func (acmeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return fmt.Errorf("generate acme account key: %w", err)
+		return nil, fmt.Errorf("generate acme account key: %w", err)
 	}
-	_, err = acme.Issue(acme.Config{
+	return acme.Issue(acme.Config{
 		Domain:      domain,
 		Email:       email,
 		AccountKey:  accountKey,
 		DNSProvider: dnsProvider,
 	})
-	return err
 }
 
 // Params are init's inputs: the DNS name and keystore target INIT-001
@@ -152,7 +152,8 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	if strings.TrimSpace(params.Dir) == "" {
 		return fail(job, StepValidate, fmt.Errorf("initialize: bundle directory is required"))
 	}
-	if _, err := keystore.New(params.Keystore.Driver, params.Keystore.Config); err != nil {
+	keystoreDriver, err := keystore.New(params.Keystore.Driver, params.Keystore.Config)
+	if err != nil {
 		return fail(job, StepValidate, fmt.Errorf("initialize: keystore target: %w", err))
 	}
 	if strings.TrimSpace(params.Blob.Driver) == "" {
@@ -161,13 +162,28 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	if strings.TrimSpace(params.ACMEDNSProvider) == "" {
 		return fail(job, StepValidate, fmt.Errorf("initialize: acme dns-01 provider is required"))
 	}
+	keystoreWriter, ok := keystoreDriver.(keystore.Writer)
+	if !ok {
+		return fail(job, StepValidate, fmt.Errorf("initialize: keystore driver %q cannot store generated key material; use the file driver with init, or provision Forgejo's key material manually first", params.Keystore.Driver))
+	}
 	job.Emit(StepValidate, events.StateSucceeded, "domain and driver targets are valid")
 
 	job.Started(StepProveZoneControl, fmt.Sprintf("proving control of %s via ACME DNS-01", params.Domain))
-	if err := proverOrDefault(params.Prover).Prove(params.Domain, params.ACMEDNSProvider, params.ACMEEmail); err != nil {
+	cert, err := proverOrDefault(params.Prover).Prove(params.Domain, params.ACMEDNSProvider, params.ACMEEmail)
+	if err != nil {
 		return fail(job, StepProveZoneControl, fmt.Errorf("initialize: prove control of %s: %w", params.Domain, err))
 	}
 	job.Emit(StepProveZoneControl, events.StateSucceeded, fmt.Sprintf("zone control proven for %s", params.Domain))
+
+	job.Started(StepGenerateKeys, "generating and storing bundle key material")
+	material, err := generateKeyMaterial(cert)
+	if err != nil {
+		return fail(job, StepGenerateKeys, err)
+	}
+	if err := storeKeyMaterial(ctx, keystoreWriter, material); err != nil {
+		return fail(job, StepGenerateKeys, err)
+	}
+	job.Emit(StepGenerateKeys, events.StateSucceeded, fmt.Sprintf("stored %d piece(s) of key material", len(material)))
 
 	job.Started(StepResolveImages, "resolving image references to digests")
 	images, err := resolveImages(ctx, resolverOrDefault(params.Resolver), params.Images)
@@ -180,6 +196,9 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	manifest := bundle.NewManifest(params.Domain, images, bundle.DriverConfig{
 		Keystore: params.Keystore,
 		Blob:     params.Blob,
+	}, bundle.ACMEConfig{
+		DNSProvider: params.ACMEDNSProvider,
+		Email:       params.ACMEEmail,
 	})
 	compose, err := orchestrate.Render(manifest)
 	if err != nil {

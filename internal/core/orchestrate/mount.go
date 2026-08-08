@@ -22,10 +22,30 @@ import (
 // change plus every other file unchanged. It is an error if no file in
 // files declares the named service.
 func WithBindMount(files map[string][]byte, service, hostPath, containerPath string) (map[string][]byte, error) {
+	return withServiceListEntry(files, "with bind mount", service, "volumes", fmt.Sprintf("%s:%s", hostPath, containerPath))
+}
+
+// WithPorts returns a copy of files with an additional host:container port
+// published on service's Compose definition — Caddy's HTTPS port, so the
+// forge is reachable from outside the deploy host (UP-002).
+//
+// Same layering rationale as WithBindMount: Render leaves ports to "the
+// component's own configuration story", and this is that story's port
+// counterpart.
+func WithPorts(files map[string][]byte, service, hostPort, containerPort string) (map[string][]byte, error) {
+	return withServiceListEntry(files, "with ports", service, "ports", fmt.Sprintf("%s:%s", hostPort, containerPort))
+}
+
+// withServiceListEntry appends entry to field (a Compose list key such as
+// "volumes" or "ports") on service's definition across files, returning a
+// new map with the change; files itself is never mutated. op names the
+// caller in error messages. It is an error if no file in files declares the
+// named service.
+func withServiceListEntry(files map[string][]byte, op, service, field, entry string) (map[string][]byte, error) {
 	for name, raw := range files {
 		var doc map[string]any
 		if err := yaml.Unmarshal(raw, &doc); err != nil {
-			return nil, fmt.Errorf("orchestrate: with bind mount: parse %s: %w", name, err)
+			return nil, fmt.Errorf("orchestrate: %s: parse %s: %w", op, name, err)
 		}
 
 		services, _ := doc["services"].(map[string]any)
@@ -34,14 +54,14 @@ func WithBindMount(files map[string][]byte, service, hostPath, containerPath str
 			continue
 		}
 
-		volumes, _ := svc["volumes"].([]any)
-		svc["volumes"] = append(volumes, fmt.Sprintf("%s:%s", hostPath, containerPath))
+		existing, _ := svc[field].([]any)
+		svc[field] = append(existing, entry)
 		services[service] = svc
 		doc["services"] = services
 
 		out, err := yaml.Marshal(doc)
 		if err != nil {
-			return nil, fmt.Errorf("orchestrate: with bind mount: encode %s: %w", name, err)
+			return nil, fmt.Errorf("orchestrate: %s: encode %s: %w", op, name, err)
 		}
 
 		result := make(map[string][]byte, len(files))
@@ -51,7 +71,7 @@ func WithBindMount(files map[string][]byte, service, hostPath, containerPath str
 		result[name] = out
 		return result, nil
 	}
-	return nil, fmt.Errorf("orchestrate: with bind mount: no Compose file declares service %q", service)
+	return nil, fmt.Errorf("orchestrate: %s: no Compose file declares service %q", op, service)
 }
 
 // WithEnv returns a copy of files with key=value set in service's Compose

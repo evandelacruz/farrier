@@ -55,20 +55,33 @@ type DriverConfig struct {
 	Blob     DriverRef `yaml:"blob"`
 }
 
+// ACMEConfig is the bundle's ACME DNS-01 configuration: the lego-recognized
+// provider name `init` proved zone control through (INIT-002) and the same
+// provider `up` (UP-002) and renewal (ACME-002) reissue certificates
+// through. It is independent of DriverConfig.DNS, the bundle's own DNS
+// driver for record management — lego resolves DNSProvider from its own
+// provider set and reads that provider's credentials from the process
+// environment, never from this config (acme.Config's doc comment).
+type ACMEConfig struct {
+	DNSProvider string `yaml:"dnsProvider"`
+	Email       string `yaml:"email,omitempty"`
+}
+
 // Manifest is the bundle's farrier.yaml: domain, pinned image digests,
-// driver config, state-kind declarations, and the checksum algorithm used
-// throughout backup and restore.
+// driver config, ACME DNS-01 config, state-kind declarations, and the
+// checksum algorithm used throughout backup and restore.
 type Manifest struct {
 	Domain            string             `yaml:"domain"`
 	Images            map[string]string  `yaml:"images"`
 	Drivers           DriverConfig       `yaml:"drivers"`
+	ACME              ACMEConfig         `yaml:"acme"`
 	State             []StateDeclaration `yaml:"state"`
 	ChecksumAlgorithm string             `yaml:"checksumAlgorithm"`
 }
 
 // NewManifest builds a manifest with all four state kinds declared and the
 // default checksum algorithm set.
-func NewManifest(domain string, images map[string]string, drivers DriverConfig) *Manifest {
+func NewManifest(domain string, images map[string]string, drivers DriverConfig, acmeCfg ACMEConfig) *Manifest {
 	state := make([]StateDeclaration, len(AllStateKinds))
 	for i, kind := range AllStateKinds {
 		state[i] = StateDeclaration{Kind: kind}
@@ -77,6 +90,7 @@ func NewManifest(domain string, images map[string]string, drivers DriverConfig) 
 		Domain:            domain,
 		Images:            images,
 		Drivers:           drivers,
+		ACME:              acmeCfg,
 		State:             state,
 		ChecksumAlgorithm: DefaultChecksumAlgorithm,
 	}
@@ -105,6 +119,9 @@ func (m *Manifest) Validate() error {
 	}
 	if strings.TrimSpace(m.Drivers.Blob.Driver) == "" {
 		return fmt.Errorf("bundle: blob driver is required")
+	}
+	if strings.TrimSpace(m.ACME.DNSProvider) == "" {
+		return fmt.Errorf("bundle: acme dns-01 provider is required")
 	}
 	if err := validateState(m.State); err != nil {
 		return err
