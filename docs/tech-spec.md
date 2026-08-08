@@ -99,6 +99,17 @@ the operator's own replication tooling.
   `docker exec` — ORCH-001 guarantees only Docker and SSH on the host, not
   a bare `sqlite3` install, so the backup runs where `sqlite3` is actually
   known to exist: inside the pinned Forgejo image.
+- **Key material (STATE-004):** `KeyExporter.Names` enumerates the fixed
+  set of key names a bundle carries — the three Forgejo secrets
+  (`forge.KeySecretKey`, `forge.KeyInternalToken`, `forge.KeyLFSJWTSecret`),
+  the TLS certificate chain and its private key, and the SSH host key —
+  since none of the shipped keystore drivers (file, command, exec) can list
+  what they hold; `KeyExporter.Resolve` reads one of those names from a
+  `keystore.Driver`. `KeystoreKeyExporter` is the one implementation: every
+  keystore driver already resolves by name, so no Local/SSH split is
+  needed the way git and database exporters have. The age backup key is
+  not part of this set — it encrypts the backup rather than travels inside
+  one, and the operator holds it directly (spec.md "Key custody").
 
 ## Snapshot format
 
