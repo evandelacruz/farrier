@@ -414,7 +414,9 @@ BKUP-001 through BKUP-005 are library functions — capture, encrypt, verify, wr
 
 The whole sequence is one CORE-002 job, so the CLI and the dashboard render the same progress from the same event stream, and the orchestrator owns the job's terminal event — the individual steps emit their own step events but never end the job. Reachable from `cmd/farrier backup` and `POST /backup` (API-001), both thin over the core.
 
-Until BKUP-006 lands, nothing in the tree calls any of BKUP-001..005, and `status` has no destination to report a last-backup age or replication lag against (STAT-001, STAT-002).
+`backup.Backup` (`internal/core/backup/orchestrate.go`) is that orchestrator: it resolves the destination, runs `Run` against a private job and relays its step events onto the caller's job live (`Run` still ends whatever job it's given — its own existing, tested contract — so composing it under a shared job needs this indirection; `Encrypt` and `Write` already take the caller's job directly), age-encrypts and writes as above, and additionally re-runs `Verify` against the decrypted form of the archive `Write` is about to send off the host, before it goes. `cmd/farrier backup` and `POST /backup` both call it, resolving the SSH-backed `state` exporters, the bundle's blob driver (`blob.New`, resolving `Manifest.Drivers.Blob`), and the age backup key (`backup.ResolveIdentity`) the same way for both frontends.
+
+`status` still has no destination to report a last-backup age or replication lag against (STAT-001, STAT-002): neither `cmd/farrier status` nor `POST /status` resolves the bundle's configured destination through `backup.OpenDestination` yet, so both still always pass a `nil` `status.Options.Destination`.
 
 ## Status (`status`, STAT-001, STAT-002)
 
