@@ -48,6 +48,22 @@ const HTTPPort = 3000
 // (UP-001) must mount the rendered file here.
 const AppINIPath = dataPath + "/conf/app.ini"
 
+// sshHostKeyDir and sshHostKeyFile fix where Forgejo's SSH host key lives
+// under DataPath. RenderAppINI sets SSH_SERVER_HOST_KEYS to this path
+// explicitly rather than leaving Forgejo to its own default filenames, so
+// there is one Farrier-owned container path to install the bundle's
+// persisted ed25519 SSH host key at (deploy.configureSSHHostKey, RSTR-004)
+// — the same key init generates and every backup and restore carries from
+// then on (spec.md "Identity" > "Key material").
+const (
+	sshHostKeyDir  = "ssh"
+	sshHostKeyFile = "farrier_host_ed25519"
+)
+
+// SSHHostKeyPath is the container-side path RenderAppINI configures as
+// Forgejo's sole SSH host key.
+const SSHHostKeyPath = dataPath + "/" + sshHostKeyDir + "/" + sshHostKeyFile
+
 // DatabasePath is dbPath's exported form: the container-side location of
 // Forgejo's SQLite database. A caller reaching it from outside this package
 // — state.SSHDatabaseExporter, over `docker exec` (BKUP-006) — needs the
@@ -128,6 +144,10 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
 	fmt.Fprintf(&b, "SSH_DOMAIN = %s\n", domain)
 	fmt.Fprintf(&b, "SSH_PORT = %d\n", sshPort)
 	fmt.Fprintf(&b, "START_SSH_SERVER = true\n")
+	// Pinned to the bundle's own key rather than Forgejo's default
+	// filenames, so the host identity clients see is the one init
+	// generated and every backup/restore carries (RSTR-004).
+	fmt.Fprintf(&b, "SSH_SERVER_HOST_KEYS = %s\n", SSHHostKeyPath)
 	fmt.Fprintf(&b, "LFS_START_SERVER = true\n\n")
 
 	fmt.Fprintf(&b, "[database]\n")
