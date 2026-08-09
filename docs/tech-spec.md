@@ -49,9 +49,9 @@ Every operator command is one core package sequencing others, with `cmd/farrier`
 A plain directory, designed to live in a private git repo.
 
 ```
-farrier.yaml          manifest: domain, pinned image digests, driver config,
-                      ACME DNS-01 config, CI runner config, state-kind
-                      declarations, checksum algorithm
+farrier.yaml          manifest: domain, git-over-SSH host port, pinned image
+                      digests, driver config, ACME DNS-01 config, CI runner
+                      config, state-kind declarations, checksum algorithm
 compose/              rendered Docker Compose definitions
 ```
 

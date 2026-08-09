@@ -67,7 +67,9 @@ A forge's identity — its URL, its keys, its certificates — is what welds it 
 Two ports carry every client protocol, and both are part of the identity the bundle owns:
 
 - **HTTPS on 443**, terminated by Caddy with a core-issued certificate. Browser, REST API, git-over-HTTPS, and LFS all arrive here.
-- **Git over SSH on 2222**, served by Forgejo's own SSH server using the bundle's host key. The host's sshd keeps port 22 — `up` reaches hosts over it (ORCH-001) and moving it would require configuration on the host that Farrier deliberately does not ask for. The cost is a port in the SSH clone URL, which Forgejo renders into the URLs it displays.
+- **Git over SSH on 2222 by default**, served by Forgejo's own SSH server using the bundle's host key. The port is a manifest field, so an operator whose host sshd lives elsewhere can set 22 and get bare `git@domain:owner/repo.git` URLs. The default is 2222 because the host's sshd normally owns 22 — `up` reaches hosts over it (ORCH-001), and taking it would require reconfiguring the host, which Farrier deliberately does not ask for. The cost of the default is a port in the SSH clone URL, which Forgejo renders into the URLs it displays.
+
+The port is per instance, not per repository: one bundle owns one domain, and every repository on it shares that endpoint.
 
 The host key is bundle key material, so a restored or promoted instance answers on the same port with the same key and existing remotes and `known_hosts` entries keep working.
 
