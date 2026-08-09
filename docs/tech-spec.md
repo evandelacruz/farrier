@@ -462,6 +462,13 @@ Reachable from `cmd/farrier restore` and `POST /restore` (API-001), both thin ov
 
 Reachable from `cmd/farrier promote` and `POST /promote` (API-001), both thin over the core: each resolves the target host, the bundle's keystore, blob, and DNS drivers, the snapshot source, and the age backup key the same way `restore`'s own CLI/API skins do, defaulting `-dns-value`/`dnsValue` to the target's own host (`orchestrate.ParseTarget`) when the operator doesn't name a different standby address, and hand the result to `promote.Promote`.
 
+### Confirmation gate (FAIL-002)
+
+`promote` must display the age of the snapshot being promoted and require operator confirmation before acting (spec.md "Failover": "the CLI makes the decision informed; the operator decides"). `backup.SnapshotAge` resolves which snapshot key `promote` would restore — the given key, or the newest object in the destination, the same resolution `backup.LatestSnapshotKey` and `status.ReplicationLag` already use — and returns its age as of now, so both frontends can show it without inventing a second way to read a snapshot's time.
+
+- **CLI:** before dialing the target or building any driver, `cmd/farrier promote` resolves and prints the snapshot's key and age, then reads a line from stdin and proceeds only if the operator typed `yes`. A `-yes` flag supplies that consent up front for scripted callers — the age is always printed either way, so displaying it is never skippable, only the interactive wait is.
+- **API:** `POST /promote` cannot prompt on a terminal, so the request body takes an explicit `confirm: true` field (`internal/api/promote.go`'s `promoteRequest.Confirm`). `handlePromote` resolves the snapshot's age synchronously, before a job is created; a missing or `false` `confirm` returns `400` with the resolved key and age in the error body and starts no job. The default is refusal, not silent promotion — the same posture `bundleDir`/`target`/`from` validation already takes ahead of job creation.
+
 ## Status (`status`, STAT-001, STAT-002)
 
 `internal/core/status.Check` is a synchronous read, not a job (tech-spec.md

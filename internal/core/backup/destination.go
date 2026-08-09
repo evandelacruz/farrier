@@ -62,6 +62,47 @@ func LatestSnapshotKey(ctx context.Context, dest blob.Adapter) (string, error) {
 	return objects[0].Key, nil
 }
 
+// SnapshotAge resolves which snapshot key a restore or promote would act on
+// — key if non-empty, otherwise the newest object in dest (LatestSnapshotKey,
+// spec.md "Standby model: cold") — and returns that key alongside its age as
+// of now: now minus the object's Modified time, clamped to zero the same way
+// status.ReplicationLag's Age is (a destination clock reading ahead of now
+// never yields a negative age here either). This is FAIL-002's "display the
+// age of the snapshot being promoted" lookup, reusing the same "list a
+// destination, take the target object's Modified time" measurement
+// LatestSnapshotKey and status.ReplicationLag already perform rather than
+// parsing SnapshotKey's timestamp back out of a name.
+func SnapshotAge(ctx context.Context, dest blob.Adapter, key string, now time.Time) (string, time.Duration, error) {
+	if dest == nil {
+		return "", 0, errors.New("backup: snapshot age: destination is required")
+	}
+
+	resolvedKey := key
+	if strings.TrimSpace(resolvedKey) == "" {
+		k, err := LatestSnapshotKey(ctx, dest)
+		if err != nil {
+			return "", 0, err
+		}
+		resolvedKey = k
+	}
+
+	objects, err := dest.List(ctx, resolvedKey)
+	if err != nil {
+		return "", 0, fmt.Errorf("backup: snapshot age: list destination: %w", err)
+	}
+	for _, o := range objects {
+		if o.Key != resolvedKey {
+			continue
+		}
+		age := now.Sub(o.Modified)
+		if age < 0 {
+			age = 0
+		}
+		return resolvedKey, age, nil
+	}
+	return "", 0, fmt.Errorf("backup: snapshot age: %s: not found in destination", resolvedKey)
+}
+
 // Fetch downloads the object at key from dest to localPath, the inverse of
 // Write (BKUP-005): restore.Restore uses it to pull a snapshot archive onto
 // local disk before DecryptArchive and Verify can run against it.
