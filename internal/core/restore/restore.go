@@ -122,6 +122,15 @@ type Options struct {
 	// CertIssuer is passed through to deploy.Up unchanged; nil uses the
 	// real ACME-backed issuer.
 	CertIssuer deploy.CertIssuer
+
+	// ReconcileCI, when true, resets every Forgejo Actions run and job the
+	// snapshot's database records as `running` back to `queued`
+	// (forge.ReconcileCI, FORGE-004) before that database is placed on the
+	// host. False — restore's default — leaves a plain restore's existing
+	// behavior unchanged; promote (FAIL-001) sets it, since every such job
+	// is an orphan on the host being restored or failed over to
+	// (spec.md "Failover").
+	ReconcileCI bool
 }
 
 func (o Options) validate() error {
@@ -201,6 +210,12 @@ func restore(ctx context.Context, job *events.Job, opts Options) (*backup.Manife
 
 	if err := installKeys(ctx, job, plainDir, manifest, opts.Keystore); err != nil {
 		return nil, err
+	}
+
+	if opts.ReconcileCI {
+		if err := reconcileCI(ctx, job, plainDir, manifest); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := placeState(ctx, job, plainDir, manifest, opts); err != nil {
