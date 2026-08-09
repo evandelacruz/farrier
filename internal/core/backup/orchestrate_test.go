@@ -195,8 +195,8 @@ func TestDecryptArchiveRoundTrips(t *testing.T) {
 	}
 
 	destDir := t.TempDir()
-	if err := decryptArchive(context.Background(), archivePath, destDir, identity); err != nil {
-		t.Fatalf("decryptArchive: %v", err)
+	if err := DecryptArchive(context.Background(), archivePath, destDir, identity); err != nil {
+		t.Fatalf("DecryptArchive: %v", err)
 	}
 
 	want := map[string]string{
@@ -232,7 +232,7 @@ func TestDecryptArchiveWrongIdentity(t *testing.T) {
 		t.Fatalf("Encrypt: %v", err)
 	}
 
-	if err := decryptArchive(context.Background(), archivePath, t.TempDir(), wrongIdentity); err == nil {
-		t.Fatal("decryptArchive: want error decrypting with the wrong identity, got nil")
+	if err := DecryptArchive(context.Background(), archivePath, t.TempDir(), wrongIdentity); err == nil {
+		t.Fatal("DecryptArchive: want error decrypting with the wrong identity, got nil")
 	}
 }
