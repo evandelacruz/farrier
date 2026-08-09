@@ -37,7 +37,7 @@ internal/core/        the engine — all logic lives here
                       listener, and opens the operator's browser
 internal/api/         loopback HTTP server, RPC endpoints, SSE
 web/                  dashboard (embedded into the binary via go:embed)
-  assets/             the page as served: static HTML and CSS, no toolchain
+  assets/             the page as served: static HTML, CSS, and JS, no toolchain
 tools/                agent orchestration — dev-only, never in the product binary
 docs/                 this documentation
 ```
@@ -158,7 +158,8 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 ## API
 
 - Loopback HTTP, default `127.0.0.1:7433`.
-- RPC verbs: `POST /init`, `POST /up`, `POST /backup`, `POST /restore`, `POST /promote`, `POST /upgrade`, `POST /drill`, `POST /import`, `GET /status`.
+- RPC verbs: `POST /init`, `POST /up`, `POST /backup`, `POST /restore`, `POST /promote`, `POST /upgrade`, `POST /drill`, `POST /import`, `GET /status`, `GET /snapshots`.
+- `GET /snapshots?to=<uri>` lists a destination's backup history — key, size, capture time, age — newest first. It reaches no host, so history stays readable while the forge is down.
 - Mutation verbs return `{ jobId }`; `GET /jobs/{id}/events` streams progress over SSE.
 - One event schema for all operations: `{ jobId, step, state, detail, timestamp }`. The CLI renders these in the terminal; the dashboard renders them in the browser.
 - An operation that needs operator confirmation takes it as an explicit request field. The API cannot prompt, so the default must be refusal rather than silent execution.

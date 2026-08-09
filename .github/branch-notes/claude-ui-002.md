@@ -14,12 +14,13 @@ New core + API surface for the one view nothing exposed yet:
 - `internal/core/backup.History` lists a destination's snapshots with key,
   size, capture time, and age, reusing the same "list the destination, read
   Modified" measurement `LatestSnapshotKey` and `SnapshotAge` already use.
-- `GET /snapshots?to=<uri>` in `internal/api` returns that list.
-- `farrier snapshots -to <uri>` exposes it from the CLI, so backup history
-  is reachable from both frontends.
+- `GET /snapshots?to=<uri>` in `internal/api` returns that list. It is the
+  one verb with no CLI counterpart, because spec.md "Interfaces" assigns
+  backup history to the dashboard and spec.md's CLI table is ten commands.
 
-Drill results need no new endpoint: a drill is a job, and its report reaches
-both frontends through the CORE-002 event stream the CLI already renders.
+Status, replication lag, drill, and promotion needed no new endpoint:
+`GET /status` already carries the first two, and a drill or a promotion is
+a job whose report reaches both frontends on the CORE-002 event stream.
 
 Promotion honours FAIL-002 in the browser: the view shows the resolved
 snapshot's age and requires a deliberate confirm before `POST /promote` is
