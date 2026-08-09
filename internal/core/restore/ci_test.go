@@ -28,9 +28,12 @@ const (
 
 // newTestDatabaseBytesWithRunningCI extends newTestDatabaseBytes' fixture
 // with the two Forgejo Actions tables forge.ReconcileCI touches
-// (forge/reconcile_test.go's openTestDB schema), seeded with one run and
-// one job both left `running` — an orphan a snapshot captured mid-flight,
-// the case Options.ReconcileCI exists to clean up.
+// (forge/reconcile_test.go's openTestDB schema), seeded with run/job 1 left
+// `running` — an orphan a snapshot captured mid-flight, the case
+// Options.ReconcileCI exists to clean up — and run/job 2 already `queued`,
+// dispatch bookkeeping the snapshot captured mid-flight in the other valid
+// state. Both must reach the standby host still dispatchable: 1 by being
+// reset, 2 by being left alone (FAIL-003).
 func newTestDatabaseBytesWithRunningCI(t *testing.T) []byte {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "gitea.db")
@@ -55,6 +58,12 @@ func newTestDatabaseBytesWithRunningCI(t *testing.T) []byte {
 		t.Fatalf("seed action_run: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO action_run_job (id, run_id, status, updated) VALUES (1, 1, ?, 1000)`, forgeActionStatusRunning); err != nil {
+		t.Fatalf("seed action_run_job: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO action_run (id, status, updated) VALUES (2, ?, 1000)`, forgeActionStatusWaiting); err != nil {
+		t.Fatalf("seed action_run: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO action_run_job (id, run_id, status, updated) VALUES (2, 2, ?, 1000)`, forgeActionStatusWaiting); err != nil {
 		t.Fatalf("seed action_run_job: %v", err)
 	}
 	if err := db.Close(); err != nil {
@@ -143,18 +152,26 @@ func TestRestoreReconcileCIResetsRunningJobsBeforePlacement(t *testing.T) {
 	}
 	defer db.Close()
 
-	var runStatus, jobStatus int
-	if err := db.QueryRow(`SELECT status FROM action_run WHERE id = 1`).Scan(&runStatus); err != nil {
-		t.Fatalf("query action_run status: %v", err)
-	}
-	if runStatus != forgeActionStatusWaiting {
-		t.Errorf("shipped action_run status = %d, want %d (queued)", runStatus, forgeActionStatusWaiting)
-	}
-	if err := db.QueryRow(`SELECT status FROM action_run_job WHERE id = 1`).Scan(&jobStatus); err != nil {
-		t.Fatalf("query action_run_job status: %v", err)
-	}
-	if jobStatus != forgeActionStatusWaiting {
-		t.Errorf("shipped action_run_job status = %d, want %d (queued)", jobStatus, forgeActionStatusWaiting)
+	// FAIL-003: every run/job the standby host's forgejo container reads on
+	// startup must already be dispatchable — id 1 by having been reset from
+	// its orphaned `running` state, id 2 by having been left alone since it
+	// was already `queued` when the snapshot was taken. Both went through
+	// the real backup encryption and restore decryption round trip, not a
+	// hand-built database file.
+	for _, id := range []int{1, 2} {
+		var runStatus, jobStatus int
+		if err := db.QueryRow(`SELECT status FROM action_run WHERE id = ?`, id).Scan(&runStatus); err != nil {
+			t.Fatalf("query action_run %d status: %v", id, err)
+		}
+		if runStatus != forgeActionStatusWaiting {
+			t.Errorf("shipped action_run %d status = %d, want %d (queued)", id, runStatus, forgeActionStatusWaiting)
+		}
+		if err := db.QueryRow(`SELECT status FROM action_run_job WHERE id = ?`, id).Scan(&jobStatus); err != nil {
+			t.Fatalf("query action_run_job %d status: %v", id, err)
+		}
+		if jobStatus != forgeActionStatusWaiting {
+			t.Errorf("shipped action_run_job %d status = %d, want %d (queued)", id, jobStatus, forgeActionStatusWaiting)
+		}
 	}
 
 	reconcileIdx, placeIdx := -1, -1
