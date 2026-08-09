@@ -20,6 +20,7 @@ func runInit(args []string) int {
 	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
 	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required); reads that provider's credentials from the environment")
 	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
+	colocatedRunner := fs.Bool("colocated-runner", true, "deploy a Forgejo Actions runner on the forge host; false keeps CI off the machine holding git data and the database, and the operator registers a remote runner instead")
 	var keystoreConfig, blobConfig, images keyValueFlag
 	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
 	fs.Var(&blobConfig, "blob-config", "blob driver config as key=value (repeatable)")
@@ -54,6 +55,7 @@ func runInit(args []string) int {
 		ACMEDNSProvider: *acmeDNSProvider,
 		ACMEEmail:       *acmeEmail,
 		Images:          images.asStrings(),
+		ColocatedRunner: colocatedRunner,
 	}
 
 	job := events.NewJob()

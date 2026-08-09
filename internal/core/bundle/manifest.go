@@ -67,20 +67,68 @@ type ACMEConfig struct {
 	Email       string `yaml:"email,omitempty"`
 }
 
+// ActionsConfig is the manifest's CI section: what `up` deploys alongside
+// the forge to run Forgejo Actions jobs.
+type ActionsConfig struct {
+	// ColocatedRunner declares whether `up` deploys the bundle's Actions
+	// runner on the forge host itself (FORGE-005). It is a pointer because
+	// unset and false mean different things: unset is the default and means
+	// enabled, since a fresh deployment must be able to run a workflow
+	// without the operator doing anything; false is a deliberate operator
+	// choice.
+	//
+	// Setting it to false is the escape hatch spec.md "CI trust boundary" >
+	// "The colocated runner holds the host's Docker socket" depends on: the
+	// colocated runner can start any container on the forge host, so an
+	// operator who does not want that risk on the machine holding git data
+	// and the database turns it off here and registers a remote runner
+	// against the bundle domain instead. Runner registrations live in the
+	// Forgejo database either way, so nothing else about the instance
+	// changes (FAIL-005).
+	ColocatedRunner *bool `yaml:"colocatedRunner,omitempty"`
+}
+
 // Manifest is the bundle's farrier.yaml: domain, pinned image digests,
-// driver config, ACME DNS-01 config, state-kind declarations, and the
-// checksum algorithm used throughout backup and restore.
+// driver config, ACME DNS-01 config, CI runner config, state-kind
+// declarations, and the checksum algorithm used throughout backup and
+// restore.
 type Manifest struct {
 	Domain            string             `yaml:"domain"`
 	Images            map[string]string  `yaml:"images"`
 	Drivers           DriverConfig       `yaml:"drivers"`
 	ACME              ACMEConfig         `yaml:"acme"`
+	Actions           ActionsConfig      `yaml:"actions,omitempty"`
 	State             []StateDeclaration `yaml:"state"`
 	ChecksumAlgorithm string             `yaml:"checksumAlgorithm"`
 }
 
+// ColocatedRunnerEnabled reports whether this bundle wants the colocated
+// Actions runner deployed (FORGE-005). An unset ColocatedRunner is enabled:
+// a manifest written before the field existed, or one an operator never
+// touched, still gets the runner FORGE-005 requires.
+func (m *Manifest) ColocatedRunnerEnabled() bool {
+	return m.Actions.ColocatedRunner == nil || *m.Actions.ColocatedRunner
+}
+
+// ColocatedRunnerDeclared reports whether the manifest states a colocated
+// runner preference at all, as opposed to leaving it at its default. It
+// separates "the operator asked for a colocated runner" from "nobody said",
+// which is the difference between failing a deployment whose manifest pins
+// no runner image and quietly skipping the runner on a bundle that predates
+// the field (deploy.configureRunner).
+func (m *Manifest) ColocatedRunnerDeclared() bool {
+	return m.Actions.ColocatedRunner != nil
+}
+
 // NewManifest builds a manifest with all four state kinds declared and the
 // default checksum algorithm set.
+//
+// It leaves Actions.ColocatedRunner unset rather than writing the default
+// in: what a bundle deploys is init's policy, not this constructor's, and
+// initialize.Run writes the operator's choice out explicitly so farrier.yaml
+// shows the knob. An unset field still means enabled
+// (ColocatedRunnerEnabled) — the default only ever has to be spelled in one
+// place.
 func NewManifest(domain string, images map[string]string, drivers DriverConfig, acmeCfg ACMEConfig) *Manifest {
 	state := make([]StateDeclaration, len(AllStateKinds))
 	for i, kind := range AllStateKinds {

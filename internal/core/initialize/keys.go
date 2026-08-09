@@ -58,6 +58,7 @@ var keyMaterialOrder = []string{
 	forge.KeySecretKey,
 	forge.KeyInternalToken,
 	forge.KeyLFSJWTSecret,
+	forge.KeyRunnerSecret,
 	KeyTLSCertificate,
 	KeyTLSPrivateKey,
 	KeySSHHostKey,
@@ -67,7 +68,8 @@ var keyMaterialOrder = []string{
 
 // generateKeyMaterial produces every piece of key material INIT-003
 // requires: Forgejo's SECRET_KEY, INTERNAL_TOKEN, and LFS JWT secret
-// (random), the TLS certificate cert carries — the one obtained during
+// (random), the colocated Actions runner's registration secret (FORGE-005),
+// the TLS certificate cert carries — the one obtained during
 // zone-control proof's ACME DNS-01 exchange (INIT-002); persisting it here
 // instead of discarding it and issuing a second one avoids a redundant
 // exchange against the operator's ACME/DNS provider — a fresh SSH host key
@@ -90,6 +92,14 @@ func generateKeyMaterial(cert *acme.Certificate) (map[string]keystore.Secret, er
 	if err != nil {
 		return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeyLFSJWTSecret, err)
 	}
+	// Generated through forge rather than randomSecret: Forgejo's offline
+	// runner registration reads the first 16 of the secret's 40 hex
+	// characters as the runner's identifier, so its format is fixed by
+	// Forgejo and belongs next to the code that uses it (FORGE-005).
+	runnerSecret, err := forge.NewRunnerSecret()
+	if err != nil {
+		return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeyRunnerSecret, err)
+	}
 	sshPrivate, sshPublic, err := generateSSHHostKey()
 	if err != nil {
 		return nil, fmt.Errorf("initialize: generate %s: %w", KeySSHHostKey, err)
@@ -103,6 +113,7 @@ func generateKeyMaterial(cert *acme.Certificate) (map[string]keystore.Secret, er
 		forge.KeySecretKey:     keystore.NewSecret(secretKey),
 		forge.KeyInternalToken: keystore.NewSecret(internalToken),
 		forge.KeyLFSJWTSecret:  keystore.NewSecret(lfsJWTSecret),
+		forge.KeyRunnerSecret:  keystore.NewSecret(runnerSecret),
 		KeyTLSCertificate:      keystore.NewSecret(string(cert.Certificate)),
 		KeyTLSPrivateKey:       keystore.NewSecret(string(cert.PrivateKey)),
 		KeySSHHostKey:          keystore.NewSecret(sshPrivate),

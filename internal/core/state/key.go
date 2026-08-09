@@ -29,8 +29,9 @@ const (
 
 // keyNames is the fixed, ordered set every bundle's key material consists of
 // (STATE-004, spec.md "Identity" > "Key material"): the three Forgejo
-// secrets, the TLS certificate chain and its private key, and the SSH host
-// key installed on every deploy so clients see an unchanged host identity. It
+// secrets, the colocated Actions runner's registration secret, the TLS
+// certificate chain and its private key, and the SSH host key installed on
+// every deploy so clients see an unchanged host identity. It
 // is what Names enumerates, since a keystore.Driver (tech-spec "Keystore
 // driver config": file, command, or an out-of-tree exec driver) only ever
 // resolves a name it's given — none of the three shipped drivers can list
@@ -46,6 +47,13 @@ var keyNames = []string{
 	forge.KeySecretKey,
 	forge.KeyInternalToken,
 	forge.KeyLFSJWTSecret,
+	// The runner secret is what a restored instance's colocated runner
+	// re-derives its credentials from, and what keeps its registration —
+	// a database row keyed by the secret's identifier — the same
+	// registration after a restore or a promotion (FORGE-005, FAIL-005).
+	// Leaving it out of the captured set would mean a bundle whose CI
+	// stops working the moment it moves.
+	forge.KeyRunnerSecret,
 	KeyTLSCertificate,
 	KeyTLSPrivateKey,
 	KeySSHHostKey,

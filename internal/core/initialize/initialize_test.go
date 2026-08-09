@@ -345,6 +345,7 @@ func TestRunGeneratesAndStoresAllKeyMaterial(t *testing.T) {
 		forge.KeySecretKey,
 		forge.KeyInternalToken,
 		forge.KeyLFSJWTSecret,
+		forge.KeyRunnerSecret,
 		KeyTLSCertificate,
 		KeyTLSPrivateKey,
 		KeySSHHostKey,
@@ -467,5 +468,73 @@ func assertJobFailed(t *testing.T, job *events.Job) {
 	last := evs[len(evs)-1]
 	if last.Step != "" || last.State != events.StateFailed {
 		t.Errorf("last event = %+v, want a job-terminal failed event", last)
+	}
+}
+
+// FORGE-005: every bundle init writes pins a runner image and records the
+// colocated-runner choice explicitly, so a fresh `up` gives working CI and
+// the operator can see — and flip — the knob in farrier.yaml.
+func TestRunPinsARunnerAndRecordsTheColocatedChoice(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	ref, ok := b.Manifest.Images[forge.RunnerService]
+	if !ok {
+		t.Fatalf("manifest pins no %q image: %v", forge.RunnerService, b.Manifest.Images)
+	}
+	if !strings.Contains(ref, "@sha256:") {
+		t.Errorf("runner image %q is not digest-pinned", ref)
+	}
+	if !b.Manifest.ColocatedRunnerDeclared() {
+		t.Error("manifest leaves the colocated-runner choice unwritten")
+	}
+	if !b.Manifest.ColocatedRunnerEnabled() {
+		t.Error("colocated runner is off by default, want on")
+	}
+}
+
+func TestRunHonorsAColocatedRunnerOptOut(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	disabled := false
+	params.ColocatedRunner = &disabled
+
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if b.Manifest.ColocatedRunnerEnabled() {
+		t.Error("colocated runner is on, want off")
+	}
+	// Still pinned: re-enabling is a one-line manifest edit, not a
+	// registry lookup (requiredComponents' doc comment).
+	if _, ok := b.Manifest.Images[forge.RunnerService]; !ok {
+		t.Errorf("manifest pins no %q image: %v", forge.RunnerService, b.Manifest.Images)
+	}
+}
+
+func TestRunStoresAWellFormedRunnerSecret(t *testing.T) {
+	keysDir := t.TempDir()
+	params := validParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}}
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	driver, err := keystore.New("file", map[string]any{"path": keysDir})
+	if err != nil {
+		t.Fatalf("keystore.New: %v", err)
+	}
+	secret, err := driver.Resolve(context.Background(), forge.KeyRunnerSecret)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", forge.KeyRunnerSecret, err)
+	}
+	if err := forge.ValidateRunnerSecret(secret.Reveal()); err != nil {
+		t.Errorf("stored runner secret is not in Forgejo's registration format: %v", err)
 	}
 }

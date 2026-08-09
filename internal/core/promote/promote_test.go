@@ -72,6 +72,9 @@ func testKeyValues() map[string]string {
 	for _, name := range names {
 		values[name] = "value-for-" + name
 	}
+	// The runner secret carries Forgejo's registration format rather than
+	// a "value-for-..." placeholder (FORGE-005, forge.ValidateRunnerSecret).
+	values[forge.KeyRunnerSecret] = "0123456789abcdef0123456789abcdef01234567"
 	values[state.KeyTLSCertificate] = testTLSCert
 	values[state.KeyTLSPrivateKey] = testTLSKey
 	return values

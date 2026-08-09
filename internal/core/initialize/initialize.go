@@ -22,6 +22,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/registry"
@@ -37,22 +38,30 @@ const (
 )
 
 // DefaultImageRefs are the images init pins when the caller doesn't
-// override a component: Forgejo itself and Caddy, the two stateless
-// components every bundle needs (spec.md "What it's built on"). Each is a
-// tag, not yet a digest — Run resolves it through the registry package, so
-// the manifest always ends up digest-pinned (tech-spec.md "Bundle
-// directory") even though the default here is a floating tag.
+// override a component: Forgejo itself, Caddy, and the Forgejo Actions
+// runner — the stateless components every bundle needs (spec.md "What it's
+// built on"). Each is a tag, not yet a digest — Run resolves it through the
+// registry package, so the manifest always ends up digest-pinned
+// (tech-spec.md "Bundle directory") even though the default here is a
+// floating tag.
 var DefaultImageRefs = map[string]string{
-	"forgejo": "codeberg.org/forgejo/forgejo:latest",
-	"caddy":   "docker.io/library/caddy:latest",
+	"forgejo":           "codeberg.org/forgejo/forgejo:latest",
+	"caddy":             "docker.io/library/caddy:latest",
+	forge.RunnerService: "code.forgejo.org/forgejo/runner:latest",
 }
 
 // requiredComponents are the images a bundle cannot function without:
 // forge.Service ("forgejo") is the container FORGE-002's admin bootstrap
-// and every future forge operation target by name, and caddy is the bundle's
-// sole TLS terminator (spec.md "What it's built on"). Run refuses to write a
-// bundle missing either, default or overridden.
-var requiredComponents = []string{"forgejo", "caddy"}
+// and every future forge operation target by name, caddy is the bundle's
+// sole TLS terminator (spec.md "What it's built on"), and the runner is what
+// makes a workflow pushed to a fresh deployment actually run (FORGE-005).
+// Run refuses to write a bundle missing any of them, default or overridden.
+//
+// The runner is required even when Params.ColocatedRunner is false: the
+// manifest is shareable and long-lived, so pinning the image an operator
+// would need to turn the runner back on costs nothing and means re-enabling
+// it is a one-line edit rather than a registry lookup.
+var requiredComponents = []string{"forgejo", "caddy", forge.RunnerService}
 
 // Resolver resolves an image reference to its digest-pinned form. Satisfied
 // by registry.Resolver; declared here so Run is testable without real
@@ -130,6 +139,15 @@ type Params struct {
 	// Run resolves either through Resolver.
 	Images map[string]string
 
+	// ColocatedRunner declares whether the bundle deploys its Actions
+	// runner on the forge host (FORGE-005). It defaults to true, and an
+	// operator sets it false to keep CI off the machine holding git data
+	// and the database — see bundle.ActionsConfig.ColocatedRunner and
+	// spec.md "CI trust boundary". Either way the choice is written into
+	// the manifest explicitly, so it is visible and reversible without
+	// re-running init.
+	ColocatedRunner *bool
+
 	// Resolver resolves image refs to digests; nil uses registry.Resolve.
 	Resolver Resolver
 	// Prover proves ACME DNS-01 zone control; nil uses a real ACME exchange
@@ -200,6 +218,11 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 		DNSProvider: params.ACMEDNSProvider,
 		Email:       params.ACMEEmail,
 	})
+	// Written out even when it matches the default, so farrier.yaml shows
+	// the operator both that the colocated runner exists and how to turn it
+	// off (FORGE-005, spec.md "CI trust boundary").
+	colocatedRunner := params.ColocatedRunner == nil || *params.ColocatedRunner
+	manifest.Actions.ColocatedRunner = &colocatedRunner
 	compose, err := orchestrate.Render(manifest)
 	if err != nil {
 		return fail(job, StepWrite, fmt.Errorf("initialize: %w", err))
