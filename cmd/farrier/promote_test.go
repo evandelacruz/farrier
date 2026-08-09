@@ -35,10 +35,13 @@ func TestConfirmPromoteDisplaysAgeAndSkipsPromptWithYes(t *testing.T) {
 	writeSnapshot(t, dir, key, time.Now().Add(-2*time.Hour))
 
 	var out bytes.Buffer
-	confirmed := confirmPromote(context.Background(), strings.NewReader(""), &out, dir, "", true)
+	resolvedKey, confirmed := confirmPromote(context.Background(), strings.NewReader(""), &out, dir, "", true)
 
 	if !confirmed {
 		t.Fatal("confirmPromote with skipPrompt=true: want confirmed, got false")
+	}
+	if resolvedKey != key {
+		t.Errorf("resolvedKey = %q, want %q", resolvedKey, key)
 	}
 	if !strings.Contains(out.String(), key) {
 		t.Errorf("output %q does not mention resolved snapshot key %q", out.String(), key)
@@ -54,9 +57,12 @@ func TestConfirmPromoteAcceptsTypedYes(t *testing.T) {
 	writeSnapshot(t, dir, key, time.Now().Add(-time.Hour))
 
 	var out bytes.Buffer
-	confirmed := confirmPromote(context.Background(), strings.NewReader("yes\n"), &out, dir, "", false)
+	resolvedKey, confirmed := confirmPromote(context.Background(), strings.NewReader("yes\n"), &out, dir, "", false)
 	if !confirmed {
 		t.Fatal("confirmPromote: want confirmed for typed \"yes\", got false")
+	}
+	if resolvedKey != key {
+		t.Errorf("resolvedKey = %q, want %q", resolvedKey, key)
 	}
 }
 
@@ -68,7 +74,7 @@ func TestConfirmPromoteRejectsAnythingElse(t *testing.T) {
 	cases := []string{"", "no\n", "y\n", "Yes please\n"}
 	for _, in := range cases {
 		var out bytes.Buffer
-		confirmed := confirmPromote(context.Background(), strings.NewReader(in), &out, dir, "", false)
+		_, confirmed := confirmPromote(context.Background(), strings.NewReader(in), &out, dir, "", false)
 		if confirmed {
 			t.Errorf("confirmPromote(%q): want not confirmed, got confirmed", in)
 		}
@@ -79,8 +85,11 @@ func TestConfirmPromoteFailsOnUnresolvableSnapshot(t *testing.T) {
 	dir := t.TempDir() // no snapshots written
 
 	var out bytes.Buffer
-	confirmed := confirmPromote(context.Background(), strings.NewReader("yes\n"), &out, dir, "", false)
+	resolvedKey, confirmed := confirmPromote(context.Background(), strings.NewReader("yes\n"), &out, dir, "", false)
 	if confirmed {
 		t.Fatal("confirmPromote: want not confirmed when the snapshot can't be resolved, got confirmed")
+	}
+	if resolvedKey != "" {
+		t.Errorf("resolvedKey = %q, want empty when resolution fails", resolvedKey)
 	}
 }

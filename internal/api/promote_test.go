@@ -337,6 +337,53 @@ func TestHandlePromoteSuccessWiresOptions(t *testing.T) {
 	host.waitClosed(t)
 }
 
+// TestHandlePromoteWiresResolvedSnapshotKeyNotRawField guards the FAIL-002
+// fix: handlePromote must pass the resolvedKey it already computed (and
+// confirmed the age of) into promote.Options.SnapshotKey, not the raw
+// req.Snapshot field. req.Snapshot is left empty here — the "promote
+// newest" case — so a regression that reintroduces the raw-flag path would
+// wire an empty SnapshotKey through and let promote.Promote re-resolve
+// "newest" independently at execution time, letting a snapshot that lands
+// after confirmation get promoted instead of the one whose age was shown.
+func TestHandlePromoteWiresResolvedSnapshotKeyNotRawField(t *testing.T) {
+	s := newTestServer()
+	s.loadBundle = func(dir string) (*bundle.Bundle, error) { return testBundle(), nil }
+	s.dialPromote = func(ctx context.Context, target string, opts orchestrate.Options) (promote.Host, error) {
+		return newFakePromoteHost(), nil
+	}
+	s.newKeystore = func(driverName string, config map[string]any) (keystore.Driver, error) {
+		return newFakeAgeKeystore(t), nil
+	}
+	s.newBlob = func(driverName string, config map[string]any) (blob.Adapter, error) {
+		return blob.NewLocal(t.TempDir())
+	}
+	s.resolveDNS = func(ctx context.Context, job *events.Job, ref bundle.DriverRef, keystoreDriver keystore.Driver) (dns.Driver, error) {
+		return &recordingDNSDriver{}, nil
+	}
+	var gotOpts promote.Options
+	s.promoteRun = func(ctx context.Context, job *events.Job, opts promote.Options) error {
+		gotOpts = opts
+		job.Succeeded("done")
+		return nil
+	}
+
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+
+	// req omits "snapshot" entirely: the resolution happens once, inside
+	// handlePromote, against the single snapshot present.
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true}`, from))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	job := jobFromResponse(t, s, rec)
+	waitDone(t, job)
+
+	if gotOpts.SnapshotKey != "20260101T000000Z.age" {
+		t.Errorf("SnapshotKey = %q, want the resolved key %q (not the empty raw request field)", gotOpts.SnapshotKey, "20260101T000000Z.age")
+	}
+}
+
 func TestHandlePromoteDefaultsDNSValueFromTarget(t *testing.T) {
 	s := newTestServer()
 	s.loadBundle = func(dir string) (*bundle.Bundle, error) { return testBundle(), nil }

@@ -117,7 +117,7 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := s.jobs.New()
-	go s.runPromote(job, b, req.Target, req.From, req.Snapshot, remoteDir, workDir, autoWorkDir, req.DNSRecord, dnsValue, orchestrate.Options{
+	go s.runPromote(job, b, req.Target, req.From, resolvedKey, remoteDir, workDir, autoWorkDir, req.DNSRecord, dnsValue, orchestrate.Options{
 		KeyFile:        req.SSHKeyFile,
 		KnownHostsFile: req.KnownHostsFile,
 		Timeout:        timeout,

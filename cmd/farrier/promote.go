@@ -63,7 +63,8 @@ func runPromote(args []string) int {
 	}
 
 	ctx := context.Background()
-	if !confirmPromote(ctx, os.Stdin, os.Stdout, *from, *snapshot, *yes) {
+	resolvedKey, confirmed := confirmPromote(ctx, os.Stdin, os.Stdout, *from, *snapshot, *yes)
+	if !confirmed {
 		fmt.Fprintln(os.Stderr, "farrier: promote: aborted (not confirmed)")
 		return 1
 	}
@@ -79,7 +80,7 @@ func runPromote(args []string) int {
 	}
 
 	job := events.NewJob()
-	opts, cleanup, err := preparePromote(ctx, job, b, *target, *from, *snapshot, *remoteDir, dir, *dnsRecord, value, orchestrate.Options{
+	opts, cleanup, err := preparePromote(ctx, job, b, *target, *from, resolvedKey, *remoteDir, dir, *dnsRecord, value, orchestrate.Options{
 		KeyFile:        *keyFile,
 		KnownHostsFile: *knownHosts,
 		Timeout:        *timeout,
@@ -171,33 +172,38 @@ func preparePromote(ctx context.Context, job *events.Job, b *bundle.Bundle, targ
 // the age of the snapshot -snapshot names (or the newest one, if -snapshot
 // is empty — the same resolution promote.Promote itself applies), prints it
 // to out so the operator's decision is informed (spec.md "Failover": "the
-// CLI makes the decision informed"), and returns whether the operator (or
-// -yes, standing in for one in a script) confirmed proceeding. skipPrompt
-// bypasses the interactive wait but never the age display — the age is
-// always shown, only the wait is optional.
-func confirmPromote(ctx context.Context, in io.Reader, out io.Writer, from, snapshotKey string, skipPrompt bool) bool {
+// CLI makes the decision informed"), and returns the resolved snapshot key
+// alongside whether the operator (or -yes, standing in for one in a script)
+// confirmed proceeding. The caller must pass the returned key — not the raw
+// -snapshot flag — into promote.Options.SnapshotKey: promote.Promote does
+// its own "empty means newest" resolution, and re-running that resolution
+// after the confirmation returns could promote a different snapshot than
+// the one whose age was shown. skipPrompt bypasses the interactive wait but
+// never the age display — the age is always shown, only the wait is
+// optional.
+func confirmPromote(ctx context.Context, in io.Reader, out io.Writer, from, snapshotKey string, skipPrompt bool) (string, bool) {
 	source, err := backup.OpenDestination(from)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: promote: open snapshot source: %v\n", err)
-		return false
+		return "", false
 	}
 
 	resolvedKey, age, err := backup.SnapshotAge(ctx, source, snapshotKey, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: promote: resolve snapshot: %v\n", err)
-		return false
+		return "", false
 	}
 
 	fmt.Fprintf(out, "promoting snapshot %s, captured %s ago\n", resolvedKey, age.Round(time.Second))
 
 	if skipPrompt {
-		return true
+		return resolvedKey, true
 	}
 
 	fmt.Fprint(out, "this will restore this snapshot, verify it, start services, reconcile CI, and flip DNS. type \"yes\" to continue: ")
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
-		return false
+		return resolvedKey, false
 	}
-	return strings.TrimSpace(strings.ToLower(scanner.Text())) == "yes"
+	return resolvedKey, strings.TrimSpace(strings.ToLower(scanner.Text())) == "yes"
 }
