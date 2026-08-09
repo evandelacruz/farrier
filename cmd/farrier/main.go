@@ -24,6 +24,7 @@ var commands = map[string]func(args []string) int{
 	"backup":  runBackup,
 	"restore": runRestore,
 	"promote": runPromote,
+	"upgrade": runUpgrade,
 }
 
 func main() {
