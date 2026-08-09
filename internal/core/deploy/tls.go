@@ -81,7 +81,15 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 // the same way initialize's zone-control proof generates one for its own
 // — registering an account carries none of Let's Encrypt's issuance rate
 // limits, so that part is harmless to repeat.
-func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte, issuer CertIssuer) (map[string][]byte, bool, error) {
+// quarantine publishes that port on the deploy host's loopback interface
+// instead of every interface (DRIL-002, orchestrate.WithLoopbackPorts): a
+// drilled instance is reached through an SSH tunnel to the host and is not
+// reachable from anywhere else. Everything above it is unchanged — the
+// drilled instance still serves HTTPS with the snapshot's own certificate
+// at the bundle domain, because that certificate is part of the identity
+// the rehearsal is proving restorable, and a drill that skipped it would
+// prove less than a real restore.
+func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte, issuer CertIssuer, quarantine bool) (map[string][]byte, bool, error) {
 	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
 		return nil, false, fmt.Errorf("keystore driver: %w", err)
@@ -143,7 +151,11 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 	if err != nil {
 		return nil, false, fmt.Errorf("mount private key: %w", err)
 	}
-	compose, err = orchestrate.WithPorts(compose, caddy.Service, httpsPort, httpsPort)
+	if quarantine {
+		compose, err = orchestrate.WithLoopbackPorts(compose, caddy.Service, httpsPort, httpsPort)
+	} else {
+		compose, err = orchestrate.WithPorts(compose, caddy.Service, httpsPort, httpsPort)
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("publish https port: %w", err)
 	}

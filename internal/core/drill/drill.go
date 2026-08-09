@@ -38,16 +38,41 @@
 // identity, and resetting those rows to `queued` would arm it to run
 // production's CI for real.
 //
-// # Quarantine is DRIL-002, and it is not landed
+// # Quarantine (DRIL-002)
 //
-// spec.md "Rehearsal" is explicit that a drill instance carries
-// production's identity, and that the drill only proves what it is meant to
-// "while the outside world hears nothing" — outbound webhooks and email
-// disabled, DNS untouched, reachable only through an SSH tunnel. Of those,
-// only "DNS untouched" is guaranteed here. DRIL-002 owns the rest and is
-// still open, so a booted drill instance still holds production's
-// webhook and push-mirror configuration and can act on it. Point `drill`
-// at a scratch target with that in mind until DRIL-002 lands.
+// A drill instance is a full restore of production: the same database, the
+// same key material, the same domain in its config, the same webhook rows
+// and push mirrors. Everything that makes it a faithful rehearsal also
+// makes it capable of acting as production. Quarantine is what keeps it
+// from doing so, and it holds for every drilled instance — not only while
+// a smoke job is running, and not as anything a caller can turn off.
+//
+// A drilled instance can reach the snapshot it restored and nothing
+// outside its host; the operator can reach it through an SSH tunnel to
+// that host and nobody else can reach it at all. Three properties, in
+// three places:
+//
+//   - Outbound webhooks, email, and mirrors are disabled in the rendered
+//     app.ini (forge.AppINIOptions.Quarantine), reached from here through
+//     restore.Options.Quarantine, which Drill sets unconditionally. It is a
+//     config override rather than an edit to the restored database, so the
+//     state under test stays exactly what the snapshot held.
+//   - DNS is untouched, per the section above: the bundle's record keeps
+//     pointing at production for the whole drill, so no client is ever
+//     directed at the scratch target.
+//   - Caddy's HTTPS port is published on the scratch host's loopback
+//     interface rather than on every interface
+//     (orchestrate.WithLoopbackPorts, via deploy.Options.Quarantine), so
+//     the only route in is an SSH tunnel terminating on that host — the
+//     same SSH access Farrier already needs to run the drill at all.
+//
+// What quarantine does not do is make the scratch target itself safe to
+// share: anything with a shell on that host can reach the instance over
+// loopback, exactly as it could reach any other container there. The
+// scratch target is Farrier's to converge and the operator's to choose
+// (spec.md "Rehearsal"), and it should be a host the operator would be
+// willing to hand production's state to, because for the length of the
+// drill that is what it holds.
 package drill
 
 import (
@@ -310,6 +335,11 @@ func restoreOnto(ctx context.Context, job *events.Job, opts Options, snapshotKey
 		// rehearsal, not a takeover, and re-queueing production's orphaned
 		// CI jobs would arm the drill instance to run them.
 		ReconcileCI: false,
+		// Unconditionally true (DRIL-002). Quarantine is a property of
+		// every drilled instance, not of whatever happens to be running on
+		// one, so there is no Options field a caller could clear: a drill
+		// that could reach the outside world is not a drill.
+		Quarantine: true,
 	})
 	// Reading failedStep after the relay goroutine has closed `relayed`
 	// synchronizes with every write it made.

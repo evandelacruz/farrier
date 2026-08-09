@@ -108,6 +108,22 @@ type Options struct {
 	// is the whole of UPGR-003's "during `upgrade` and at no other time",
 	// and it is why `up` has no flag for it. See checkStateVersion.
 	Migrate bool
+
+	// Quarantine declares that this deployment is a rehearsal rather than a
+	// running instance, and must not be able to reach the outside world or
+	// be reached from it (DRIL-002). It changes two things and nothing
+	// else: app.ini is rendered with outbound webhooks, email, and mirrors
+	// disabled (forge.AppINIOptions.Quarantine), and Caddy's HTTPS port is
+	// published on the host's loopback interface instead of every
+	// interface, so the instance is reachable through an SSH tunnel and
+	// from nowhere else (configureTLS).
+	//
+	// Only internal/core/drill sets it — a drill instance carries
+	// production's identity (spec.md "Rehearsal") — and it sets it on every
+	// drill, not only when a smoke job happens to be running. `up` has no
+	// flag for it for the same reason `up` has no Migrate flag: a real
+	// deployment that cannot be reached is not a deployment.
+	Quarantine bool
 }
 
 // Up deploys b's full stateless layer to host (UP-001): it verifies Docker
@@ -173,15 +189,19 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	job.Emit(StepCheckHost, events.StateSucceeded, "Docker reachable")
 
 	job.Started(StepConfigureForge, "resolving key material and rendering app.ini")
-	compose, err := configureForge(ctx, host, b, opts.RemoteDir)
+	compose, err := configureForge(ctx, host, b, opts.RemoteDir, opts.Quarantine)
 	if err != nil {
 		job.Emit(StepConfigureForge, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure forge: %w", err)
 	}
-	job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped")
+	if opts.Quarantine {
+		job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped with outbound webhooks, email, and mirrors disabled (DRIL-002 quarantine)")
+	} else {
+		job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped")
+	}
 
 	job.Started(StepConfigureTLS, "resolving persisted certificate and rendering caddy config")
-	compose, renewed, err := configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer))
+	compose, renewed, err := configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer), opts.Quarantine)
 	if err != nil {
 		job.Emit(StepConfigureTLS, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure tls: %w", err)
@@ -273,7 +293,14 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 // configureForge resolves the bundle's key material, renders app.ini,
 // ships it to host, and returns b's Compose files with a bind mount added
 // so the forgejo service loads the file that was just shipped.
-func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string) (map[string][]byte, error) {
+//
+// quarantine renders the file with outbound webhooks, email, and mirrors
+// disabled (DRIL-002). It changes only what is rendered here — the app.ini
+// checksum below is derived from whatever was rendered, so a quarantined
+// deployment and an ordinary one are distinguishable to Converge and a
+// host converged one way is actually re-converged when converged the
+// other.
+func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, quarantine bool) (map[string][]byte, error) {
 	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
 		return nil, fmt.Errorf("keystore driver: %w", err)
@@ -282,7 +309,7 @@ func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir 
 	if err != nil {
 		return nil, fmt.Errorf("resolve key material: %w", err)
 	}
-	appINI, err := forge.RenderAppINI(&b.Manifest, secrets)
+	appINI, err := forge.RenderAppINI(&b.Manifest, secrets, forge.AppINIOptions{Quarantine: quarantine})
 	if err != nil {
 		return nil, fmt.Errorf("render app.ini: %w", err)
 	}

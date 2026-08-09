@@ -204,3 +204,58 @@ func TestWithPortsRejectsUnknownService(t *testing.T) {
 		t.Fatal("WithPorts: want error for unknown service, got nil")
 	}
 }
+
+// TestWithLoopbackPortsBindsToLoopbackOnly is the Compose half of DRIL-002's
+// "reachable only through an SSH tunnel": the published entry must carry an
+// explicit bind address, because a bare host:container mapping binds every
+// interface on the host.
+func TestWithLoopbackPortsBindsToLoopbackOnly(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	out, err := WithLoopbackPorts(files, "caddy", "443", "443")
+	if err != nil {
+		t.Fatalf("WithLoopbackPorts: %v", err)
+	}
+
+	var spec composeSpec
+	if err := yaml.Unmarshal(out[ComposeFile], &spec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	caddy, ok := spec.Services["caddy"]
+	if !ok {
+		t.Fatalf("missing caddy service: %+v", spec.Services)
+	}
+	want := LoopbackAddress + ":443:443"
+	if len(caddy.Ports) != 1 || caddy.Ports[0] != want {
+		t.Errorf("caddy ports = %v, want [%s]", caddy.Ports, want)
+	}
+}
+
+func TestWithLoopbackPortsDoesNotMutateInput(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	before := string(files[ComposeFile])
+
+	if _, err := WithLoopbackPorts(files, "caddy", "443", "443"); err != nil {
+		t.Fatalf("WithLoopbackPorts: %v", err)
+	}
+
+	if string(files[ComposeFile]) != before {
+		t.Errorf("input file mutated by WithLoopbackPorts")
+	}
+}
+
+func TestWithLoopbackPortsRejectsUnknownService(t *testing.T) {
+	files, err := Render(testManifest())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if _, err := WithLoopbackPorts(files, "nonexistent", "443", "443"); err == nil {
+		t.Fatal("WithLoopbackPorts: want error for unknown service, got nil")
+	}
+}
