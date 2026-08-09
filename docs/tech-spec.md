@@ -15,6 +15,7 @@ internal/core/        the engine — all logic lives here
   backup/             snapshot creation, encryption, destination write, verification
   restore/            snapshot verification, rebuild, identity install
   promote/            failover sequencing: restore, reconcile CI, flip DNS (FAIL-001)
+  upgrade/            upgrade sequencing: health gate, backup, bump pinned version, converge (UPGR-001)
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, issue TLS cert, converge, bootstrap admin
@@ -468,6 +469,18 @@ Reachable from `cmd/farrier promote` and `POST /promote` (API-001), both thin ov
 
 - **CLI:** before dialing the target or building any driver, `cmd/farrier promote` resolves and prints the snapshot's key and age, then reads a line from stdin and proceeds only if the operator typed `yes`. A `-yes` flag supplies that consent up front for scripted callers — the age is always printed either way, so displaying it is never skippable, only the interactive wait is.
 - **API:** `POST /promote` cannot prompt on a terminal, so the request body takes an explicit `confirm: true` field (`internal/api/promote.go`'s `promoteRequest.Confirm`). `handlePromote` resolves the snapshot's age synchronously, before a job is created; a missing or `false` `confirm` returns `400` with the resolved key and age in the error body and starts no job. The default is refusal, not silent promotion — the same posture `bundleDir`/`target`/`from` validation already takes ahead of job creation.
+
+## Upgrading an instance (`upgrade`, UPGR-001)
+
+`internal/core/upgrade.Upgrade` is a sequence over already-landed pieces, not a reimplementation, as one CORE-002 job:
+
+1. **Health gate.** `status.Check` (STAT-001) runs against the target bundle; `upgrade.unhealthy` refuses — naming every specific problem, the same "name the reason" posture BKUP-004 and RSTR-003 already take — unless every checked service is up and TLS is valid. Disk headroom is only refused when it is completely exhausted (`AvailableBytes == 0`): no numeric "safe" threshold is settled anywhere in docs/, so this is a bug backstop, not a policy call.
+2. **Pre-upgrade backup.** `backup.BuildOptions` (the same wiring `backup`'s own CLI/API skins use) plus `backup.Backup`, run against a private job and relayed onto the caller's job the same way `promote.restoreOnto` relays `restore.Restore`. This step must complete before step 3: `BuildOptions.ForgejoVersion` reads `Manifest.Images[forge.Service]` off the bundle `Upgrade` was called with, which is still the pre-upgrade pin at this point — bumping first would silently embed the post-upgrade version into what's supposed to be a pre-upgrade snapshot, breaking spec.md "Version pinning" twice over. This backup is never touched again by `Upgrade` on any exit path, so a failed upgrade always leaves the operator with a pre-upgrade snapshot and a working path back to it (UPGR-002).
+3. **Bump the pinned version.** The operator-named Forgejo image reference resolves to a digest through a `Resolver` (`registry.Resolver` by default, the same interface `initialize.Resolver` already takes), overrides `Manifest.Images[forge.Service]` on a copy of the bundle, and re-renders Compose from that override (`orchestrate.Render`) — the same pattern `restore.pinnedBundle` already uses to boot a snapshot's pinned version regardless of what the target bundle currently pins. Unlike restore's in-memory-only override, `upgrade`'s bump is saved back to `Options.BundleDir` (`bundle.Bundle.Save`) — CORE-001 bundle content — so the pin survives past this run for `status`, `backup`, and a future `up` to see.
+4. **Apply migrations.** `deploy.Up` converges the host to the bumped bundle's definition, relayed the same way as step 2. Forgejo runs its own schema migrations when its container starts on a newer image (UPGR-003: "Schema migrations run during upgrades, never during restores") — `upgrade` sequences that restart safely rather than reimplementing migration logic; there is no separate migration step to observe beyond the container recreation `deploy.StepConverge` already reports.
+5. **Verify.** `status.Check` runs again, this time against the bumped bundle, through the same `unhealthy` check step 1 uses — the same instance-health notion STAT-001 already reports, applied a second time to confirm the upgraded instance came back healthy.
+
+Reachable from `cmd/farrier upgrade` and `POST /upgrade` (API-001), both thin over the core: each resolves the target host, the bundle's keystore and blob drivers, and the age backup key the same way `backup`'s own CLI/API skins do, and hand the result to `upgrade.Upgrade` alongside the operator-named pre-upgrade backup destination (`-to`/`to`) and new image reference (`-image`/`image`).
 
 ## Status (`status`, STAT-001, STAT-002)
 

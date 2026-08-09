@@ -61,7 +61,7 @@
     "FAIL-003": "landed",
     "FAIL-004": "landed",
     "FAIL-005": "landed",
-    "UPGR-001": "open",
+    "UPGR-001": "landed",
     "UPGR-002": "open",
     "UPGR-003": "open",
     "DRIL-001": "open",
@@ -69,13 +69,13 @@
     "DRIL-003": "open",
     "STAT-001": "landed",
     "STAT-002": "landed",
-    "API-001": {"state": "partial", "remaining": "wire POST /upgrade and POST /drill once their core operations land (UPGR-*, DRIL-*); POST /init, POST /up, POST /import, POST /backup, POST /restore, POST /promote, and GET /status are wired"},
+    "API-001": {"state": "partial", "remaining": "wire POST /drill once its core operation lands (DRIL-*); POST /init, POST /up, POST /import, POST /backup, POST /restore, POST /promote, POST /upgrade, and GET /status are wired"},
     "API-002": "landed",
     "UI-001": "open",
     "UI-002": "open",
     "XCUT-001": {
       "state": "partial",
-      "remaining": "The keystore file driver and local blob adapter now reject relative config.path (a real gap: it was baked into the manifest at init and silently re-resolved against whatever directory a later command ran from). TestUpSucceedsFromBundleCopiedToAnotherDirectory, TestBackupSucceedsFromBundleCopiedToAnotherDirectory (internal/core/backup), TestRestoreSucceedsFromBundleCopiedToAnotherDirectory (internal/core/restore), and now TestPromoteSucceedsFromBundleCopiedToAnotherDirectory (internal/core/promote) prove `up`, `backup`, `restore`, and `promote` all succeed from a bundle physically relocated after the directory it was saved to no longer exists: the keystore driver, blob adapter, and age identity each resolves from a loaded bundle all work after the bundle directory itself is moved. That covers every operation landed so far that consumes a loaded bundle (init, up, status, backup, restore, promote; import addresses instances directly and never touches a bundle). upgrade and drill still need the same proof once each lands (UPGR-*, DRIL-* still open)."
+      "remaining": "The keystore file driver and local blob adapter now reject relative config.path (a real gap: it was baked into the manifest at init and silently re-resolved against whatever directory a later command ran from). TestUpSucceedsFromBundleCopiedToAnotherDirectory, TestBackupSucceedsFromBundleCopiedToAnotherDirectory (internal/core/backup), TestRestoreSucceedsFromBundleCopiedToAnotherDirectory (internal/core/restore), TestPromoteSucceedsFromBundleCopiedToAnotherDirectory (internal/core/promote), and now TestUpgradeSucceedsFromBundleCopiedToAnotherDirectory (internal/core/upgrade) prove `up`, `backup`, `restore`, `promote`, and `upgrade` all succeed from a bundle physically relocated after the directory it was saved to no longer exists: the keystore driver, blob adapter, and age identity each resolves from a loaded bundle all work after the bundle directory itself is moved, and upgrade's own bumped-manifest Save lands at the relocated path. That covers every operation landed so far that consumes a loaded bundle (init, up, status, backup, restore, promote, upgrade; import addresses instances directly and never touches a bundle). drill still needs the same proof once it lands (DRIL-* still open)."
     },
     "XCUT-002": "landed"
   }
