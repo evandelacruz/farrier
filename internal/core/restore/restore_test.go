@@ -21,7 +21,9 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
+	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/state"
 
 	_ "modernc.org/sqlite"
@@ -30,6 +32,19 @@ import (
 // testDomain is the domain every fixture in this file is built for — it
 // must match the CN/SAN baked into testTLSCert below.
 const testDomain = "example.com"
+
+// testTargetForgeImage is the forge image testBundle's own farrier.yaml
+// pins, and testSnapshotForgeImage is the (deliberately different) image
+// buildSnapshot records as the snapshot's ForgejoVersion — the pinned
+// image ref backup.BuildOptions actually captures from a source bundle's
+// own Manifest.Images at real backup time. Keeping the two distinct is
+// what lets TestRestoreEndToEnd prove restore deploys the snapshot's
+// pinned image rather than the target bundle's own (RSTR-002): if they
+// happened to match, the override would be silently untested.
+var (
+	testTargetForgeImage   = "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64)
+	testSnapshotForgeImage = "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("c", 64)
+)
 
 // testTLSCert and testTLSKey are a fixed, valid EC certificate/key pair for
 // testDomain, the same fixture shape internal/core/deploy's own tests use
@@ -167,7 +182,7 @@ func buildSnapshot(t *testing.T, repos []state.Remote, dbRepos [][2]string) (blo
 
 	opts := backup.Options{
 		WorkDir:        filepath.Join(t.TempDir(), "work"),
-		ForgejoVersion: "11.0.2",
+		ForgejoVersion: testSnapshotForgeImage,
 		Destination:    destDir,
 		Identity:       identity,
 		Git:            &fakeGitExporter{remotes: repos},
@@ -221,7 +236,7 @@ func testBundle(t *testing.T, keysDir string) *bundle.Bundle {
 	t.Helper()
 	return &bundle.Bundle{
 		Manifest: *bundle.NewManifest(testDomain, map[string]string{
-			"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
+			"forgejo": testTargetForgeImage,
 			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
 		}, bundle.DriverConfig{
 			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
@@ -303,6 +318,31 @@ func (f *fakeHost) RunStdin(ctx context.Context, command string, stdin io.Reader
 	f.commands = append(f.commands, command)
 	f.stdins = append(f.stdins, stdinCall{command: command, data: data})
 	return nil
+}
+
+// fileEndingWith returns the content of the one recorded WriteFile call
+// whose path ends with suffix — orchestrate.Converge stages Compose files
+// under a temporary directory before renaming it into place, so the final
+// path isn't predictable, but the filename is.
+func (f *fakeHost) fileEndingWith(t *testing.T, suffix string) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for path, content := range f.files {
+		if strings.HasSuffix(path, suffix) {
+			return content
+		}
+	}
+	t.Fatalf("no WriteFile call recorded ending with %q, paths: %v", suffix, mapKeys(f.files))
+	return ""
+}
+
+func mapKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // commandsContaining returns every recorded command containing substr, in
@@ -523,6 +563,20 @@ func TestRestoreEndToEnd(t *testing.T) {
 		t.Fatalf("got %d converge commands, want 1", len(converges))
 	}
 
+	// deploy.Up converged the host to the snapshot's pinned Forgejo image
+	// (RSTR-002), not the target bundle's own farrier.yaml pin — while the
+	// caddy image, which the snapshot doesn't carry, is untouched.
+	compose := host.fileEndingWith(t, "docker-compose.yml")
+	if !strings.Contains(compose, testSnapshotForgeImage) {
+		t.Errorf("shipped compose does not carry the snapshot's pinned forgejo image %q:\n%s", testSnapshotForgeImage, compose)
+	}
+	if strings.Contains(compose, testTargetForgeImage) {
+		t.Errorf("shipped compose still carries the target bundle's original forgejo image %q:\n%s", testTargetForgeImage, compose)
+	}
+	if !strings.Contains(compose, "docker.io/library/caddy@sha256:"+strings.Repeat("b", 64)) {
+		t.Errorf("shipped compose lost the target bundle's caddy image:\n%s", compose)
+	}
+
 	// Every step Restore itself owns, plus every step deploy.Up relays
 	// through, reached exactly one terminal event on the one external job.
 	wantSteps := []string{
@@ -583,6 +637,40 @@ func TestRestoreRefusesOnFailedVerification(t *testing.T) {
 	last := evs[len(evs)-1]
 	if last.State != events.StateFailed {
 		t.Errorf("job's terminal event state = %s, want failed", last.State)
+	}
+}
+
+func TestPinnedBundleOverridesForgeImageOnly(t *testing.T) {
+	b := testBundle(t, t.TempDir())
+	originalCaddy := b.Manifest.Images["caddy"]
+	pin := "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("d", 64)
+
+	got, err := pinnedBundle(b, pin)
+	if err != nil {
+		t.Fatalf("pinnedBundle: %v", err)
+	}
+
+	if got.Manifest.Images[forge.Service] != pin {
+		t.Errorf("Images[%s] = %q, want %q", forge.Service, got.Manifest.Images[forge.Service], pin)
+	}
+	if got.Manifest.Images["caddy"] != originalCaddy {
+		t.Errorf("Images[caddy] = %q, want unchanged %q", got.Manifest.Images["caddy"], originalCaddy)
+	}
+	if compose := string(got.Compose[orchestrate.ComposeFile]); !strings.Contains(compose, pin) {
+		t.Errorf("rendered compose does not carry the pinned image %q:\n%s", pin, compose)
+	}
+
+	// b itself — including the map backing its own Manifest.Images — is
+	// left untouched.
+	if b.Manifest.Images[forge.Service] != testTargetForgeImage {
+		t.Errorf("pinnedBundle mutated the source bundle's forge image: got %q, want %q", b.Manifest.Images[forge.Service], testTargetForgeImage)
+	}
+}
+
+func TestPinnedBundleRejectsNonDigestVersion(t *testing.T) {
+	b := testBundle(t, t.TempDir())
+	if _, err := pinnedBundle(b, "not-pinned-by-digest"); err == nil {
+		t.Fatal("pinnedBundle: want error for a forgejoVersion that isn't digest-pinned, got nil")
 	}
 }
 
