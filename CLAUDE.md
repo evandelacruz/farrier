@@ -15,7 +15,7 @@ Each doc has one function. Content lives in exactly one place; the others link t
 | [README.md](README.md) | The public promise: problem, solution, trade. |
 | [docs/spec.md](docs/spec.md) | The decision record: every settled design decision, what and how. **Source of truth**, with the README, when documents disagree. |
 | [docs/functional-requirements.md](docs/functional-requirements.md) | Observable behavior, stated testably, with the stable requirement IDs. The WHAT. |
-| [docs/tech-spec.md](docs/tech-spec.md) | Internal structure, formats, protocols, operational targets. The HOW. |
+| [docs/tech-spec.md](docs/tech-spec.md) | Internal structure, formats, protocols, operational targets — only what no single package owns. The HOW. |
 | [docs/status.json](docs/status.json) | Delivery record — one line per requirement ID. A work list, not a source of truth. |
 | CLAUDE.md | This file: how to work here. |
 | [AGENTS.md](AGENTS.md) | Cloud-agent environment notes: setup, build ordering, test scope. |
@@ -29,6 +29,8 @@ Every decision in these docs can be reopened at any time, including mid-implemen
 ### Docs stay in sync
 
 Any change to one doc requires checking the others and updating whatever is needed to stay consistent. A PR that changes behavior updates the affected docs in the same PR. If you find documents already in conflict, flag it — spec.md and the README win, but the conflict gets fixed, not worked around.
+
+**In sync does not mean exhaustive.** Implementation detail belongs in the package's own doc comments, next to the code, where it cannot drift. A requirement landing is not a reason to add a section to tech-spec.md — only a change to a format, a protocol, an operational target, or the package layout is. Docs that restate the code are the ones that go stale, and every doc-sync defect this project has hit came from exactly that.
 
 ### Scope is a feature
 
