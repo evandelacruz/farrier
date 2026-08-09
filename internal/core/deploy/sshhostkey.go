@@ -27,8 +27,9 @@ func sshHostKeyRelPath() string {
 // directory configureState already bind-mounts to forge.DataPath — so
 // Forgejo's git-over-SSH server loads the bundle's own key on every boot
 // instead of generating a fresh one the first time it finds none there
-// (RSTR-004, spec.md "Identity" > "Key material": "SSH host keys, installed
-// at restore so clients see an unchanged host identity").
+// (RSTR-004, spec.md "Identity" > "Key material": SSH host keys install on
+// every deploy including the first, so a fresh host and a restored one both
+// present an unchanged identity).
 //
 // This runs on every Up — an ordinary `up` on the instance's original host
 // and a `restore` onto a fresh one alike — the same way configureTLS

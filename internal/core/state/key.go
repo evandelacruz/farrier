@@ -30,8 +30,8 @@ const (
 // keyNames is the fixed, ordered set every bundle's key material consists of
 // (STATE-004, spec.md "Identity" > "Key material"): the three Forgejo
 // secrets, the TLS certificate chain and its private key, and the SSH host
-// key installed at restore so clients see an unchanged host identity. It is
-// what Names enumerates, since a keystore.Driver (tech-spec "Keystore
+// key installed on every deploy so clients see an unchanged host identity. It
+// is what Names enumerates, since a keystore.Driver (tech-spec "Keystore
 // driver config": file, command, or an out-of-tree exec driver) only ever
 // resolves a name it's given — none of the three shipped drivers can list
 // what they hold. This must stay in sync with initialize.keyMaterialOrder
