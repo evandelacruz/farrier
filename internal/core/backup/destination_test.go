@@ -195,6 +195,137 @@ func TestLatestSnapshotKeyReturnsNewest(t *testing.T) {
 	}
 }
 
+func TestSnapshotAgeRejectsNilDestination(t *testing.T) {
+	if _, _, err := SnapshotAge(context.Background(), nil, "", time.Now()); err == nil {
+		t.Fatal("SnapshotAge(nil): want error, got nil")
+	}
+}
+
+func TestSnapshotAgeRejectsEmptyDestination(t *testing.T) {
+	adapter := newFakeAdapter()
+	if _, _, err := SnapshotAge(context.Background(), adapter, "", time.Now()); err == nil {
+		t.Fatal("SnapshotAge: want error for a destination with no snapshots, got nil")
+	}
+}
+
+func TestSnapshotAgeRejectsMissingKey(t *testing.T) {
+	adapter := newFakeAdapter()
+	if err := adapter.Put(context.Background(), "20260101T000000Z.age", bytes.NewReader([]byte("a")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, _, err := SnapshotAge(context.Background(), adapter, "does-not-exist.age", time.Now()); err == nil {
+		t.Fatal("SnapshotAge: want error for a key not in the destination, got nil")
+	}
+}
+
+func TestSnapshotAgeDefaultsToLatest(t *testing.T) {
+	// A real destination, not fakeAdapter: SnapshotAge sorts by
+	// Object.Modified via LatestSnapshotKey, which fakeAdapter never
+	// populates (write_test.go's own doc comment: it exists for Write's
+	// error paths, not for Modified-based ordering).
+	dir := t.TempDir()
+	adapter, err := OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+
+	older := SnapshotKey(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	newer := SnapshotKey(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err := adapter.Put(context.Background(), older, bytes.NewReader([]byte("a")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := adapter.Put(context.Background(), newer, bytes.NewReader([]byte("b")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	now := time.Now()
+	newerModified := now.Add(-3 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, older), now.Add(-48*time.Hour), now.Add(-48*time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, newer), newerModified, newerModified); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	key, age, err := SnapshotAge(context.Background(), adapter, "", now)
+	if err != nil {
+		t.Fatalf("SnapshotAge: %v", err)
+	}
+	if key != newer {
+		t.Errorf("SnapshotAge key = %q, want %q", key, newer)
+	}
+	if age < 2*time.Hour || age > 4*time.Hour {
+		t.Errorf("SnapshotAge age = %v, want ~3h", age)
+	}
+}
+
+func TestSnapshotAgeResolvesNamedKey(t *testing.T) {
+	dir := t.TempDir()
+	adapter, err := OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+
+	older := SnapshotKey(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	newer := SnapshotKey(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err := adapter.Put(context.Background(), older, bytes.NewReader([]byte("a")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := adapter.Put(context.Background(), newer, bytes.NewReader([]byte("b")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	now := time.Now()
+	olderModified := now.Add(-240 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, older), olderModified, olderModified); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, newer), now, now); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	// Naming the older key explicitly must resolve to its own age, not the
+	// newest object's — SnapshotAge only defaults to latest when key is
+	// empty.
+	key, age, err := SnapshotAge(context.Background(), adapter, older, now)
+	if err != nil {
+		t.Fatalf("SnapshotAge: %v", err)
+	}
+	if key != older {
+		t.Errorf("SnapshotAge key = %q, want %q", key, older)
+	}
+	if age < 239*time.Hour || age > 241*time.Hour {
+		t.Errorf("SnapshotAge age = %v, want ~240h", age)
+	}
+}
+
+func TestSnapshotAgeClampsFutureModifiedToZero(t *testing.T) {
+	dir := t.TempDir()
+	adapter, err := OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+
+	key := SnapshotKey(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := adapter.Put(context.Background(), key, bytes.NewReader([]byte("a")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	now := time.Now()
+	future := now.Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, key), future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	_, age, err := SnapshotAge(context.Background(), adapter, key, now)
+	if err != nil {
+		t.Fatalf("SnapshotAge: %v", err)
+	}
+	if age != 0 {
+		t.Errorf("SnapshotAge age = %v, want 0 (clamped) for a destination clock reading ahead of now", age)
+	}
+}
+
 func TestFetchDownloadsObject(t *testing.T) {
 	adapter := newFakeAdapter()
 	if err := adapter.Put(context.Background(), "snap.age", bytes.NewReader([]byte("snapshot-bytes")), -1); err != nil {

@@ -17,7 +17,11 @@ import (
 )
 
 // promoteRequest is the POST /promote body, one field per the `promote`
-// CLI command's flags (cmd/farrier/promote.go).
+// CLI command's flags (cmd/farrier/promote.go), plus Confirm (FAIL-002):
+// unlike the CLI, this endpoint can't prompt on a terminal, so Confirm is
+// the operator's explicit stand-in for the interactive "type yes" prompt.
+// It defaults to false, so an unconfirmed request is refused rather than
+// silently promoting.
 type promoteRequest struct {
 	BundleDir      string `json:"bundleDir"`
 	Target         string `json:"target"`
@@ -30,6 +34,7 @@ type promoteRequest struct {
 	SSHTimeout     string `json:"sshTimeout,omitempty"`
 	DNSRecord      string `json:"dnsRecord,omitempty"`
 	DNSValue       string `json:"dnsValue,omitempty"`
+	Confirm        bool   `json:"confirm,omitempty"`
 }
 
 // handlePromote implements POST /promote (API-001, FAIL-001): it loads the
@@ -52,6 +57,21 @@ func (s *Server) handlePromote(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.From) == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("from is required"))
+		return
+	}
+
+	source, err := backup.OpenDestination(req.From)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("open snapshot source: %w", err))
+		return
+	}
+	resolvedKey, age, err := backup.SnapshotAge(r.Context(), source, req.Snapshot, time.Now())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("resolve snapshot: %w", err))
+		return
+	}
+	if !req.Confirm {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("confirm is required: snapshot %s is %s old; resubmit with confirm: true to promote it", resolvedKey, age.Round(time.Second)))
 		return
 	}
 

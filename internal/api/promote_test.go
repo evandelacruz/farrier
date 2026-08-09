@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/dns"
@@ -19,6 +21,20 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/promote"
 )
+
+// writeTestSnapshot puts a snapshot object at dir under key, so a test
+// exercising handlePromote past FAIL-002's confirmation gate has a
+// resolvable snapshot to promote.
+func writeTestSnapshot(t *testing.T, dir, key string) {
+	t.Helper()
+	adapter, err := backup.OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+	if err := adapter.Put(context.Background(), key, bytes.NewReader([]byte("snapshot")), 8); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+}
 
 // fakePromoteHost implements promote.Host (restore.Host: deploy.Host +
 // RunStdin) without a real SSH connection — the same shape
@@ -92,9 +108,56 @@ func TestHandlePromoteMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestHandlePromoteRefusesWithoutConfirm(t *testing.T) {
+	s := newTestServer()
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	s.promoteRun = func(ctx context.Context, job *events.Job, opts promote.Options) error {
+		t.Fatal("promoteRun should not be called when confirm is not set")
+		return nil
+	}
+
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q}`, from))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "20260101T000000Z.age") {
+		t.Errorf("body %q does not name the resolved snapshot", rec.Body.String())
+	}
+}
+
+func TestHandlePromoteRefusesWithConfirmFalse(t *testing.T) {
+	s := newTestServer()
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	s.promoteRun = func(ctx context.Context, job *events.Job, opts promote.Options) error {
+		t.Fatal("promoteRun should not be called when confirm is false")
+		return nil
+	}
+
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":false}`, from))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestHandlePromoteConfirmTrueStartsJobWithNoSnapshots(t *testing.T) {
+	s := newTestServer()
+	from := t.TempDir() // no snapshots written
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true}`, from))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "no snapshots") {
+		t.Errorf("body %q does not explain the destination has no snapshots", rec.Body.String())
+	}
+}
+
 func TestHandlePromoteInvalidTimeout(t *testing.T) {
 	s := newTestServer()
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":"/tmp/src","sshTimeout":"not-a-duration"}`)
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true,"sshTimeout":"not-a-duration"}`, from))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -102,10 +165,12 @@ func TestHandlePromoteInvalidTimeout(t *testing.T) {
 
 func TestHandlePromoteInvalidTarget(t *testing.T) {
 	s := newTestServer()
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
 	// No explicit dnsValue: handlePromote must parse target to default it,
 	// and a target that doesn't parse must fail the request outright
 	// rather than reaching dialPromote with a garbage dnsValue.
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"not-a-target","from":"/tmp/src"}`)
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"not-a-target","from":%q,"confirm":true}`, from))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -116,7 +181,9 @@ func TestHandlePromoteBundleLoadError(t *testing.T) {
 	s.loadBundle = func(dir string) (*bundle.Bundle, error) {
 		return nil, errors.New("no such bundle")
 	}
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":"/tmp/src"}`)
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true}`, from))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
@@ -133,7 +200,9 @@ func TestHandlePromoteDialFailureFailsJob(t *testing.T) {
 		return nil
 	}
 
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":"/tmp/src"}`)
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true}`, from))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
@@ -153,7 +222,9 @@ func TestHandlePromoteKeystoreBuildError(t *testing.T) {
 		return nil, errors.New("bad driver config")
 	}
 
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":"/tmp/src"}`)
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true}`, from))
 	job := jobFromResponse(t, s, rec)
 	waitDone(t, job)
 	assertLastEventFailed(t, job)
@@ -177,7 +248,9 @@ func TestHandlePromoteDNSResolveError(t *testing.T) {
 		return nil, errors.New("bad dns config")
 	}
 
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":"/tmp/src"}`)
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"confirm":true}`, from))
 	job := jobFromResponse(t, s, rec)
 	waitDone(t, job)
 	assertLastEventFailed(t, job)
@@ -225,7 +298,8 @@ func TestHandlePromoteSuccessWiresOptions(t *testing.T) {
 	}
 
 	from := t.TempDir()
-	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"snapshot":"20260101T000000Z.age","remoteDir":"/srv/farrier","dnsValue":"203.0.113.10"}`, from))
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"snapshot":"20260101T000000Z.age","remoteDir":"/srv/farrier","dnsValue":"203.0.113.10","confirm":true}`, from))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
@@ -285,7 +359,9 @@ func TestHandlePromoteDefaultsDNSValueFromTarget(t *testing.T) {
 		return nil
 	}
 
-	rec := doPromote(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@standby.example.com:2222","from":"/tmp/src"}`)
+	from := t.TempDir()
+	writeTestSnapshot(t, from, "20260101T000000Z.age")
+	rec := doPromote(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@standby.example.com:2222","from":%q,"confirm":true}`, from))
 	job := jobFromResponse(t, s, rec)
 	waitDone(t, job)
 
