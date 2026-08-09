@@ -22,6 +22,38 @@ func composeText(compose map[string][]byte) string {
 	return b.String()
 }
 
+func TestStatePathHelpers(t *testing.T) {
+	if got, want := GitStatePath("/opt/farrier"), "/opt/farrier/state/git"; got != want {
+		t.Errorf("GitStatePath = %q, want %q", got, want)
+	}
+	if got, want := GiteaStatePath("/opt/farrier"), "/opt/farrier/state/gitea"; got != want {
+		t.Errorf("GiteaStatePath = %q, want %q", got, want)
+	}
+	if got, want := BlobsStatePath("/opt/farrier"), "/opt/farrier/state/blobs"; got != want {
+		t.Errorf("BlobsStatePath = %q, want %q", got, want)
+	}
+}
+
+func TestChownStateChownsBothPathsRecursively(t *testing.T) {
+	host := newFakeHost()
+	if err := ChownState(context.Background(), host, "/opt/farrier"); err != nil {
+		t.Fatalf("ChownState: %v", err)
+	}
+
+	var saw bool
+	wantOwner := fmt.Sprintf("chown -R %d:%d", forgeUID, forgeGID)
+	for _, cmd := range host.commands {
+		if strings.Contains(cmd, wantOwner) &&
+			strings.Contains(cmd, "/opt/farrier/state/git") &&
+			strings.Contains(cmd, "/opt/farrier/state/gitea") {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Errorf("no recursive chown command for both state directories, commands: %v", host.commands)
+	}
+}
+
 func TestConfigureStateMountsGitAndGiteaOwnedByForgeUser(t *testing.T) {
 	host := newFakeHost()
 	b := testBundle(t)

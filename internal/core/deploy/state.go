@@ -24,6 +24,47 @@ const (
 	blobsStateDir = "blobs"
 )
 
+// GitStatePath, GiteaStatePath, and BlobsStatePath return the host-side
+// directories forge state lives under (tech-spec.md "Host state layout
+// (UP-004)") — the one layout decision every caller that needs to know
+// where a bundle's state lives on a host must agree on, rather than each
+// spelling out "<RemoteDir>/state/git" independently. configureState
+// builds and mounts them; backup.BuildOptions points state.SSHGitExporter
+// at GitStatePath so it captures from the same place configureState
+// mounted; restore.Restore places a snapshot's git data and database back
+// at GitStatePath and GiteaStatePath before deploy.Up ever starts the
+// forgejo container that reads them.
+func GitStatePath(remoteDir string) string {
+	return path.Join(remoteDir, stateDir, gitStateDir)
+}
+
+func GiteaStatePath(remoteDir string) string {
+	return path.Join(remoteDir, stateDir, giteaStateDir)
+}
+
+func BlobsStatePath(remoteDir string) string {
+	return path.Join(remoteDir, stateDir, blobsStateDir)
+}
+
+// ChownState recursively chowns GitStatePath and GiteaStatePath to the
+// uid:gid the forgejo container runs as. ensureOwnedDirs' own chown (below)
+// only touches each directory's top level — enough for `up`, which always
+// starts from an empty bind mount that only Forgejo itself, running as that
+// uid, ever writes into afterward. restore.Restore populates these
+// directories itself, over an SSH session that generally isn't
+// forgeUID:forgeGID, before Forgejo ever starts — so it calls this once
+// every file it wrote is in place, to bring all of it, not just the top
+// directory, under the ownership Forgejo needs to read and write it.
+func ChownState(ctx context.Context, host Host, remoteDir string) error {
+	git := GitStatePath(remoteDir)
+	gitea := GiteaStatePath(remoteDir)
+	command := fmt.Sprintf("chown -R %d:%d %s %s", forgeUID, forgeGID, stateShQuote(git), stateShQuote(gitea))
+	if _, err := host.Output(ctx, command); err != nil {
+		return fmt.Errorf("chown state directories: %w", err)
+	}
+	return nil
+}
+
 // forgeUID and forgeGID are the uid:gid the official Forgejo image's git
 // user runs as — USER_UID and USER_GID both default to 1000 in the
 // upstream image, and Farrier's rendered app.ini (forge.RenderAppINI) never
@@ -67,14 +108,14 @@ const (
 // exists ahead of that wiring, without this change guessing at what it
 // will be.
 func configureState(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte) (map[string][]byte, error) {
-	gitPath := path.Join(remoteDir, stateDir, gitStateDir)
-	giteaPath := path.Join(remoteDir, stateDir, giteaStateDir)
+	gitPath := GitStatePath(remoteDir)
+	giteaPath := GiteaStatePath(remoteDir)
 
 	if err := ensureOwnedDirs(ctx, host, gitPath, giteaPath); err != nil {
 		return nil, fmt.Errorf("create state directories: %w", err)
 	}
 	if b.Manifest.Drivers.Blob.Driver == "local" {
-		blobsPath := path.Join(remoteDir, stateDir, blobsStateDir)
+		blobsPath := BlobsStatePath(remoteDir)
 		if _, err := host.Output(ctx, fmt.Sprintf("mkdir -p %s", stateShQuote(blobsPath))); err != nil {
 			return nil, fmt.Errorf("create blobs state directory: %w", err)
 		}

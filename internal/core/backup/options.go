@@ -9,12 +9,12 @@ package backup
 
 import (
 	"fmt"
-	"path"
 
 	"filippo.io/age"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/caddy"
+	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
@@ -51,7 +51,7 @@ func BuildOptions(host Host, b *bundle.Bundle, remoteDir, workDir, destination s
 			User:   t.User,
 			Host:   t.Host,
 			Port:   t.Port,
-			Root:   path.Join(remoteDir, "state", "git"),
+			Root:   deploy.GitStatePath(remoteDir),
 		},
 		GitCapturer: SSHGitCapturer{Runner: host},
 		Database: &state.SSHDatabaseExporter{
