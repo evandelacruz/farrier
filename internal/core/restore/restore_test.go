@@ -3,7 +3,10 @@ package restore
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -467,7 +470,16 @@ func validOptions(t *testing.T) Options {
 	source, identity, _ := buildSnapshot(t, []state.Remote{
 		{Name: "acme/widgets"}, {Name: "acme/gadgets"},
 	}, defaultTestRepos)
+	return optionsWithSnapshot(t, source, identity)
+}
 
+// optionsWithSnapshot is validOptions with the snapshot source and its
+// decrypting identity as parameters, so a test can point Restore at a
+// snapshot other than a freshly built valid one — a tampered one, in
+// particular (buildTamperedSnapshot below) — while keeping the same
+// target-side wiring (bundle, keystore, blobs, host) validOptions uses.
+func optionsWithSnapshot(t *testing.T, source blob.Adapter, identity *age.X25519Identity) Options {
+	t.Helper()
 	keysDir := t.TempDir()
 	keystoreDriver, err := keystore.New("file", map[string]any{"path": keysDir})
 	if err != nil {
@@ -484,6 +496,131 @@ func validOptions(t *testing.T) Options {
 		Blobs:      newFakeBlobTarget(),
 		Host:       newFakeHost(),
 		CertIssuer: fakeCertIssuer{},
+	}
+}
+
+// buildTamperedSnapshot builds a real, valid snapshot the same way
+// buildSnapshot does, then decrypts it, lets mutate tear exactly one thing
+// in the plain snapshot directory and/or its manifest, and re-encrypts and
+// re-writes the result to a fresh destination. This is how each RSTR-003
+// test below exercises one specific backup.Verify defect — completeness,
+// checksum, or cross-consistency — in isolation, against the same capture
+// and encryption path a real snapshot goes through, rather than hand-
+// building a plain snapshot directory that only coincidentally resembles
+// one.
+func buildTamperedSnapshot(t *testing.T, mutate func(t *testing.T, dir string, manifest *backup.Manifest)) (blob.Adapter, *age.X25519Identity) {
+	t.Helper()
+	ctx := context.Background()
+
+	validSource, identity, _ := buildSnapshot(t, []state.Remote{
+		{Name: "acme/widgets"}, {Name: "acme/gadgets"},
+	}, defaultTestRepos)
+
+	key, err := backup.LatestSnapshotKey(ctx, validSource)
+	if err != nil {
+		t.Fatalf("LatestSnapshotKey: %v", err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "snapshot.age")
+	if err := backup.Fetch(ctx, validSource, key, archivePath); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	plainDir := t.TempDir()
+	if err := backup.DecryptArchive(ctx, archivePath, plainDir, identity); err != nil {
+		t.Fatalf("DecryptArchive: %v", err)
+	}
+
+	manifest, err := backup.ReadManifest(plainDir)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+
+	mutate(t, plainDir, manifest)
+
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal tampered manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(plainDir, backup.ManifestFile), data, 0o600); err != nil {
+		t.Fatalf("write tampered manifest: %v", err)
+	}
+
+	tamperedArchive := filepath.Join(t.TempDir(), "tampered.age")
+	if err := backup.Encrypt(ctx, events.NewJob(), plainDir, tamperedArchive, identity.Recipient()); err != nil {
+		t.Fatalf("Encrypt: %v", err)
+	}
+
+	dest := mustLocalBlob(t, t.TempDir())
+	if _, err := backup.Write(ctx, events.NewJob(), dest, tamperedArchive, time.Now()); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	return dest, identity
+}
+
+// sha256HexFile returns the same checksum backup.Verify's own checksumFile
+// would compute for path, so a test that mutates a component's file after
+// building it (verifyCrossConsistency's fixture, below) can update that
+// component's manifest checksum to match — keeping the checksum check
+// clean so only the intended defect fails verification.
+func sha256HexFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// assertRestoreRefusesVerification runs Restore against opts — built from a
+// snapshot buildTamperedSnapshot tampered with exactly one RSTR-003 defect —
+// and asserts the full refusal contract: Restore returns an error, the
+// job's own terminal event (what both the CLI and the API surface to the
+// operator) names the specific check and subject that failed, and nothing
+// was installed anywhere — the host, the keystore, and the blob target are
+// all untouched.
+func assertRestoreRefusesVerification(t *testing.T, opts Options, wantCheck, wantSubject string) {
+	t.Helper()
+	host := opts.Host.(*fakeHost)
+	job := events.NewJob()
+
+	err := Restore(context.Background(), job, opts)
+	if err == nil {
+		t.Fatal("Restore: want error for a snapshot that fails verification, got nil")
+	}
+	if !strings.Contains(err.Error(), wantCheck) {
+		t.Errorf("Restore error = %q, want it to name check %q", err.Error(), wantCheck)
+	}
+	if !strings.Contains(err.Error(), wantSubject) {
+		t.Errorf("Restore error = %q, want it to name subject %q", err.Error(), wantSubject)
+	}
+
+	evs := job.Events()
+	last := evs[len(evs)-1]
+	if last.State != events.StateFailed {
+		t.Errorf("job's terminal event state = %s, want failed", last.State)
+	}
+	if !strings.Contains(last.Detail, wantCheck) || !strings.Contains(last.Detail, wantSubject) {
+		t.Errorf("job's terminal event detail = %q, want it to name check %q and subject %q", last.Detail, wantCheck, wantSubject)
+	}
+
+	if len(host.commands) != 0 || len(host.stdins) != 0 {
+		t.Errorf("host was touched before verification refused the snapshot: commands=%v stdins=%d", host.commands, len(host.stdins))
+	}
+
+	keysDir := opts.Bundle.Manifest.Drivers.Keystore.Config["path"].(string)
+	entries, err := os.ReadDir(keysDir)
+	if err != nil {
+		t.Fatalf("read keys dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("keystore directory has %d entries after a refused restore, want 0", len(entries))
+	}
+
+	blobs := opts.Blobs.(*fakeBlobTarget)
+	if len(blobs.puts) != 0 {
+		t.Errorf("blob target has %d puts after a refused restore, want 0", len(blobs.puts))
 	}
 }
 
@@ -607,15 +744,13 @@ func TestRestoreEndToEnd(t *testing.T) {
 	}
 }
 
-func TestRestoreRefusesOnFailedVerification(t *testing.T) {
+func TestRestoreRefusesWhenSourceHasNoSnapshot(t *testing.T) {
 	opts := validOptions(t)
 
-	// Corrupt one component's on-disk bytes by tampering with the fetched
-	// archive's destination isn't possible without a real fetch first, so
-	// instead point Source at an empty destination — LatestSnapshotKey
-	// fails cleanly, which exercises the same "refuse before touching the
-	// host" contract as a checksum failure would, without needing to
-	// reach into an encrypted archive's bytes.
+	// An empty snapshot source fails at fetch (LatestSnapshotKey), before
+	// verification — and everything after it — ever runs. Distinct from
+	// the RSTR-003 verification-defect tests below, which point Restore at
+	// a snapshot that fetches and decrypts cleanly but fails backup.Verify.
 	empty, err := blob.NewLocal(t.TempDir())
 	if err != nil {
 		t.Fatalf("blob.NewLocal: %v", err)
@@ -638,6 +773,92 @@ func TestRestoreRefusesOnFailedVerification(t *testing.T) {
 	if last.State != events.StateFailed {
 		t.Errorf("job's terminal event state = %s, want failed", last.State)
 	}
+}
+
+// TestRestoreRefusesOnManifestCompleteness, TestRestoreRefusesOnChecksumMismatch,
+// and TestRestoreRefusesOnCrossConsistency prove RSTR-003's full acceptance
+// bar: restore refuses to proceed, naming the specific missing or torn
+// state, for each of the three checks tech-spec.md "What the system owns:
+// verified restores" lists — independently, and with nothing installed on
+// refusal.
+func TestRestoreRefusesOnManifestCompleteness(t *testing.T) {
+	source, identity := buildTamperedSnapshot(t, func(t *testing.T, dir string, manifest *backup.Manifest) {
+		kept := manifest.Components[:0]
+		for _, c := range manifest.Components {
+			if c.Kind == bundle.StateKindKeys && c.Name == state.KeyTLSCertificate {
+				continue
+			}
+			kept = append(kept, c)
+		}
+		manifest.Components = kept
+	})
+
+	opts := optionsWithSnapshot(t, source, identity)
+	assertRestoreRefusesVerification(t, opts, "completeness", state.KeyTLSCertificate)
+}
+
+func TestRestoreRefusesOnChecksumMismatch(t *testing.T) {
+	source, identity := buildTamperedSnapshot(t, func(t *testing.T, dir string, manifest *backup.Manifest) {
+		var target *backup.Component
+		for i := range manifest.Components {
+			c := &manifest.Components[i]
+			if c.Kind == bundle.StateKindGit && c.Name == "acme/widgets" && strings.HasSuffix(c.Path, ".tar") && !strings.HasSuffix(c.Path, ".refs.tar") {
+				target = c
+				break
+			}
+		}
+		if target == nil {
+			t.Fatal("no captured git object component found for acme/widgets")
+		}
+		// The manifest's recorded checksum for target is deliberately left
+		// as-is: that mismatch against the corrupted bytes below is
+		// exactly what verifyChecksums must catch.
+		full := filepath.Join(dir, filepath.FromSlash(target.Path))
+		if err := os.WriteFile(full, []byte("corrupted-bytes"), 0o600); err != nil {
+			t.Fatalf("corrupt %s: %v", full, err)
+		}
+	})
+
+	opts := optionsWithSnapshot(t, source, identity)
+	assertRestoreRefusesVerification(t, opts, "checksum", "repos/acme/widgets.tar")
+}
+
+func TestRestoreRefusesOnCrossConsistency(t *testing.T) {
+	source, identity := buildTamperedSnapshot(t, func(t *testing.T, dir string, manifest *backup.Manifest) {
+		var dbComponent *backup.Component
+		for i := range manifest.Components {
+			if manifest.Components[i].Kind == bundle.StateKindDatabase {
+				dbComponent = &manifest.Components[i]
+				break
+			}
+		}
+		if dbComponent == nil {
+			t.Fatal("no database component in manifest")
+		}
+		dbPath := filepath.Join(dir, filepath.FromSlash(dbComponent.Path))
+
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("open %s: %v", dbPath, err)
+		}
+		// A repository row with no matching captured git component: the
+		// database references a repo this snapshot never captured.
+		if _, err := db.Exec(`INSERT INTO repository (owner_name, lower_name) VALUES (?, ?)`, "acme", "ghost"); err != nil {
+			t.Fatalf("insert bogus repository row: %v", err)
+		}
+		if err := db.Close(); err != nil {
+			t.Fatalf("close %s: %v", dbPath, err)
+		}
+
+		// Recompute the database component's checksum after mutating its
+		// file, so this snapshot's only defect is the unresolved
+		// cross-consistency reference — not an incidental checksum
+		// mismatch as a side effect of the edit.
+		dbComponent.Checksum = sha256HexFile(t, dbPath)
+	})
+
+	opts := optionsWithSnapshot(t, source, identity)
+	assertRestoreRefusesVerification(t, opts, "cross-consistency", "acme/ghost")
 }
 
 func TestPinnedBundleOverridesForgeImageOnly(t *testing.T) {
