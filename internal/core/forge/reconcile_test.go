@@ -173,6 +173,52 @@ func TestReconcileCIMissingTablesEmitsFailedStep(t *testing.T) {
 	}
 }
 
+// TestReconcileCILeavesRunnerRegistrationUntouched is part of FAIL-005's
+// proof: a remote runner's registration (Forgejo Actions' action_runner
+// table — uuid and token hash) must survive promotion with no
+// re-registration. ReconcileCI is the only code that touches a restored
+// database before it reaches the standby host (restore.reconcileCI's doc
+// comment), so this asserts it never reads or writes action_runner while
+// still resetting the orphaned run and job it's actually meant to fix.
+func TestReconcileCILeavesRunnerRegistrationUntouched(t *testing.T) {
+	db, path := openTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE action_runner (id INTEGER PRIMARY KEY, uuid TEXT, token_hash TEXT)`); err != nil {
+		t.Fatalf("create action_runner: %v", err)
+	}
+	const uuid = "11111111-2222-3333-4444-555555555555"
+	const tokenHash = "deadbeefcafef00d"
+	if _, err := db.Exec(`INSERT INTO action_runner (id, uuid, token_hash) VALUES (1, ?, ?)`, uuid, tokenHash); err != nil {
+		t.Fatalf("seed action_runner: %v", err)
+	}
+	insertRun(t, db, 1, actionStatusRunning)
+	insertJob(t, db, 1, 1, actionStatusRunning)
+
+	if _, err := ReconcileCI(context.Background(), nil, path); err != nil {
+		t.Fatalf("ReconcileCI: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM action_runner`).Scan(&count); err != nil {
+		t.Fatalf("count action_runner: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("action_runner row count = %d, want 1 — FORGE-004 must never touch runner registrations", count)
+	}
+	var gotUUID, gotTokenHash string
+	if err := db.QueryRow(`SELECT uuid, token_hash FROM action_runner WHERE id = 1`).Scan(&gotUUID, &gotTokenHash); err != nil {
+		t.Fatalf("query action_runner: %v", err)
+	}
+	if gotUUID != uuid || gotTokenHash != tokenHash {
+		t.Errorf("action_runner row = (uuid=%q, token_hash=%q), want unchanged (uuid=%q, token_hash=%q) — FAIL-005 requires reconnection with no re-registration",
+			gotUUID, gotTokenHash, uuid, tokenHash)
+	}
+
+	// The reconciliation this test is actually seeded for still ran.
+	if got := statusOf(t, db, "action_run", 1); got != actionStatusWaiting {
+		t.Errorf("action_run 1 status = %d, want %d (waiting/queued)", got, actionStatusWaiting)
+	}
+}
+
 func TestReconcileCIRunsAndJobsAreIndependent(t *testing.T) {
 	// A run can be running while its jobs have already finished dispatch
 	// bookkeeping (or vice versa) — ReconcileCI must reset each table on
