@@ -50,13 +50,14 @@ A plain directory, designed to live in a private git repo.
 
 ```
 farrier.yaml          manifest: domain, pinned image digests, driver config,
-                      ACME DNS-01 config, state-kind declarations, checksum
-                      algorithm
+                      ACME DNS-01 config, CI runner config, state-kind
+                      declarations, checksum algorithm
 compose/              rendered Docker Compose definitions
 ```
 
 - Manifest format: YAML.
 - Versions are pinned by image digest, not tag.
+- `actions.colocatedRunner` is the CI runner config: `false` keeps the bundled Actions runner off the forge host, and the operator registers a remote runner against the bundle domain instead (spec.md "CI trust boundary"). Absent means enabled.
 - Key material is referenced by keystore driver config, never stored.
 - Driver config paths are absolute. The manifest carries them as literal strings re-resolved on every call, so a relative path would silently follow whatever directory a later command ran from (XCUT-001).
 

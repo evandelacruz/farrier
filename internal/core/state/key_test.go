@@ -31,6 +31,7 @@ func testKeyDriver() fakeKeyDriver {
 		forge.KeySecretKey:     "sk-value",
 		forge.KeyInternalToken: "it-value",
 		forge.KeyLFSJWTSecret:  "lfs-value",
+		forge.KeyRunnerSecret:  "runner-secret-value",
 		KeyTLSCertificate:      "cert-value",
 		KeyTLSPrivateKey:       "tls-key-value",
 		KeySSHHostKey:          "ssh-host-key-value",

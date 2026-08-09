@@ -223,3 +223,49 @@ func copyDir(t *testing.T, src, dst string) error {
 		return os.WriteFile(target, content, 0o644)
 	})
 }
+
+// FORGE-005: an unset colocated-runner preference means enabled, so a
+// manifest written before the field existed still gets the runner the
+// requirement asks for; false is the operator's deliberate opt-out.
+func TestColocatedRunnerDefaultsToEnabled(t *testing.T) {
+	m := validManifest()
+	if m.ColocatedRunnerDeclared() {
+		t.Error("NewManifest wrote a colocated-runner preference; that is init's call")
+	}
+	if !m.ColocatedRunnerEnabled() {
+		t.Error("an unset colocated-runner preference reads as disabled, want enabled")
+	}
+
+	for _, want := range []bool{true, false} {
+		value := want
+		m.Actions.ColocatedRunner = &value
+		if !m.ColocatedRunnerDeclared() {
+			t.Errorf("ColocatedRunner=%v does not read as declared", want)
+		}
+		if got := m.ColocatedRunnerEnabled(); got != want {
+			t.Errorf("ColocatedRunnerEnabled() = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestColocatedRunnerSurvivesSaveAndLoad(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	disabled := false
+	b.Manifest.Actions.ColocatedRunner = &disabled
+
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if !loaded.Manifest.ColocatedRunnerDeclared() {
+		t.Fatal("the colocated-runner preference did not round-trip")
+	}
+	if loaded.Manifest.ColocatedRunnerEnabled() {
+		t.Error("a bundle saved with the colocated runner off loaded with it on")
+	}
+}

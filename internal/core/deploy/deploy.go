@@ -37,13 +37,15 @@ import (
 )
 
 // Step identifiers Up emits through the job's event stream (CORE-002), in
-// the order it runs them. forge.StepAdminBootstrap follows StepWaitForge.
+// the order it runs them. forge.StepAdminBootstrap follows StepWaitForge,
+// and forge.StepRunnerRegister follows that.
 const (
 	StepCheckHost       = "check-host"
 	StepConfigureForge  = "configure-forge"
 	StepConfigureTLS    = "configure-tls"
 	StepConfigureState  = "configure-state"
 	StepConfigureSSHKey = "configure-ssh-host-key"
+	StepConfigureRunner = "configure-runner"
 	StepCheckVersion    = "check-state-version"
 	StepConverge        = "converge"
 	StepWaitForge       = "wait-forge"
@@ -114,11 +116,12 @@ type Options struct {
 // renders and ships Caddy's config (UP-002), gives forge state a durable
 // home on the host and bind-mounts it into the forgejo service (UP-004),
 // installs the bundle's persisted ed25519 SSH host key where that app.ini
-// points Forgejo's git-over-SSH server at (RSTR-004), converges the host to
-// the bundle's Compose definition plus that config, waits for Forgejo to
-// accept commands, provisions the first admin account, and waits for Caddy
-// to accept commands so the forge is serving HTTPS and usable in a browser
-// before Up returns.
+// points Forgejo's git-over-SSH server at (RSTR-004), wires up the colocated
+// Actions runner unless the bundle turns it off (FORGE-005), converges the
+// host to the bundle's Compose definition plus that config, waits for
+// Forgejo to accept commands, provisions the first admin account, registers
+// that runner against the instance, and waits for Caddy to accept commands
+// so the forge is serving HTTPS and usable in a browser before Up returns.
 //
 // Every step is safe to repeat against a host Up has already deployed to
 // (UP-003): CheckHost and waitReady are read-only, configureForge always
@@ -129,8 +132,12 @@ type Options struct {
 // chown are both idempotent (configureState's doc comment),
 // configureSSHHostKey always writes the same persisted key back (its own
 // doc comment), orchestrate.Converge is idempotent by construction (its
-// own doc comment), and forge.Bootstrap treats an admin account that
-// already exists as done rather than a failure.
+// own doc comment), forge.Bootstrap treats an admin account that already
+// exists as done rather than a failure, configureRunner writes the same
+// non-rotating secret back and derives its mounts from the manifest alone
+// (its own doc comment), and runner registration is an upsert keyed by that
+// secret, so a re-run updates the existing registration rather than creating
+// a second one (forge.RegisterRunner).
 //
 // One step does read the host back before deciding: checkStateVersion
 // refuses to start a Forgejo version other than the one the host's state was
@@ -200,6 +207,18 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	job.Emit(StepConfigureSSHKey, events.StateSucceeded, "ssh host key installed")
 
+	job.Started(StepConfigureRunner, "configuring the colocated actions runner")
+	compose, runnerDeployed, err := configureRunner(ctx, host, b, opts.RemoteDir, compose)
+	if err != nil {
+		job.Emit(StepConfigureRunner, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: configure runner: %w", err)
+	}
+	if runnerDeployed {
+		job.Emit(StepConfigureRunner, events.StateSucceeded, "colocated runner configured with the host's docker socket (spec.md \"CI trust boundary\")")
+	} else {
+		job.Emit(StepConfigureRunner, events.StateSucceeded, "no colocated runner in this deployment; register a remote runner against the bundle domain to run CI")
+	}
+
 	job.Started(StepCheckVersion, "checking the pinned forgejo version against the host's state")
 	detail, err := checkStateVersion(ctx, host, b.Manifest.Images[forge.Service], opts.RemoteDir, opts.Migrate)
 	if err != nil {
@@ -231,6 +250,15 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	if err := forge.Bootstrap(ctx, runner, job, account); err != nil {
 		return fmt.Errorf("deploy: %w", err)
+	}
+
+	// Registration is deliberately after Converge rather than before it:
+	// it needs a running Forgejo, and the runner container the same
+	// Converge started retries its connection until this lands.
+	if runnerDeployed {
+		if err := forge.RegisterRunner(ctx, runner, job, RunnerSecretPath(opts.RemoteDir)); err != nil {
+			return fmt.Errorf("deploy: %w", err)
+		}
 	}
 
 	job.Started(StepWaitCaddy, "waiting for caddy to accept commands")

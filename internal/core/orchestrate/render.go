@@ -26,12 +26,14 @@ type composeService struct {
 	Restart       string            `yaml:"restart"`
 	Networks      []string          `yaml:"networks"`
 	Environment   map[string]string `yaml:"environment,omitempty"`
-	// Volumes and Ports are never set by Render itself — see its doc
-	// comment — but are declared here so WithBindMount's and WithPorts'
-	// output round-trips through the same composeSpec shape the package's
-	// own tests decode with.
+	// Volumes, Ports, Command, and User are never set by Render itself —
+	// see its doc comment — but are declared here so WithBindMount's,
+	// WithPorts', WithCommand's, and WithUser's output round-trips through
+	// the same composeSpec shape the package's own tests decode with.
 	Volumes []string `yaml:"volumes,omitempty"`
 	Ports   []string `yaml:"ports,omitempty"`
+	Command []string `yaml:"command,omitempty"`
+	User    string   `yaml:"user,omitempty"`
 }
 
 type composeNetwork struct {
