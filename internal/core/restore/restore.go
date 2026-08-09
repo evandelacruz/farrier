@@ -17,14 +17,19 @@
 // database already has an admin account and treats that as done, exactly
 // as it does on a repeat `up` (UP-003), rather than minting a new one.
 //
-// This is RSTR-001 alone: it does not force the exact Forgejo version the
-// snapshot was captured from (RSTR-002), it does not install the SSH host
-// key onto the running Forgejo service so an existing known_hosts entry
-// keeps working (RSTR-004) — restore.Restore installs it into the target
-// keystore like every other captured key, ready for RSTR-004 to wire up —
-// and while reusing backup.Verify already gives restore the specific,
-// named refusal RSTR-003 requires, RSTR-003 itself is a separate ID with
-// its own acceptance bar.
+// Restore also runs deploy.Up against the exact Forgejo image the snapshot
+// was captured from (RSTR-002, spec.md "Version pinning"), never whatever
+// image the target bundle's own farrier.yaml currently pins — the snapshot
+// manifest's ForgejoVersion overrides the target bundle's forge image, and
+// Compose is re-rendered from that override the same way orchestrate.Render
+// builds it at init time, before deploy.Up ever runs.
+//
+// This does not install the SSH host key onto the running Forgejo service
+// so an existing known_hosts entry keeps working (RSTR-004) —
+// restore.Restore installs it into the target keystore like every other
+// captured key, ready for RSTR-004 to wire up — and while reusing
+// backup.Verify already gives restore the specific, named refusal RSTR-003
+// requires, RSTR-003 itself is a separate ID with its own acceptance bar.
 package restore
 
 import (
@@ -43,7 +48,9 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
+	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/state"
 )
 
@@ -204,7 +211,7 @@ func restore(ctx context.Context, job *events.Job, opts Options) (*backup.Manife
 		return nil, err
 	}
 
-	if err := runDeploy(ctx, job, opts); err != nil {
+	if err := runDeploy(ctx, job, manifest, opts); err != nil {
 		return nil, err
 	}
 
@@ -272,7 +279,19 @@ func decryptAndVerify(ctx context.Context, job *events.Job, archivePath, plainDi
 // panic on every Emit call afterward — there are none after Up in Restore,
 // but the relay also keeps job's own terminal event Restore's alone to
 // decide, matching every other multi-step job in this codebase.
-func runDeploy(ctx context.Context, job *events.Job, opts Options) error {
+//
+// It deploys pinnedBundle(opts.Bundle, manifest.ForgejoVersion) rather than
+// opts.Bundle itself (RSTR-002): the target bundle's own farrier.yaml may
+// pin a different Forgejo image than the one the snapshot was captured
+// from — e.g. an upgrade run against the bundle since the snapshot was
+// taken — and restore must boot the exact version recorded in the
+// snapshot every time (spec.md "Version pinning").
+func runDeploy(ctx context.Context, job *events.Job, manifest *backup.Manifest, opts Options) error {
+	deployBundle, err := pinnedBundle(opts.Bundle, manifest.ForgejoVersion)
+	if err != nil {
+		return err
+	}
+
 	deployJob := events.NewJob()
 	stream, cancel := deployJob.Subscribe()
 	defer cancel()
@@ -288,10 +307,39 @@ func runDeploy(ctx context.Context, job *events.Job, opts Options) error {
 		}
 	}()
 
-	err := deploy.Up(ctx, deployJob, opts.Host, opts.Bundle, deploy.Options{
+	err = deploy.Up(ctx, deployJob, opts.Host, deployBundle, deploy.Options{
 		RemoteDir:  opts.RemoteDir,
 		CertIssuer: opts.CertIssuer,
 	})
 	<-relayed
 	return err
+}
+
+// pinnedBundle returns a copy of b whose forge image is overridden to
+// forgejoVersion — the image ref the snapshot manifest recorded (BKUP-001,
+// captured from the source bundle's own Manifest.Images at backup time,
+// backup.BuildOptions) — with Compose re-rendered from that override the
+// same way orchestrate.Render already builds b's Compose at init time.
+// Compose is re-rendered, not just the manifest, because deploy.Up ships
+// b.Compose to the host as-is (deploy.configureForge); overriding only the
+// manifest would leave the stale image in the Compose file deploy.Up
+// actually converges the host to.
+//
+// b itself is left untouched: Images is copied before the override so the
+// caller's own bundle (and the map backing its Manifest.Images) is never
+// mutated out from under it.
+func pinnedBundle(b *bundle.Bundle, forgejoVersion string) (*bundle.Bundle, error) {
+	manifest := b.Manifest
+	images := make(map[string]string, len(manifest.Images))
+	for component, image := range manifest.Images {
+		images[component] = image
+	}
+	images[forge.Service] = forgejoVersion
+	manifest.Images = images
+
+	compose, err := orchestrate.Render(&manifest)
+	if err != nil {
+		return nil, fmt.Errorf("restore: render compose pinned to forgejo %s: %w", forgejoVersion, err)
+	}
+	return &bundle.Bundle{Manifest: manifest, Compose: compose}, nil
 }
