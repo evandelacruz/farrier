@@ -1,7 +1,7 @@
 // Package status implements the `status` command's core logic.
 // This file: replication lag for golden-path transports (STAT-002). See
-// status.go for instance health (STAT-001: services, TLS, disk); STAT-001's
-// last-backup age is not yet implemented.
+// status.go for instance health (STAT-001: services, TLS, disk, and
+// last-backup age).
 package status
 
 import (

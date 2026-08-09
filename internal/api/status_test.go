@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -195,6 +196,72 @@ func TestHandleStatusDefaultsRemoteDirAndDiskPath(t *testing.T) {
 	}
 	if gotOpts.DiskPath != status.DefaultDiskPath {
 		t.Errorf("DiskPath = %q, want %q", gotOpts.DiskPath, status.DefaultDiskPath)
+	}
+}
+
+func TestHandleStatusResolvesDestination(t *testing.T) {
+	s := newTestServer()
+	s.loadBundle = func(dir string) (*bundle.Bundle, error) { return testBundle(), nil }
+	s.newKeystore = func(driverName string, config map[string]any) (keystore.Driver, error) {
+		return fakeKeystoreDriver{}, nil
+	}
+	s.dial = func(ctx context.Context, target string, opts orchestrate.Options) (Host, error) {
+		return newFakeHost(), nil
+	}
+	var gotOpts status.Options
+	s.statusCheck = func(ctx context.Context, opts status.Options) (status.Report, error) {
+		gotOpts = opts
+		return status.Report{Lag: status.Lag{State: status.LagUnmeasured}}, nil
+	}
+
+	dest := t.TempDir() + "/backups"
+	rec := doStatus(t, s, "bundleDir=/tmp/bundle&target=ssh://user@host&to="+url.QueryEscape(dest))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if gotOpts.Destination == nil {
+		t.Fatal("Destination = nil, want the resolved destination")
+	}
+}
+
+func TestHandleStatusOmittedDestinationStaysNil(t *testing.T) {
+	s := newTestServer()
+	s.loadBundle = func(dir string) (*bundle.Bundle, error) { return testBundle(), nil }
+	s.newKeystore = func(driverName string, config map[string]any) (keystore.Driver, error) {
+		return fakeKeystoreDriver{}, nil
+	}
+	s.dial = func(ctx context.Context, target string, opts orchestrate.Options) (Host, error) {
+		return newFakeHost(), nil
+	}
+	var gotOpts status.Options
+	s.statusCheck = func(ctx context.Context, opts status.Options) (status.Report, error) {
+		gotOpts = opts
+		return status.Report{Lag: status.Lag{State: status.LagUnmeasured}}, nil
+	}
+
+	rec := doStatus(t, s, "bundleDir=/tmp/bundle&target=ssh://user@host")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if gotOpts.Destination != nil {
+		t.Errorf("Destination = %v, want nil when to is omitted", gotOpts.Destination)
+	}
+}
+
+func TestHandleStatusInvalidDestination(t *testing.T) {
+	s := newTestServer()
+	s.loadBundle = func(dir string) (*bundle.Bundle, error) { return testBundle(), nil }
+	s.newKeystore = func(driverName string, config map[string]any) (keystore.Driver, error) {
+		return fakeKeystoreDriver{}, nil
+	}
+	s.statusCheck = func(ctx context.Context, opts status.Options) (status.Report, error) {
+		t.Fatal("statusCheck should not be called when the destination fails to resolve")
+		return status.Report{}, nil
+	}
+
+	rec := doStatus(t, s, "bundleDir=/tmp/bundle&target=ssh://user@host&to="+url.QueryEscape("s3://my-bucket"))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 	}
 }
 
