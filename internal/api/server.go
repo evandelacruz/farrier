@@ -11,6 +11,8 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/evandelacruz/farrier/internal/core/backup"
+	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
@@ -51,6 +53,9 @@ type Server struct {
 	importRunBatch func(ctx context.Context, job *events.Job, opts importer.BatchOptions) (importer.BatchResult, error)
 	statusCheck    func(ctx context.Context, opts status.Options) (status.Report, error)
 	newKeystore    func(driverName string, config map[string]any) (keystore.Driver, error)
+	newBlob        func(driverName string, config map[string]any) (blob.Adapter, error)
+	dialSSH        func(ctx context.Context, target string, opts orchestrate.Options) (backupHost, error)
+	backupRun      func(ctx context.Context, job *events.Job, opts backup.Options) error
 }
 
 // New returns a Server wired to the real core implementations: the same
@@ -70,19 +75,25 @@ func New() *Server {
 		importRunBatch: importer.RunBatch,
 		statusCheck:    status.Check,
 		newKeystore:    keystore.New,
+		newBlob:        blob.New,
+		dialSSH: func(ctx context.Context, target string, opts orchestrate.Options) (backupHost, error) {
+			return orchestrate.Connect(ctx, target, opts)
+		},
+		backupRun: backup.Backup,
 	}
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
-// POST /import, GET /status, and GET /jobs/{id}/events, the RPC verbs for
-// every core operation currently implemented (tech-spec.md "API"). Verbs
-// for operations not yet landed in internal/core (backup, restore,
+// POST /import, POST /backup, GET /status, and GET /jobs/{id}/events, the
+// RPC verbs for every core operation currently implemented (tech-spec.md
+// "API"). Verbs for operations not yet landed in internal/core (restore,
 // promote, upgrade, drill) are added here as each one lands.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
 	mux.HandleFunc("POST /up", s.handleUp)
 	mux.HandleFunc("POST /import", s.handleImport)
+	mux.HandleFunc("POST /backup", s.handleBackup)
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /jobs/{id}/events", s.handleJobEvents)
 	return mux

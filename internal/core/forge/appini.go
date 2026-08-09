@@ -48,6 +48,13 @@ const HTTPPort = 3000
 // (UP-001) must mount the rendered file here.
 const AppINIPath = dataPath + "/conf/app.ini"
 
+// DatabasePath is dbPath's exported form: the container-side location of
+// Forgejo's SQLite database. A caller reaching it from outside this package
+// — state.SSHDatabaseExporter, over `docker exec` (BKUP-006) — needs the
+// exact path Forgejo itself was configured with, rather than a second,
+// possibly drifting copy of the same string.
+const DatabasePath = dbPath
+
 // Secrets are the pieces of Forgejo's identity that let app.ini answer every
 // question the install wizard would otherwise ask. They are bundle key
 // material (spec.md "Identity" > "Key material"): generated once at init and
