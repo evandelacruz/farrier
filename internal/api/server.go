@@ -15,11 +15,13 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
+	"github.com/evandelacruz/farrier/internal/core/dns"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/importer"
 	"github.com/evandelacruz/farrier/internal/core/initialize"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
+	"github.com/evandelacruz/farrier/internal/core/promote"
 	"github.com/evandelacruz/farrier/internal/core/restore"
 	"github.com/evandelacruz/farrier/internal/core/status"
 )
@@ -59,6 +61,9 @@ type Server struct {
 	backupRun      func(ctx context.Context, job *events.Job, opts backup.Options) error
 	dialRestore    func(ctx context.Context, target string, opts orchestrate.Options) (restore.Host, error)
 	restoreRun     func(ctx context.Context, job *events.Job, opts restore.Options) error
+	dialPromote    func(ctx context.Context, target string, opts orchestrate.Options) (promote.Host, error)
+	resolveDNS     func(ctx context.Context, job *events.Job, ref bundle.DriverRef, keystoreDriver keystore.Driver) (dns.Driver, error)
+	promoteRun     func(ctx context.Context, job *events.Job, opts promote.Options) error
 }
 
 // New returns a Server wired to the real core implementations: the same
@@ -87,14 +92,20 @@ func New() *Server {
 			return orchestrate.Connect(ctx, target, opts)
 		},
 		restoreRun: restore.Restore,
+		dialPromote: func(ctx context.Context, target string, opts orchestrate.Options) (promote.Host, error) {
+			return orchestrate.Connect(ctx, target, opts)
+		},
+		resolveDNS: promote.ResolveDNSDriver,
+		promoteRun: promote.Promote,
 	}
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
-// POST /import, POST /backup, POST /restore, GET /status, and
-// GET /jobs/{id}/events, the RPC verbs for every core operation currently
-// implemented (tech-spec.md "API"). Verbs for operations not yet landed in
-// internal/core (promote, upgrade, drill) are added here as each one lands.
+// POST /import, POST /backup, POST /restore, POST /promote, GET /status,
+// and GET /jobs/{id}/events, the RPC verbs for every core operation
+// currently implemented (tech-spec.md "API"). Verbs for operations not yet
+// landed in internal/core (upgrade, drill) are added here as each one
+// lands.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
@@ -102,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /import", s.handleImport)
 	mux.HandleFunc("POST /backup", s.handleBackup)
 	mux.HandleFunc("POST /restore", s.handleRestore)
+	mux.HandleFunc("POST /promote", s.handlePromote)
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /jobs/{id}/events", s.handleJobEvents)
 	return mux

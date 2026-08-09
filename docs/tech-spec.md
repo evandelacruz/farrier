@@ -14,6 +14,7 @@ internal/core/        the engine — all logic lives here
   state/              the four state kinds and their export interfaces
   backup/             snapshot creation, encryption, destination write, verification
   restore/            snapshot verification, rebuild, identity install
+  promote/            failover sequencing: restore, reconcile CI, flip DNS (FAIL-001)
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing: check host, ship config, issue TLS cert, converge, bootstrap admin
@@ -444,6 +445,18 @@ The whole sequence is one CORE-002 job, so the CLI and the dashboard render the 
 This is RSTR-001 and RSTR-002. It does not install the SSH host key into the running Forgejo service, so an existing `known_hosts` entry does not yet keep working after a restore (RSTR-004) — `restore.Restore` installs it into the target keystore like every other captured key, ready for RSTR-004 to wire up. Reusing `backup.Verify` already gives restore the specific, named refusal RSTR-003 describes, but RSTR-003 is its own ID with its own acceptance bar.
 
 Reachable from `cmd/farrier restore` and `POST /restore` (API-001), both thin over the core: each resolves the target host, the bundle's keystore and blob drivers, the snapshot source (`backup.OpenDestination`), and the age backup key (`backup.ResolveIdentity`) the same way `backup`'s own CLI/API skins already do, and hand the result to `restore.Restore`.
+
+## Failing over (`promote`, FAIL-001)
+
+`internal/core/promote.Promote` is a sequence over already-landed pieces, not a reimplementation, as one CORE-002 job:
+
+1. `restore.Restore` — the exact function `restore` calls, run against a private job and relayed onto the caller's job the same way `backup.Backup` relays `backup.Run` (restore.go's `runDeploy` already does this once, for `deploy.Up`; `promote.go`'s `restoreOnto` does it again, one level up, for the whole of `restore.Restore`). This alone covers "restore the latest snapshot, verify, start services" (spec.md "Failover" steps covering restore, reconcile, and start) — restore.Restore already ends with `deploy.Up` starting the stateless layer.
+2. `restore.Options` gains a `ReconcileCI` field, which `promote` always sets. When true, `restore.restore` runs `forge.ReconcileCI` (FORGE-004) against the snapshot's decrypted database file — the only local point restore ever holds it — right after `decryptAndVerify` and before `placeState` ships it to the host, resetting every orphaned `running` run and job to `queued`. This is the one point in the whole sequence `forge.ReconcileCI`'s direct SQLite update *can* run: it has no remote-SQL path, so it has to happen while the database is still a local file, ahead of the container that will read it starting (spec.md "Failover" step 2, FAIL-003's automatic re-dispatch once services start).
+3. `dns.SetBundleRecord` (DNS-004's 60-second TTL) against a `dns.Driver` the caller resolves and passes in (`promote.Options.DNS`), upserting `promote.Options.DNSRecord` (default: the bundle's own domain) to `promote.Options.DNSValue` (the standby's address — operator-supplied, the same "`up` doesn't manage DNS" split tech-spec.md "Deployment" already draws) — spec.md "Failover" step 4, FAIL-004.
+
+`promote.ResolveDNSDriver` builds that `dns.Driver` from a bundle's optional `Drivers.DNS` (`bundle.DriverRef`, DNS-003: empty returns `dns.NewPrint(job)` — the same `job` `Promote` runs against, so the print fallback's own event lands on the operation's own stream) and its keystore driver: `"cloudflare"` and `"rfc2136"` resolve their secret (Cloudflare's API token, RFC 2136's TSIG key) from the keystore under a fixed key name (`dns_cloudflare_api_token`, `dns_rfc2136_tsig_secret` — the same fixed-name convention `forge.KeySecretKey` and friends use), the same split `dns`'s own doc comment describes for driver secrets; any other name is an out-of-tree exec driver (CORE-003), the same plugin posture `keystore.New` and `blob.New` already give their own driver types. `cmd/farrier/promote.go` and `internal/api/promote.go` both call it rather than duplicating the switch.
+
+Reachable from `cmd/farrier promote` and `POST /promote` (API-001), both thin over the core: each resolves the target host, the bundle's keystore, blob, and DNS drivers, the snapshot source, and the age backup key the same way `restore`'s own CLI/API skins do, defaulting `-dns-value`/`dnsValue` to the target's own host (`orchestrate.ParseTarget`) when the operator doesn't name a different standby address, and hand the result to `promote.Promote`.
 
 ## Status (`status`, STAT-001, STAT-002)
 
