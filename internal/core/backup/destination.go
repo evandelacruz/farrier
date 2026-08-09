@@ -103,6 +103,76 @@ func SnapshotAge(ctx context.Context, dest blob.Adapter, key string, now time.Ti
 	return "", 0, fmt.Errorf("backup: snapshot age: %s: not found in destination", resolvedKey)
 }
 
+// Snapshot describes one snapshot sitting at a destination: what Write
+// stored, how big it is, when it was captured, and how old that makes it.
+// It is the unit of backup history the dashboard's history view renders
+// (UI-002).
+type Snapshot struct {
+	// Key is the destination object key, as SnapshotKey named it.
+	Key string
+
+	// SizeBytes is the encrypted archive's size at the destination.
+	SizeBytes int64
+
+	// Modified is the destination's own timestamp for the object, which
+	// is when the snapshot finished being written.
+	Modified time.Time
+
+	// Age is how old the snapshot is relative to the caller's `now`,
+	// clamped to zero the same way SnapshotAge clamps: a destination
+	// clock reading ahead of the control plane never yields a negative
+	// age.
+	Age time.Duration
+}
+
+// History lists every snapshot at dest, newest first, with each one's age
+// as of now. It is the read behind backup history (UI-002): the same "list
+// the destination, read each object's Modified time" measurement
+// LatestSnapshotKey and SnapshotAge already perform, returning the whole
+// list rather than one entry.
+//
+// Like those two, History does not filter by name or parse SnapshotKey's
+// timestamp back out of a key. A backup destination holds snapshots — that
+// is what `backup --to` writes there — so filtering could only disagree
+// with which object LatestSnapshotKey would pick as "the latest", and a
+// history that hides an object restore would happily resolve is worse than
+// one that shows it.
+//
+// An empty destination is not an error: an operator who has configured a
+// destination but not yet run `backup` gets an empty history, not a
+// failure. Unlike LatestSnapshotKey, nothing downstream of History needs a
+// snapshot to exist.
+func History(ctx context.Context, dest blob.Adapter, now time.Time) ([]Snapshot, error) {
+	if dest == nil {
+		return nil, errors.New("backup: history: destination is required")
+	}
+	objects, err := dest.List(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("backup: history: list destination: %w", err)
+	}
+
+	snapshots := make([]Snapshot, 0, len(objects))
+	for _, o := range objects {
+		age := now.Sub(o.Modified)
+		if age < 0 {
+			age = 0
+		}
+		snapshots = append(snapshots, Snapshot{
+			Key:       o.Key,
+			SizeBytes: o.Size,
+			Modified:  o.Modified,
+			Age:       age,
+		})
+	}
+	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].Modified.Equal(snapshots[j].Modified) {
+			return snapshots[i].Key > snapshots[j].Key
+		}
+		return snapshots[i].Modified.After(snapshots[j].Modified)
+	})
+	return snapshots, nil
+}
+
 // Fetch downloads the object at key from dest to localPath, the inverse of
 // Write (BKUP-005): restore.Restore uses it to pull a snapshot archive onto
 // local disk before DecryptArchive and Verify can run against it.

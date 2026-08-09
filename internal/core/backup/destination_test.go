@@ -3,6 +3,7 @@ package backup
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -414,3 +415,119 @@ func TestOpenDestinationThenWriteRoundTrips(t *testing.T) {
 		t.Fatalf("List = %+v, want one object keyed %q", objects, key)
 	}
 }
+
+func TestHistoryRejectsNilDestination(t *testing.T) {
+	if _, err := History(context.Background(), nil, time.Now()); err == nil {
+		t.Fatal("History(nil): want error, got nil")
+	}
+}
+
+// An empty destination is a valid, empty history — an operator who has
+// configured a destination but not yet run `backup` is not in an error
+// state, which is where History deliberately differs from LatestSnapshotKey.
+func TestHistoryAllowsEmptyDestination(t *testing.T) {
+	snapshots, err := History(context.Background(), newFakeAdapter(), time.Now())
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(snapshots) != 0 {
+		t.Fatalf("History = %+v, want no snapshots", snapshots)
+	}
+}
+
+func TestHistoryReturnsNewestFirstWithAges(t *testing.T) {
+	// A real destination, not fakeAdapter: History sorts by
+	// Object.Modified, which fakeAdapter never populates.
+	dir := t.TempDir()
+	adapter, err := OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+
+	older := SnapshotKey(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	newer := SnapshotKey(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err := adapter.Put(context.Background(), older, bytes.NewReader([]byte("aa")), 2); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := adapter.Put(context.Background(), newer, bytes.NewReader([]byte("bbb")), 3); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	now := time.Now()
+	olderModified := now.Add(-48 * time.Hour)
+	newerModified := now.Add(-3 * time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, older), olderModified, olderModified); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, newer), newerModified, newerModified); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	snapshots, err := History(context.Background(), adapter, now)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("History = %+v, want 2 snapshots", snapshots)
+	}
+	if snapshots[0].Key != newer || snapshots[1].Key != older {
+		t.Errorf("History keys = %q, %q; want %q first", snapshots[0].Key, snapshots[1].Key, newer)
+	}
+	if snapshots[0].SizeBytes != 3 {
+		t.Errorf("newest SizeBytes = %d, want 3", snapshots[0].SizeBytes)
+	}
+	if snapshots[0].Age < 2*time.Hour || snapshots[0].Age > 4*time.Hour {
+		t.Errorf("newest Age = %v, want ~3h", snapshots[0].Age)
+	}
+	if snapshots[1].Age < 47*time.Hour || snapshots[1].Age > 49*time.Hour {
+		t.Errorf("oldest Age = %v, want ~48h", snapshots[1].Age)
+	}
+}
+
+// A destination whose clock reads ahead of the control plane must not yield
+// a negative age — the same clamp SnapshotAge applies.
+func TestHistoryClampsFutureModifiedToZeroAge(t *testing.T) {
+	dir := t.TempDir()
+	adapter, err := OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+
+	key := SnapshotKey(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err := adapter.Put(context.Background(), key, bytes.NewReader([]byte("a")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	now := time.Now()
+	ahead := now.Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, key), ahead, ahead); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	snapshots, err := History(context.Background(), adapter, now)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(snapshots) != 1 || snapshots[0].Age != 0 {
+		t.Fatalf("History = %+v, want one snapshot with zero age", snapshots)
+	}
+}
+
+// History reports a listing failure rather than an empty history: an
+// unreachable destination and a destination with no snapshots must never
+// look the same to an operator.
+func TestHistoryReportsListFailure(t *testing.T) {
+	_, err := History(context.Background(), listErrAdapter{}, time.Now())
+	if err == nil {
+		t.Fatal("History: want error when the destination cannot be listed, got nil")
+	}
+}
+
+type listErrAdapter struct{}
+
+func (listErrAdapter) List(context.Context, string) ([]blob.Object, error) {
+	return nil, errors.New("destination unreachable")
+}
+func (listErrAdapter) Get(context.Context, string) (io.ReadCloser, error) {
+	return nil, blob.ErrNotFound
+}
+func (listErrAdapter) Put(context.Context, string, io.Reader, int64) error { return nil }

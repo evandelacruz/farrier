@@ -10,6 +10,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/blob"
@@ -70,6 +71,9 @@ type Server struct {
 	upgradeRun     func(ctx context.Context, job *events.Job, opts upgrade.Options) error
 	dialDrill      func(ctx context.Context, target string, opts orchestrate.Options) (drill.Host, error)
 	drillRun       func(ctx context.Context, job *events.Job, opts drill.Options) (drill.Report, error)
+
+	openDestination func(uri string) (blob.Adapter, error)
+	snapshotHistory func(ctx context.Context, dest blob.Adapter, now time.Time) ([]backup.Snapshot, error)
 }
 
 // New returns a Server wired to the real core implementations: the same
@@ -110,14 +114,16 @@ func New() *Server {
 		dialDrill: func(ctx context.Context, target string, opts orchestrate.Options) (drill.Host, error) {
 			return orchestrate.Connect(ctx, target, opts)
 		},
-		drillRun: drill.Drill,
+		drillRun:        drill.Drill,
+		openDestination: backup.OpenDestination,
+		snapshotHistory: backup.History,
 	}
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
 // POST /import, POST /backup, POST /restore, POST /promote, POST /upgrade,
-// POST /drill, GET /status, and GET /jobs/{id}/events — an RPC verb for
-// every core operation (API-001, tech-spec.md "API").
+// POST /drill, GET /status, GET /snapshots, and GET /jobs/{id}/events — an
+// RPC verb for every core operation (API-001, tech-spec.md "API").
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
@@ -129,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /upgrade", s.handleUpgrade)
 	mux.HandleFunc("POST /drill", s.handleDrill)
 	mux.HandleFunc("GET /status", s.handleStatus)
+	mux.HandleFunc("GET /snapshots", s.handleSnapshots)
 	mux.HandleFunc("GET /jobs/{id}/events", s.handleJobEvents)
 	return mux
 }

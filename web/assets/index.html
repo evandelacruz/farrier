@@ -11,36 +11,210 @@
     <header class="masthead">
       <h1>Farrier</h1>
       <p class="tagline">Your forge, portable. Running on this machine.</p>
+      <nav class="viewnav">
+        <a href="#status">Status</a>
+        <a href="#lag">Replication lag</a>
+        <a href="#history">Backup history</a>
+        <a href="#drill">Drill</a>
+        <a href="#promote">Promotion</a>
+      </nav>
     </header>
 
     <main>
-      <section class="card">
-        <h2>The dashboard is serving</h2>
+      <section class="card" id="connection">
+        <h2>Connection</h2>
         <p>
-          This page came from the <code>farrier</code> binary on your own
-          machine, over loopback. The local control API is served from this
-          same address, so nothing here reaches the network.
+          Where your bundle, your forge host, and your backup destination
+          are. Every view below sends these to the local API, which does the
+          work — the same core operations the <code>farrier</code> commands
+          run. They stay in this browser and are never sent anywhere else.
         </p>
+        <form id="connection-form" class="fields" autocomplete="off">
+          <label>
+            <span>Bundle directory</span>
+            <input name="bundleDir" placeholder="/path/to/bundle" required />
+          </label>
+          <label>
+            <span>Forge host</span>
+            <input name="target" placeholder="ssh://user@host" required />
+          </label>
+          <label>
+            <span>Backup destination</span>
+            <input name="to" placeholder="s3://bucket?endpoint=… or /path/to/backups" />
+          </label>
+          <label>
+            <span>Remote directory</span>
+            <input name="remoteDir" placeholder="/opt/farrier" />
+          </label>
+          <label>
+            <span>Disk path to report</span>
+            <input name="diskPath" placeholder="/var/lib/farrier" />
+          </label>
+          <label>
+            <span>SSH key file</span>
+            <input name="sshKeyFile" placeholder="default: your SSH agent" />
+          </label>
+          <label>
+            <span>known_hosts file</span>
+            <input name="knownHostsFile" placeholder="default: ~/.ssh/known_hosts" />
+          </label>
+          <label>
+            <span>SSH timeout</span>
+            <input name="sshTimeout" placeholder="e.g. 30s" />
+          </label>
+        </form>
+        <p class="note" id="connection-note">Saved in this browser.</p>
       </section>
 
-      <section class="card">
-        <h2>Views are on their way</h2>
+      <section class="card" id="status">
+        <h2>Instance status</h2>
         <p>
-          Instance status, replication lag, backup history, drill results, and
-          promotion will live here. Until they land, every one of them runs
-          from the command line:
+          Services, TLS validity, and disk headroom on the forge host, read
+          live over SSH.
         </p>
-        <ul class="commands">
-          <li><code>farrier status</code> — instance health and last-backup age</li>
-          <li><code>farrier backup</code> — capture, encrypt, verify a snapshot</li>
-          <li><code>farrier drill</code> — rehearse a restore on a scratch host</li>
-          <li><code>farrier promote</code> — fail over to a new host</li>
-        </ul>
+        <p class="actions">
+          <button type="button" data-action="refresh-status">Check status</button>
+        </p>
+        <p class="problem" data-problem="status" hidden></p>
+        <div data-panel="status" hidden>
+          <h3>Services</h3>
+          <table class="grid">
+            <tbody data-slot="services"></tbody>
+          </table>
+          <h3>TLS</h3>
+          <dl class="grid" data-slot="tls"></dl>
+          <h3>Disk</h3>
+          <dl class="grid" data-slot="disk"></dl>
+        </div>
+      </section>
+
+      <section class="card" id="lag">
+        <h2>Replication lag</h2>
+        <p>
+          How far behind your backup destination is. Measured for
+          golden-path destinations; an operator-assembled transport reports
+          as unmeasured rather than guessing.
+        </p>
+        <p class="note" data-slot="lag-hint">
+          Read from the same status check above — run it to fill this in.
+        </p>
+        <div data-panel="lag" hidden>
+          <dl class="grid" data-slot="lag"></dl>
+        </div>
+      </section>
+
+      <section class="card" id="history">
+        <h2>Backup history</h2>
+        <p>
+          Every snapshot at your backup destination, newest first. This view
+          reaches no host: the destination is storage your machine can
+          already see, so history stays readable when the forge is down.
+        </p>
+        <p class="actions">
+          <button type="button" data-action="refresh-history">List snapshots</button>
+        </p>
+        <p class="problem" data-problem="history" hidden></p>
+        <div data-panel="history" hidden>
+          <table class="grid">
+            <thead>
+              <tr>
+                <th>Snapshot</th>
+                <th>Size</th>
+                <th>Captured</th>
+                <th>Age</th>
+              </tr>
+            </thead>
+            <tbody data-slot="history"></tbody>
+          </table>
+          <p class="note" data-slot="history-empty" hidden>
+            No snapshots at this destination yet.
+          </p>
+        </div>
+      </section>
+
+      <section class="card" id="drill">
+        <h2>Drill</h2>
+        <p>
+          Rehearse the escape hatch: restore the most recent snapshot onto a
+          scratch target and boot the full stack there. A drill never
+          touches DNS and never touches your forge host.
+        </p>
+        <form class="fields" autocomplete="off" data-form="drill">
+          <label>
+            <span>Scratch target</span>
+            <input name="target" placeholder="ssh://user@scratch-host" required />
+          </label>
+          <label>
+            <span>Remote directory</span>
+            <input name="remoteDir" placeholder="/opt/farrier" />
+          </label>
+        </form>
+        <p class="actions">
+          <button type="button" data-action="run-drill">Run drill</button>
+        </p>
+        <p class="problem" data-problem="drill" hidden></p>
+        <div data-panel="drill" hidden>
+          <p class="outcome" data-slot="drill-outcome"></p>
+          <ol class="events" data-slot="drill-events"></ol>
+        </div>
+      </section>
+
+      <section class="card" id="promote">
+        <h2>Promotion</h2>
+        <p>
+          Fail over to a standby host: restore a snapshot there, reconcile
+          CI, and flip DNS. Review which snapshot you are promoting and how
+          old it is, then confirm — promotion never runs unconfirmed.
+        </p>
+        <form class="fields" autocomplete="off" data-form="promote">
+          <label>
+            <span>Standby target</span>
+            <input name="target" placeholder="ssh://user@standby-host" required />
+          </label>
+          <label>
+            <span>Snapshot</span>
+            <input name="snapshot" placeholder="default: the most recent snapshot" />
+          </label>
+          <label>
+            <span>Remote directory</span>
+            <input name="remoteDir" placeholder="/opt/farrier" />
+          </label>
+          <label>
+            <span>DNS record</span>
+            <input name="dnsRecord" placeholder="default: the bundle's domain" />
+          </label>
+          <label>
+            <span>DNS value</span>
+            <input name="dnsValue" placeholder="default: the standby target's host" />
+          </label>
+        </form>
+        <p class="actions">
+          <button type="button" data-action="review-promote">Review snapshot</button>
+        </p>
+        <p class="problem" data-problem="promote" hidden></p>
+        <div data-panel="promote-review" hidden>
+          <p class="outcome" data-slot="promote-review"></p>
+          <p class="confirm">
+            <label>
+              <input type="checkbox" data-field="promote-confirm" />
+              <span data-slot="promote-confirm-label"></span>
+            </label>
+          </p>
+          <p class="actions">
+            <button type="button" data-action="run-promote" disabled>Promote</button>
+          </p>
+        </div>
+        <div data-panel="promote" hidden>
+          <p class="outcome" data-slot="promote-outcome"></p>
+          <ol class="events" data-slot="promote-events"></ol>
+        </div>
       </section>
     </main>
 
     <footer>
       <p>Stop the dashboard with Ctrl-C in the terminal that started it.</p>
     </footer>
+
+    <script src="/ui/app.js"></script>
   </body>
 </html>
