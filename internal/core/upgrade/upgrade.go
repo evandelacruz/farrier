@@ -450,6 +450,13 @@ func runDeploy(ctx context.Context, job *events.Job, bumped *bundle.Bundle, opts
 	err := deploy.Up(ctx, deployJob, opts.Host, bumped, deploy.Options{
 		RemoteDir:  opts.RemoteDir,
 		CertIssuer: opts.CertIssuer,
+		// The one place in this codebase that sets it (UPGR-003): deploy.Up
+		// otherwise refuses to start a Forgejo version other than the one
+		// the host's state was last started under, since that restart is
+		// what runs the migrations. By here the pre-upgrade backup is
+		// written (UPGR-002) and the instance was healthy when the run
+		// started (UPGR-001), which is what earns the exemption.
+		Migrate: true,
 	})
 	<-relayed
 	if err != nil {

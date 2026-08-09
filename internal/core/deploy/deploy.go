@@ -44,6 +44,7 @@ const (
 	StepConfigureTLS    = "configure-tls"
 	StepConfigureState  = "configure-state"
 	StepConfigureSSHKey = "configure-ssh-host-key"
+	StepCheckVersion    = "check-state-version"
 	StepConverge        = "converge"
 	StepWaitForge       = "wait-forge"
 	StepWaitCaddy       = "wait-caddy"
@@ -98,6 +99,13 @@ type Options struct {
 	// substitute a fake so Up's sequencing is assertable without a real
 	// ACME server.
 	CertIssuer CertIssuer
+
+	// Migrate declares that this deployment is deliberately starting a
+	// different Forgejo version against the host's existing state, and so
+	// may run schema migrations. Only internal/core/upgrade sets it — that
+	// is the whole of UPGR-003's "during `upgrade` and at no other time",
+	// and it is why `up` has no flag for it. See checkStateVersion.
+	Migrate bool
 }
 
 // Up deploys b's full stateless layer to host (UP-001): it verifies Docker
@@ -122,9 +130,13 @@ type Options struct {
 // configureSSHHostKey always writes the same persisted key back (its own
 // doc comment), orchestrate.Converge is idempotent by construction (its
 // own doc comment), and forge.Bootstrap treats an admin account that
-// already exists as done rather than a failure. Nothing here reads back
-// what's already running before deciding what to do — the bundle alone
-// determines the outcome, same as Converge.
+// already exists as done rather than a failure.
+//
+// One step does read the host back before deciding: checkStateVersion
+// refuses to start a Forgejo version other than the one the host's state was
+// last started under, because that is what makes Forgejo migrate its schema,
+// and UPGR-003 puts migrations under `upgrade` alone. Up otherwise lets the
+// bundle alone determine the outcome, same as Converge.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
 // exactly once, after every step below has run (or the first one fails),
@@ -187,6 +199,14 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		return fmt.Errorf("deploy: configure ssh host key: %w", err)
 	}
 	job.Emit(StepConfigureSSHKey, events.StateSucceeded, "ssh host key installed")
+
+	job.Started(StepCheckVersion, "checking the pinned forgejo version against the host's state")
+	detail, err := checkStateVersion(ctx, host, b.Manifest.Images[forge.Service], opts.RemoteDir, opts.Migrate)
+	if err != nil {
+		job.Emit(StepCheckVersion, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: %w", err)
+	}
+	job.Emit(StepCheckVersion, events.StateSucceeded, detail)
 
 	job.Started(StepConverge, "converging host to bundle definition")
 	deployed := &bundle.Bundle{Manifest: b.Manifest, Compose: compose}

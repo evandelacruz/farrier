@@ -279,6 +279,13 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+	// Serve deploy.ReadStateVersion's read out of the same map WriteFile
+	// stores into, so the fake's reads and writes agree the way a real
+	// host's do — that agreement is what TestRestoreDoesNotMigrate rests on.
+	if rest, ok := strings.CutPrefix(command, "if [ -f '"); ok {
+		p, _, _ := strings.Cut(rest, "'")
+		return []byte(f.files[p]), nil
+	}
 	return nil, nil
 }
 
@@ -734,7 +741,7 @@ func TestRestoreEndToEnd(t *testing.T) {
 	wantSteps := []string{
 		StepFetch, StepDecrypt, StepVerify, StepInstallKeys, StepPlaceState, StepRestoreBlobs,
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
-		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepConverge,
+		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepCheckVersion, deploy.StepConverge,
 		deploy.StepWaitForge, deploy.StepWaitCaddy,
 	}
 	started := map[string]int{}

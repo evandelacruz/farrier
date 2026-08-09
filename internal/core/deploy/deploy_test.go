@@ -78,6 +78,15 @@ type fakeHost struct {
 	execFailures      int // number of leading `docker compose exec ... true` calls that fail
 	adminCreateErr    error
 	adminCreateStderr string
+
+	// readVersionErr fails the read of the recorded forge version
+	// (stateversion.go), standing in for an unreadable host.
+	readVersionErr error
+
+	// versionAtConverge is the recorded forge version as it stood the
+	// moment `docker compose up` ran — what lets a test assert Up records
+	// the version it is about to start *before* starting it.
+	versionAtConverge string
 }
 
 func newFakeHost() *fakeHost {
@@ -88,7 +97,33 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+
+	// Serve reads of the recorded forge version out of the same map
+	// WriteFile stores into, so the fake's reads and writes agree the way
+	// a real host's do — without that, every Up here would see an empty
+	// record and UPGR-003's check could never be exercised.
+	if p := stateVersionRead(command); p != "" {
+		if f.readVersionErr != nil {
+			return nil, f.readVersionErr
+		}
+		return []byte(f.files[p]), nil
+	}
+	if strings.Contains(command, "docker compose up") {
+		f.versionAtConverge = f.files[StateVersionPath("/opt/farrier")]
+	}
 	return nil, nil
+}
+
+// stateVersionRead returns the path a command reads the recorded forge
+// version from, or "" if it isn't that command — matching the shape
+// ReadStateVersion builds.
+func stateVersionRead(command string) string {
+	rest, ok := strings.CutPrefix(command, "if [ -f '")
+	if !ok {
+		return ""
+	}
+	p, _, _ := strings.Cut(rest, "'")
+	return p
 }
 
 func (f *fakeHost) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
