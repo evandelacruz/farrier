@@ -545,10 +545,25 @@ func TestRestoreEndToEnd(t *testing.T) {
 		t.Errorf("database content is empty")
 	}
 
-	// State was chowned to the forgejo user after content was placed.
+	// State was chowned to the forgejo user after content was placed
+	// (restore's own ChownState) and again for the ssh host key directory
+	// deploy.Up's configureSSHHostKey writes into afterward.
 	chowns := host.commandsContaining("chown -R")
-	if len(chowns) != 1 {
-		t.Fatalf("got %d chown -R commands, want 1: %v", len(chowns), host.commands)
+	if len(chowns) != 2 {
+		t.Fatalf("got %d chown -R commands, want 2: %v", len(chowns), host.commands)
+	}
+
+	// RSTR-004: deploy.Up installed the snapshot's own SSH host key —
+	// installed into the target keystore moments earlier by installKeys —
+	// where forge.RenderAppINI's SSH_SERVER_HOST_KEYS points Forgejo's
+	// git-over-SSH server, not a freshly generated one, so an existing
+	// known_hosts entry for this instance keeps working after the restore.
+	sshKeyPath := "/opt/farrier/state/gitea/" + strings.TrimPrefix(forge.SSHHostKeyPath, forge.DataPath+"/")
+	if got := host.files[sshKeyPath]; got != values[state.KeySSHHostKey] {
+		t.Errorf("shipped ssh host key = %q, want the snapshot's own %q", got, values[state.KeySSHHostKey])
+	}
+	if got := host.files[sshKeyPath+".pub"]; got != values[state.KeySSHHostKeyPublic] {
+		t.Errorf("shipped ssh host key public half = %q, want the snapshot's own %q", got, values[state.KeySSHHostKeyPublic])
 	}
 
 	// Blobs were restored into the target adapter.
@@ -582,7 +597,8 @@ func TestRestoreEndToEnd(t *testing.T) {
 	wantSteps := []string{
 		StepFetch, StepDecrypt, StepVerify, StepInstallKeys, StepPlaceState, StepRestoreBlobs,
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
-		deploy.StepConfigureState, deploy.StepConverge, deploy.StepWaitForge, deploy.StepWaitCaddy,
+		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepConverge,
+		deploy.StepWaitForge, deploy.StepWaitCaddy,
 	}
 	started := map[string]int{}
 	terminal := map[string]int{}

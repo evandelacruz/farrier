@@ -24,12 +24,16 @@
 // Compose is re-rendered from that override the same way orchestrate.Render
 // builds it at init time, before deploy.Up ever runs.
 //
-// This does not install the SSH host key onto the running Forgejo service
-// so an existing known_hosts entry keeps working (RSTR-004) —
-// restore.Restore installs it into the target keystore like every other
-// captured key, ready for RSTR-004 to wire up — and while reusing
-// backup.Verify already gives restore the specific, named refusal RSTR-003
-// requires, RSTR-003 itself is a separate ID with its own acceptance bar.
+// Restore installs the snapshot's key material into the target keystore
+// (installKeys) before deploy.Up ever runs; deploy.Up's own
+// configureSSHHostKey and configureTLS steps then install the same SSH
+// host key and TLS certificate the snapshot captured onto the running
+// service, rather than letting Forgejo generate a fresh one — so an
+// existing known_hosts entry and anything pinning the certificate keep
+// working after the restore (RSTR-004, spec.md "Identity" > "Key
+// material"). Reusing backup.Verify already gives restore the specific,
+// named refusal RSTR-003 requires; RSTR-003 itself is a separate ID with
+// its own acceptance bar.
 package restore
 
 import (
