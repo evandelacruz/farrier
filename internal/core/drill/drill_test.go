@@ -246,21 +246,36 @@ func testBundle(t *testing.T, keysDir string) *bundle.Bundle {
 // fakeHost implements Host (restore.Host: deploy.Host + RunStdin) without a
 // real SSH connection. failOn, when set, fails any command containing it —
 // how the failing-step tests drive a failure at a chosen step of the boot.
+// panicOn, when set, panics on any command containing it, standing in for a
+// bug anywhere under Drill.
+//
+// Every method honours its context the way a real SSH session does, failing
+// once it is canceled rather than running anyway. That is what makes
+// DRIL-003's canceled-context path testable: teardown runs on a context
+// deliberately detached from the caller's, and a fake that ignored
+// cancellation could not tell the difference.
 type fakeHost struct {
 	mu       sync.Mutex
 	files    map[string]string
 	commands []string
 	failOn   string
+	panicOn  string
 }
 
 func newFakeHost() *fakeHost {
 	return &fakeHost{files: make(map[string]string)}
 }
 
-func (f *fakeHost) record(command string) error {
+func (f *fakeHost) record(ctx context.Context, command string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+	if f.panicOn != "" && strings.Contains(command, f.panicOn) {
+		panic("fakeHost: panicking on command: " + command)
+	}
 	if f.failOn != "" && strings.Contains(command, f.failOn) {
 		return errors.New("fakeHost: command failed: " + command)
 	}
@@ -268,7 +283,7 @@ func (f *fakeHost) record(command string) error {
 }
 
 func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
-	if err := f.record(command); err != nil {
+	if err := f.record(ctx, command); err != nil {
 		return nil, err
 	}
 	// deploy.ReadStateVersion's read of the recorded forge version: serve it
@@ -286,6 +301,9 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 func (f *fakeHost) Close() error { return nil }
 
 func (f *fakeHost) WriteFile(ctx context.Context, path string, content []byte, mode uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.files[path] = string(content)
@@ -293,18 +311,18 @@ func (f *fakeHost) WriteFile(ctx context.Context, path string, content []byte, m
 }
 
 func (f *fakeHost) Run(ctx context.Context, command string, stdout, stderr io.Writer) error {
-	return f.record(command)
+	return f.record(ctx, command)
 }
 
 func (f *fakeHost) CheckHost(ctx context.Context) error {
-	return f.record("docker version")
+	return f.record(ctx, "docker version")
 }
 
 func (f *fakeHost) RunStdin(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if _, err := io.Copy(io.Discard, stdin); err != nil {
 		return err
 	}
-	return f.record(command)
+	return f.record(ctx, command)
 }
 
 func (f *fakeHost) commandsContaining(substr string) []string {
@@ -426,6 +444,7 @@ func TestDrillEndToEnd(t *testing.T) {
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
 		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepConverge,
 		deploy.StepWaitForge, deploy.StepWaitCaddy,
+		StepTeardown,
 	}
 	started, terminal := stepOutcomes(job)
 	for _, step := range wantSteps {
