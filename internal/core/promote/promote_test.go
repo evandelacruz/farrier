@@ -244,6 +244,13 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+	// deploy.ReadStateVersion's read of the recorded forge version: serve it
+	// out of the same map WriteFile stores into, so the fake's reads and
+	// writes agree the way a real host's do (UPGR-003).
+	if rest, ok := strings.CutPrefix(command, "if [ -f '"); ok {
+		p, _, _ := strings.Cut(rest, "'")
+		return []byte(f.files[p]), nil
+	}
 	return nil, nil
 }
 

@@ -73,6 +73,21 @@ func placeState(ctx context.Context, job *events.Job, plainDir string, manifest 
 		return err
 	}
 
+	// The database now on this host is the one the snapshot captured, so the
+	// version that wrote it is the snapshot's, whatever the host held before
+	// — a scratch target reused between drills may well have held something
+	// else. Stamping it here, next to the database it describes, is what
+	// lets runDeploy's own deploy.Up see the version it is about to boot
+	// (manifest.ForgejoVersion, RSTR-002) match the state in front of it and
+	// proceed without an exemption: a restore never migrates (UPGR-003,
+	// spec.md "Version pinning"), and this is where that becomes checkable
+	// rather than merely true.
+	if err := deploy.RecordStateVersion(ctx, opts.Host, opts.RemoteDir, manifest.ForgejoVersion); err != nil {
+		err = fmt.Errorf("restore: %w", err)
+		job.Emit(StepPlaceState, events.StateFailed, err.Error())
+		return err
+	}
+
 	job.Emit(StepPlaceState, events.StateSucceeded, fmt.Sprintf("restored %d repository(ies) and the database", len(names)))
 	return nil
 }

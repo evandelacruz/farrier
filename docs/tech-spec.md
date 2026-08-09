@@ -88,11 +88,16 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
                                                     bundle's SSH host key)
 <RemoteDir>/state/blobs    created, not mounted — reserved for a `local` blob
                            adapter; no container reads it today
+<RemoteDir>/state/forgejo-version
+                           the Forgejo image this state has been started
+                           under; one line, not mounted
 ```
+
+`forgejo-version` is what makes UPGR-003 checkable. Forgejo migrates its schema whenever it starts on a version newer than the database it opens, so migrations are decided entirely by which image starts against which state. `deploy.Up` records the image it is about to start here, before starting it, and refuses to start any other image against state this file already names — the exemption is `upgrade`, which has taken a backup and gated on health by then. `restore` stamps the snapshot's own version alongside the database it places, so the version it then boots (spec.md "Version pinning") matches by construction. It is a property of this host's state, not of the bundle, which is why it lives here: two hosts restored from the same bundle can legitimately carry different values. An absent file means *unknown* — a fresh host, or one deployed before this record existed — and is not treated as a migration.
 
 This is what makes spec.md's stateless/stateful split real. Containers are the disposable half and are recreated on any config change, so no stateful kind may live inside one. `<RemoteDir>/state` is the one directory on the host that is not disposable.
 
-`deploy.GitStatePath`, `deploy.GiteaStatePath`, and `deploy.BlobsStatePath` are this layout's single spelling. Deploy, backup, and restore all call them rather than rebuilding the paths independently — three copies of one layout decision is how it drifts.
+`deploy.GitStatePath`, `deploy.GiteaStatePath`, `deploy.BlobsStatePath`, and `deploy.StateVersionPath` are this layout's single spelling. Deploy, backup, and restore all call them rather than rebuilding the paths independently — three copies of one layout decision is how it drifts.
 
 ## State export interfaces
 
