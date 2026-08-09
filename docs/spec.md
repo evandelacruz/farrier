@@ -146,8 +146,8 @@ Failover is a manual, operator-initiated promotion with an accepted data-loss wi
 - The CLI shows replication lag before promotion.
 - Promotion runs four steps:
   1. Verify standby state currency; display lag.
-  2. Start stateless services on the standby against the restored state.
-  3. Reconcile CI: jobs marked `running` in the restored database are orphans, reset to `queued`; they and all queued jobs re-dispatch to runners automatically, each in a fresh workspace.
+  2. Reconcile CI: jobs marked `running` in the restored database are orphans — an artifact of capturing state mid-flight — so the reset to `queued` runs against the snapshot's database before it is placed on the host, ahead of the next step; they and all queued jobs re-dispatch to runners automatically, each in a fresh workspace, once services start.
+  3. Start stateless services on the standby against the restored state.
   4. Flip DNS via a configured driver, or print the exact record change.
 - DNS is the failover path's single external dependency. An outage at the operator's DNS provider sits outside the system's coverage and is documented as such.
 
