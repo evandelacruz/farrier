@@ -1,17 +1,19 @@
 # Branch: claude/xcut-001
 
 Tracking branch for XCUT-001 (remaining slice) — extend the relocated-bundle
-portability proof to the `backup` CLI/core path.
+portability proof to the `restore` core path.
 
-`TestUpSucceedsFromBundleCopiedToAnotherDirectory` already proves `up`
-survives a bundle physically relocated after the directory it was saved to
-no longer exists. This adds `TestBackupSucceedsFromBundleCopiedToAnotherDirectory`
-(`internal/core/backup`), the same proof for `backup`: the keystore driver,
-blob adapter, and age backup key it resolves from a loaded bundle all work
-after relocation.
+`TestUpSucceedsFromBundleCopiedToAnotherDirectory` and
+`TestBackupSucceedsFromBundleCopiedToAnotherDirectory` already prove `up`
+and `backup` survive a bundle physically relocated after the directory it
+was saved to no longer exists. This adds
+`TestRestoreSucceedsFromBundleCopiedToAnotherDirectory`
+(`internal/core/restore`), the same proof for `restore`: the keystore
+driver, blob adapter, and age backup key it resolves from a loaded bundle
+all work after relocation.
 
-XCUT-001 stays `partial` — restore, promote, upgrade, and drill still need
-the same proof once each lands.
+XCUT-001 stays `partial` — promote, upgrade, and drill still need the same
+proof once each lands (FAIL-*, UPGR-*, DRIL-* are still open).
 
 See `docs/functional-requirements.md` § XCUT and `docs/status.json`.
 
