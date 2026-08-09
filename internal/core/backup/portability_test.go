@@ -117,7 +117,7 @@ func TestBackupSucceedsFromBundleCopiedToAnotherDirectory(t *testing.T) {
 	opts.PushHold = &fakePushHold{}
 
 	job := events.NewJob()
-	if err := Backup(ctx, job, opts); err != nil {
+	if _, err := Backup(ctx, job, opts); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 	assertJobSucceeded(t, job)

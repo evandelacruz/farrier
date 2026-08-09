@@ -155,5 +155,8 @@ func (s *Server) runBackup(job *events.Job, b *bundle.Bundle, target, destinatio
 	}
 
 	opts := backup.BuildOptions(host, b, remoteDir, workDir, destination, identity, blobAdapter, keystoreDriver)
-	s.backupRun(ctx, job, opts)
+	// The snapshot key Backup returns is already on the job's terminal
+	// event, which is what SSE clients read — the API has nothing to
+	// add to it.
+	_, _ = s.backupRun(ctx, job, opts)
 }

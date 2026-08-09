@@ -70,7 +70,11 @@ func runBackup(args []string) int {
 
 	job := events.NewJob()
 	err = runJob(job, func() error {
-		return backup.Backup(ctx, job, opts)
+		// The snapshot key Backup returns is already on the job's
+		// terminal event, which runJob prints — the CLI has nothing to
+		// add to it.
+		_, backupErr := backup.Backup(ctx, job, opts)
+		return backupErr
 	})
 
 	if err != nil {

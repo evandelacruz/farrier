@@ -19,10 +19,12 @@
 // first would silently embed the post-upgrade version into what's supposed
 // to be a pre-upgrade snapshot, breaking both "every backup embeds the
 // exact Forgejo version that wrote it" and "restore always runs that exact
-// version" (spec.md "Version pinning") at once. That backup is also never
-// touched again by Upgrade — on any exit path — so a failed upgrade always
-// leaves the operator with a pre-upgrade snapshot and a working path back
-// to it (UPGR-002, a separate ID this package doesn't otherwise implement).
+// version" (spec.md "Version pinning") at once.
+//
+// That same ordering is what makes UPGR-002 reachable: once the backup has
+// been written, every later failure path reports the snapshot it produced
+// and the command that restores it, and nothing ever removes it. See
+// recovery.go.
 package upgrade
 
 import (
@@ -167,7 +169,46 @@ func (o Options) validate() error {
 	if o.Host == nil {
 		return errors.New("upgrade: host is required")
 	}
+	if inside, err := destinationInsideWorkDir(o.Destination, o.WorkDir); err != nil {
+		return err
+	} else if inside {
+		return fmt.Errorf("upgrade: backup destination %s is inside the work directory %s, which is deleted when upgrade returns; name a destination outside it", o.Destination, o.WorkDir)
+	}
 	return nil
+}
+
+// destinationInsideWorkDir reports whether destination is a filesystem
+// path at or beneath workDir. Upgrade deletes workDir and everything under
+// it on every exit path, so such a destination would take the pre-upgrade
+// snapshot with it on exactly the failure UPGR-002 exists to survive —
+// refusing up front is the only place that can be caught before the backup
+// is taken.
+//
+// A destination is a filesystem path unless it is an s3:// URI, matching
+// how backup.OpenDestination itself decides (BKUP-005): anything else,
+// including a string that merely looks scheme-ish, is passed to
+// blob.NewLocal as a path.
+func destinationInsideWorkDir(destination, workDir string) (bool, error) {
+	if strings.HasPrefix(destination, "s3://") {
+		return false, nil
+	}
+	absDest, err := filepath.Abs(destination)
+	if err != nil {
+		return false, fmt.Errorf("upgrade: resolve backup destination %s: %w", destination, err)
+	}
+	absWork, err := filepath.Abs(workDir)
+	if err != nil {
+		return false, fmt.Errorf("upgrade: resolve work directory %s: %w", workDir, err)
+	}
+	rel, err := filepath.Rel(absWork, absDest)
+	if err != nil {
+		// Different volumes on Windows: not nested, by construction.
+		return false, nil
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false, nil
+	}
+	return true, nil
 }
 
 // Upgrade runs UPGR-001 end to end as one CORE-002 job: refuse unless the
@@ -179,9 +220,18 @@ func (o Options) validate() error {
 //
 // Upgrade owns job's terminal event, calling job.Succeeded or job.Failed
 // exactly once, after every step below has run or the first one fails.
+//
+// A failure past the pre-upgrade backup carries the path back to the
+// pre-upgrade version (UPGR-002, recovery.go) on both the returned error
+// and a StepRecoveryPath event, so the operator sees it whichever frontend
+// they ran the upgrade from.
 func Upgrade(ctx context.Context, job *events.Job, opts Options) error {
-	version, err := upgrade(ctx, job, opts)
+	version, recovery, err := upgrade(ctx, job, opts)
 	if err != nil {
+		if recovery != nil {
+			job.Emit(StepRecoveryPath, events.StateSucceeded, recovery.Detail())
+			err = fmt.Errorf("%w\n%s", err, recovery.Detail())
+		}
 		job.Failed(err.Error())
 		return err
 	}
@@ -189,37 +239,52 @@ func Upgrade(ctx context.Context, job *events.Job, opts Options) error {
 	return nil
 }
 
-func upgrade(ctx context.Context, job *events.Job, opts Options) (string, error) {
+// upgrade runs the sequence and returns, alongside any failure, the
+// Recovery describing the path back — non-nil from the moment the
+// pre-upgrade backup lands, nil before it, because before it there is no
+// snapshot from this run to point at and nothing has changed yet either.
+func upgrade(ctx context.Context, job *events.Job, opts Options) (string, *Recovery, error) {
 	if err := opts.validate(); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if err := os.MkdirAll(opts.WorkDir, 0o700); err != nil {
-		return "", fmt.Errorf("upgrade: create work directory: %w", err)
+		return "", nil, fmt.Errorf("upgrade: create work directory: %w", err)
 	}
+	// Removes local scratch only. The pre-upgrade snapshot lives at
+	// opts.Destination, which validate has already refused to let nest
+	// inside WorkDir (UPGR-002).
 	defer os.RemoveAll(opts.WorkDir)
 
 	if err := checkHealthy(ctx, job, opts, opts.Bundle, StepCheckHealth, "refusing to upgrade"); err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	if err := runBackup(ctx, job, opts); err != nil {
-		return "", err
+	snapshotKey, err := runBackup(ctx, job, opts)
+	if err != nil {
+		return "", nil, err
+	}
+	recovery := &Recovery{
+		Destination:    opts.Destination,
+		SnapshotKey:    snapshotKey,
+		ForgejoVersion: opts.Bundle.Manifest.Images[forge.Service],
+		Target:         opts.Host.Target().String(),
+		BundleDir:      opts.BundleDir,
 	}
 
 	bumped, err := bumpVersion(ctx, job, opts)
 	if err != nil {
-		return "", err
+		return "", recovery, err
 	}
 
 	if err := runDeploy(ctx, job, bumped, opts); err != nil {
-		return "", err
+		return "", recovery, err
 	}
 
 	if err := checkHealthy(ctx, job, opts, bumped, StepVerify, "upgraded instance failed verification"); err != nil {
-		return "", err
+		return "", recovery, err
 	}
 
-	return bumped.Manifest.Images[forge.Service], nil
+	return bumped.Manifest.Images[forge.Service], nil, nil
 }
 
 // checkHealthy runs status.Check against b and refuses — naming every
@@ -280,7 +345,9 @@ func unhealthy(r status.Report) []string {
 // relay pattern promote.restoreOnto and backup.runCapture already use: a
 // shared job here would close job's stream the moment Backup finishes and
 // panic on every Emit call Upgrade made afterward.
-func runBackup(ctx context.Context, job *events.Job, opts Options) error {
+// It returns the destination key the snapshot was written under, which is
+// what a later failure points the operator back at (UPGR-002).
+func runBackup(ctx context.Context, job *events.Job, opts Options) (string, error) {
 	backupJob := events.NewJob()
 	stream, cancel := backupJob.Subscribe()
 	defer cancel()
@@ -297,12 +364,12 @@ func runBackup(ctx context.Context, job *events.Job, opts Options) error {
 	}()
 
 	backupOpts := backup.BuildOptions(opts.Host, opts.Bundle, opts.RemoteDir, filepath.Join(opts.WorkDir, "backup"), opts.Destination, opts.Identity, opts.Blobs, opts.Keystore)
-	err := backup.Backup(ctx, backupJob, backupOpts)
+	key, err := backup.Backup(ctx, backupJob, backupOpts)
 	<-relayed
 	if err != nil {
-		return fmt.Errorf("upgrade: pre-upgrade backup: %w", err)
+		return "", fmt.Errorf("upgrade: pre-upgrade backup: %w", err)
 	}
-	return nil
+	return key, nil
 }
 
 // bumpVersion resolves opts.NewImage to a digest and returns a copy of

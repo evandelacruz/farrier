@@ -103,7 +103,7 @@ func buildSnapshotWithRunner(t *testing.T) (blob.Adapter, *age.X25519Identity) {
 		PushHold:       backup.NoopPushHold{},
 	}
 	job := events.NewJob()
-	if err := backup.Backup(context.Background(), job, opts); err != nil {
+	if _, err := backup.Backup(context.Background(), job, opts); err != nil {
 		t.Fatalf("build snapshot: Backup: %v", err)
 	}
 

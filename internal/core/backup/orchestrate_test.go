@@ -42,7 +42,8 @@ func TestBackupEndToEnd(t *testing.T) {
 	opts := validOptions(t)
 	job := events.NewJob()
 
-	if err := Backup(context.Background(), job, opts); err != nil {
+	key, err := Backup(context.Background(), job, opts)
+	if err != nil {
 		t.Fatalf("Backup: %v", err)
 	}
 
@@ -55,6 +56,12 @@ func TestBackupEndToEnd(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("destination has %d entries, want 1: %v", len(entries), entries)
+	}
+	// The returned key names that object, so a caller that took the backup
+	// on the operator's behalf can point at the exact snapshot afterwards
+	// (upgrade.Upgrade does, for UPGR-002).
+	if key != entries[0].Name() {
+		t.Errorf("Backup returned key %q, want the written object %q", key, entries[0].Name())
 	}
 	if filepath.Ext(entries[0].Name()) != ".age" {
 		t.Errorf("destination object %q does not look like a snapshot archive", entries[0].Name())
@@ -115,7 +122,7 @@ func TestBackupMissingWorkDir(t *testing.T) {
 	opts.WorkDir = ""
 	job := events.NewJob()
 
-	if err := Backup(context.Background(), job, opts); err == nil {
+	if _, err := Backup(context.Background(), job, opts); err == nil {
 		t.Fatal("Backup: want error for missing work directory, got nil")
 	}
 	assertJobFailed(t, job)
@@ -126,7 +133,7 @@ func TestBackupMissingIdentity(t *testing.T) {
 	opts.Identity = nil
 	job := events.NewJob()
 
-	if err := Backup(context.Background(), job, opts); err == nil {
+	if _, err := Backup(context.Background(), job, opts); err == nil {
 		t.Fatal("Backup: want error for missing identity, got nil")
 	}
 	assertJobFailed(t, job)
@@ -137,7 +144,7 @@ func TestBackupResolveDestinationFails(t *testing.T) {
 	opts.Destination = ""
 	job := events.NewJob()
 
-	if err := Backup(context.Background(), job, opts); err == nil {
+	if _, err := Backup(context.Background(), job, opts); err == nil {
 		t.Fatal("Backup: want error for an unresolvable destination, got nil")
 	}
 	assertJobFailed(t, job)
@@ -153,7 +160,7 @@ func TestBackupCaptureFails(t *testing.T) {
 	opts.Database = &fakeDatabaseExporter{err: errors.New("database unreachable")}
 	job := events.NewJob()
 
-	if err := Backup(context.Background(), job, opts); err == nil {
+	if _, err := Backup(context.Background(), job, opts); err == nil {
 		t.Fatal("Backup: want error when capture fails, got nil")
 	}
 	assertJobFailed(t, job)
@@ -169,7 +176,7 @@ func TestBackupCaptureFailsLeavesNoObjectAtDestination(t *testing.T) {
 	opts.Database = &fakeDatabaseExporter{err: errors.New("database unreachable")}
 	job := events.NewJob()
 
-	if err := Backup(context.Background(), job, opts); err == nil {
+	if _, err := Backup(context.Background(), job, opts); err == nil {
 		t.Fatal("Backup: want error, got nil")
 	}
 
