@@ -26,6 +26,7 @@
     "FORGE-002": "landed",
     "FORGE-003": "landed",
     "FORGE-004": "landed",
+    "FORGE-005": "open",
     "ACME-001": "landed",
     "ACME-002": "landed",
     "DNS-001": "landed",
@@ -66,7 +67,7 @@
     "UPGR-003": "open",
     "DRIL-001": {
       "state": "partial",
-      "remaining": "The smoke CI job. internal/core/drill (plus `farrier drill` and POST /drill) resolves the most recent snapshot at the destination, restores it onto the scratch target, boots the full stack there (restore.Restore, which ends in deploy.Up), never touches DNS, and reports success or the specific failing step. It does not run a smoke CI job, because nothing can dispatch one yet: the bundle ships no Forgejo Actions runner (initialize.DefaultImageRefs pins forgejo and caddy only), and the runner's shape is not settled anywhere in docs/ — which manifest image key it takes, how it registers against a restored instance running an arbitrary pinned Forgejo version, and whether a colocated runner is given the host Docker socket, which bears on spec.md 'CI trust boundary'. That decision is Evan's, and it is raised on the DRIL-001 PR. Once the runner lands, add the smoke-CI step to internal/core/drill: create a scratch repository with one trivial workflow on the drilled instance, wait for its run to finish, and fold the outcome into drill.Report the same way the restore steps already are."
+      "remaining": "The smoke CI job, which needs the colocated Actions runner FORGE-005 now specifies. internal/core/drill (plus `farrier drill` and POST /drill) already resolves the most recent snapshot at the destination, restores it onto the scratch target, boots the full stack there, never touches DNS, and reports success or the specific failing step. It cannot dispatch a job because the bundle ships no runner yet. Evan settled the question the DRIL-001 PR raised: the colocated runner holds the host's Docker socket, with remote runners as the escape hatch (spec.md 'CI trust boundary'). Once FORGE-005 lands, add the smoke-CI step to internal/core/drill: create a scratch repository with one trivial workflow on the drilled instance, wait for its run to finish, and fold the outcome into drill.Report the same way the restore steps already are. A drill's runner must respect DRIL-002's quarantine once that lands."
     },
     "DRIL-002": "open",
     "DRIL-003": "open",

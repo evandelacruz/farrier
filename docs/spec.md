@@ -21,7 +21,7 @@ In scope:
 Every component is fully open source: Forgejo (GPL-3.0+), Forgejo Actions runner (MIT), SQLite (public domain), Caddy and Docker Compose (Apache 2). Components run as orchestrated containers, so their licenses place zero constraints on this project's own code.
 
 - **Forge and CI:** Forgejo with Forgejo Actions (GitHub Actions-compatible syntax). One component covers git, pull requests, review, secrets, and CI orchestration — including Forgejo's complete web UI for daily use.
-- **Runners:** Forgejo Actions runners. Colocated on the forge host by default; remote runners connect outbound to the bundle domain.
+- **Runners:** Forgejo Actions runners. The bundle deploys one colocated on the forge host by default, so a fresh `up` gives working CI; remote runners connect outbound to the bundle domain. Actions runs each job in a container, so the runner needs the host's Docker socket to start them — see "CI trust boundary" for the trade that carries, and for the remote-runner escape hatch.
 - **Database:** SQLite in WAL mode, managed by Forgejo. Forgejo's database holds metadata (users, pull requests, reviews, CI queue) while git data lives on disk, so the write load fits SQLite comfortably at the target scale: teams into the hundreds of users and thousands of repositories. SQLite also makes the database a single file with a clean online-backup API.
 - **TLS termination:** Caddy, as a dumb terminator. The core owns ACME and hands Caddy its certificates.
 - **Substrate:** Docker Compose on any Linux host with SSH. The Compose definitions are the bundle definition; the CLI wraps them.
@@ -86,6 +86,18 @@ Public repositories work on a Farrier instance and are not restricted. They are 
 ## CI trust boundary
 
 The instance is single-tenant: CI exists to run the team's own code, isolated at the container level. The one place outside code can reach CI is a fork pull request on a public repository, so fork-PR workflows require maintainer approval before running — Forgejo enforces this unconditionally once Actions is enabled, which the bundle does by default. Private repositories, the target case, do not present this surface at all. Isolation against deliberately hostile code beyond container level is outside the design.
+
+### The colocated runner holds the host's Docker socket
+
+Actions runs every job step in a container the workflow names, so the runner must be able to create containers — and a container cannot do that alone. The colocated runner is therefore given the host's Docker socket. Anything that can reach that socket can start any container, including one mounting the whole host filesystem, so **a workflow that runs on the default deployment can take the forge host** — the same host holding git data and the database.
+
+This is stated plainly because "isolated at the container level" reads stronger than what ships. It is a deliberate trade, on these grounds:
+
+- It is what self-hosted Actions normally does, so it is the least surprising thing for an operator to find.
+- The alternatives do not buy isolation cheaply. Privileged Docker-in-Docker is equally root on the host. Rootless Docker-in-Docker is genuinely isolated but needs specific storage-driver and kernel support, which contradicts running on any Linux host with Docker and SSH.
+- The realistic threat is not a teammate writing hostile code; it is a compromised build dependency executing during a job. That risk exists in every CI system. What Farrier changes is the blast radius, since the runner sits on the host that holds the state.
+
+**The escape hatch is topology, not configuration.** An operator who does not want that risk on the forge host disables the colocated runner and registers a remote one against the bundle domain. The remote runner's own host still holds a Docker socket — the risk moves rather than disappearing — but it moves onto a disposable machine that carries no forge state. Nothing else about the instance changes: runner registrations live in the database and survive backup, restore, and promotion either way.
 
 ## Importing repositories
 
