@@ -79,6 +79,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **UP-002** · `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately.
 - **UP-003** · Re-running `up` against a live host must be safe and must converge that host to the bundle definition.
 - **UP-004** · `up` must place every stateful kind the forge itself serves — git repositories, the database, and LFS objects — on a host directory bind-mounted into the container that serves it, so recreating or replacing a container never destroys forge state. A `local` blob adapter's directory is created on the host but not mounted; no container reads it.
+- **UP-005** · `up` must serve git over SSH at the bundle domain, published on host port 2222, using the bundle's SSH host key — so `git clone` and `git push` over SSH work against a fresh deployment, and the SSH clone URL Forgejo displays is the one that works. A restored or promoted instance must answer on the same port with the same key (RSTR-004).
 
 ## IMPT — repository import
 

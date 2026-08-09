@@ -62,6 +62,15 @@ A forge's identity — its URL, its keys, its certificates — is what welds it 
 - `init` proves zone control via an ACME DNS-01 challenge, front-loading the project's one external dependency to day one.
 - Records are created with a 60-second TTL so DNS flips land within the promotion downtime window.
 
+### Reaching the forge
+
+Two ports carry every client protocol, and both are part of the identity the bundle owns:
+
+- **HTTPS on 443**, terminated by Caddy with a core-issued certificate. Browser, REST API, git-over-HTTPS, and LFS all arrive here.
+- **Git over SSH on 2222**, served by Forgejo's own SSH server using the bundle's host key. The host's sshd keeps port 22 — `up` reaches hosts over it (ORCH-001) and moving it would require configuration on the host that Farrier deliberately does not ask for. The cost is a port in the SSH clone URL, which Forgejo renders into the URLs it displays.
+
+The host key is bundle key material, so a restored or promoted instance answers on the same port with the same key and existing remotes and `known_hosts` entries keep working.
+
 ### Key material
 
 Generated at `init`, carried through every backup and restore:
@@ -207,6 +216,26 @@ The full lifecycle — create, deploy, import, protect, relocate, verify, upgrad
 `drill` keeps the escape hatch verified instead of trusted. It restores the most recent backup onto a scratch target (remote host or local container), boots the full stack in quarantine, runs a smoke CI job, and reports success or the specific failure.
 
 Quarantine exists because a drill instance carries production's identity. In drill mode: outbound notifications (webhooks, email) are disabled by config override, DNS stays untouched, and the operator reaches the instance through an SSH tunnel. The drill proves the backup restores and CI runs while the outside world hears nothing.
+
+## Farrier hosts Farrier
+
+The project moves its own development onto an instance it deploys. This is the acceptance test for the whole system: every command runs against real work, on a repository whose loss would matter, operated by the person who wrote it.
+
+The cutover, in order:
+
+1. `init` a bundle for the project's domain, then `up` it on a host.
+2. `import` this repository from GitHub — code, full history, LFS objects, default branch.
+3. Re-enter CI secrets and re-create branch protection on the new instance. Neither travels with an import, and neither is Farrier's to carry: they are Forgejo configuration the operator owns.
+4. Land one pull request end to end — branch, push over SSH, review, green CI on a Forgejo Actions runner, merge.
+5. `backup`, then `drill`, before the GitHub copy stops being the working one.
+
+**Milestone met** when step 4 lands and step 5 passes. Issue and pull-request history stay on GitHub; the repository moves, its GitHub metadata does not.
+
+### The bundle cannot live only on the forge it deploys
+
+A bundle is designed to live in a private git repository, and the obvious place to put it is the forge it describes. That is a loop: the instance goes down, and the bundle needed to restore it is inside the thing that is down.
+
+So the bundle repository lives outside the instance it deploys — on the operator's machine and at least one remote the instance does not serve. The instance may hold a copy; it may not hold the only one. This is the operator's discipline rather than an enforced constraint, and it is the one rule this milestone adds to how the bundle is kept.
 
 ## Distribution and licensing
 
