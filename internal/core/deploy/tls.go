@@ -89,6 +89,22 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 // at the bundle domain, because that certificate is part of the identity
 // the rehearsal is proving restorable, and a drill that skipped it would
 // prove less than a real restore.
+//
+// quarantine also gives Caddy the bundle domain as a Docker network alias
+// (orchestrate.WithNetworkAlias), so containers beside it on the
+// deployment's network resolve the domain to this Caddy rather than to
+// whatever public DNS says. The colocated Actions runner is why: it
+// connects to https://<domain>/ (forge.RunnerInstanceURL), a drill
+// deliberately leaves the bundle's DNS record pointing at production
+// (DRIL-001), and the drilled runner holds the same registration secret
+// production's does — so without the alias a drill would stand up a second
+// runner polling production's job queue and executing production's CI on
+// the scratch host. The alias keeps the drilled instance's own runner
+// talking to the drilled instance. It changes no DNS record, publishes no
+// port, and leaves the runner's configuration byte-identical to
+// production's, so the rehearsal still exercises the real path: runner to
+// Caddy over HTTPS at the bundle domain, with the snapshot's own
+// certificate.
 func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte, issuer CertIssuer, quarantine bool) (map[string][]byte, bool, error) {
 	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
@@ -158,6 +174,12 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("publish https port: %w", err)
+	}
+	if quarantine {
+		compose, err = orchestrate.WithNetworkAlias(compose, caddy.Service, b.Manifest.Domain)
+		if err != nil {
+			return nil, false, fmt.Errorf("alias the bundle domain onto caddy: %w", err)
+		}
 	}
 	return compose, renewed, nil
 }

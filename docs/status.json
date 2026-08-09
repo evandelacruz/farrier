@@ -65,10 +65,7 @@
     "UPGR-001": "landed",
     "UPGR-002": "landed",
     "UPGR-003": "landed",
-    "DRIL-001": {
-      "state": "partial",
-      "remaining": "The smoke CI job, which needs the colocated Actions runner FORGE-005 now specifies. internal/core/drill (plus `farrier drill` and POST /drill) already resolves the most recent snapshot at the destination, restores it onto the scratch target, boots the full stack there, never touches DNS, and reports success or the specific failing step. It cannot dispatch a job because the bundle ships no runner yet. Evan settled the question the DRIL-001 PR raised: the colocated runner holds the host's Docker socket, with remote runners as the escape hatch (spec.md 'CI trust boundary'). Once FORGE-005 lands, add the smoke-CI step to internal/core/drill: create a scratch repository with one trivial workflow on the drilled instance, wait for its run to finish, and fold the outcome into drill.Report the same way the restore steps already are. DRIL-002's quarantine has landed and applies to every drilled instance, so the smoke job inherits it: the drilled runner boots against an instance that cannot send webhooks or email and publishes no routable port."
-    },
+    "DRIL-001": "landed",
     "DRIL-002": "landed",
     "DRIL-003": "landed",
     "STAT-001": "landed",

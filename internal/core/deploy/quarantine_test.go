@@ -145,3 +145,38 @@ func checksumOf(t *testing.T, composed string) string {
 	t.Fatalf("compose file carries no %s: %s", appINIChecksumEnv, composed)
 	return ""
 }
+
+// TestQuarantinedUpAliasesTheBundleDomainOntoCaddy is what makes a drilled
+// instance self-contained rather than merely unreachable. The colocated
+// runner connects to the bundle domain, and a drill leaves DNS pointing
+// that domain at production (DRIL-001), so without the alias the drilled
+// runner would resolve it to production, attach to production's job queue
+// with the bundle's own runner secret, and run production's CI on the
+// scratch host.
+func TestQuarantinedUpAliasesTheBundleDomainOntoCaddy(t *testing.T) {
+	host := newFakeHost()
+
+	if err := Up(context.Background(), events.NewJob(), host, testBundle(t), quarantineOptions("/opt/farrier")); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	composed := shippedCompose(t, host, "/opt/farrier")
+	if !strings.Contains(composed, "aliases:") || !strings.Contains(composed, "- example.com") {
+		t.Errorf("quarantined compose does not alias the bundle domain onto caddy: %s", composed)
+	}
+}
+
+// The alias is a drill-only override, like everything else quarantine
+// changes: on a production host the domain resolves to that host already,
+// and rewriting the resolution there would be a change nobody asked for.
+func TestUnquarantinedUpAddsNoDomainAlias(t *testing.T) {
+	host := newFakeHost()
+
+	if err := Up(context.Background(), events.NewJob(), host, testBundle(t), testOptions("/opt/farrier")); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	if composed := shippedCompose(t, host, "/opt/farrier"); strings.Contains(composed, "aliases:") {
+		t.Errorf("ordinary compose carries a network alias: %s", composed)
+	}
+}

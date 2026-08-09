@@ -1,7 +1,7 @@
 // Package drill implements the rehearsal command `drill` (DRIL-001):
 // restore the most recent backup onto a scratch target, boot the full
-// stack there, report success or the specific step that failed, and leave
-// the scratch target clean (DRIL-003).
+// stack there, run a smoke CI job, report success or the specific step that
+// failed, and leave the scratch target clean (DRIL-003).
 //
 // Drill sequences already-landed pieces rather than reimplementing any of
 // them. backup.SnapshotAge resolves the newest snapshot at the destination
@@ -11,7 +11,29 @@
 // naming the defect, installs the snapshot's original identity, and ends by
 // running deploy.Up (UP-001..004), which is what "boot the full stack"
 // means here: the same converge, readiness wait, and admin bootstrap a real
-// deployment runs, against the state the restore just placed.
+// deployment runs, against the state the restore just placed. forge.SmokeCI
+// then runs the smoke job on the instance that just booted.
+//
+// # The smoke CI job
+//
+// A restore that boots proves the state came back. It does not prove the
+// forge can do the thing a team stops working without, so the last step of
+// the rehearsal creates a scratch repository on the drilled instance with
+// one trivial workflow, lets the commit dispatch it, and waits for the run
+// to finish (forge.SmokeCI, whose doc comment covers how). The outcome folds
+// into Report exactly like the restore steps: success, or forge.StepSmokeCI
+// named as the step that failed.
+//
+// It exercises the colocated runner FORGE-005 deploys, unchanged and
+// unstubbed — the drill neither adds a runner nor checks whether one exists
+// first. A drilled instance with no runner able to claim the job is a
+// finding, not a special case, and is reported as the run never starting.
+//
+// The smoke job is the last step of the rehearsal, not the last step of the
+// drill: teardown still follows it, and follows it on the path where the
+// smoke job is what failed. Nothing about the scratch repository needs
+// cleaning up on its own — teardown removes the drilled instance whole
+// (DRIL-003), and the repository lived only inside it.
 //
 // # What drill adds on top of restore
 //
@@ -50,8 +72,8 @@
 //
 // A drilled instance can reach the snapshot it restored and nothing
 // outside its host; the operator can reach it through an SSH tunnel to
-// that host and nobody else can reach it at all. Three properties, in
-// three places:
+// that host and nobody else can reach it at all. Four properties, in four
+// places:
 //
 //   - Outbound webhooks, email, and mirrors are disabled in the rendered
 //     app.ini (forge.AppINIOptions.Quarantine), reached from here through
@@ -65,7 +87,19 @@
 //     interface rather than on every interface
 //     (orchestrate.WithLoopbackPorts, via deploy.Options.Quarantine), so
 //     the only route in is an SSH tunnel terminating on that host — the
-//     same SSH access Farrier already needs to run the drill at all.
+//     same SSH access Farrier already needs to run the drill at all. The
+//     smoke job inherits this rather than working around it: it drives the
+//     instance from inside its own container over that SSH session, and
+//     opens nothing.
+//   - The bundle domain resolves, on the drilled host's Docker network, to
+//     the drilled Caddy (orchestrate.WithNetworkAlias, also via
+//     deploy.Options.Quarantine). The colocated runner connects to the
+//     bundle domain and DNS still points that domain at production, so
+//     without the alias the drilled runner would attach to production's job
+//     queue — with the same runner secret production's own runner holds —
+//     and run production's CI on the scratch host. The alias is why the
+//     smoke job's run is claimed by the drilled instance's runner and by
+//     nothing else.
 //
 // What quarantine does not do is make the scratch target itself safe to
 // share: anything with a shell on that host can reach the instance over
@@ -119,6 +153,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/restore"
 )
@@ -196,6 +231,13 @@ type Options struct {
 	// Now overrides the clock the drilled snapshot's age is measured
 	// against. Zero uses time.Now.
 	Now time.Time
+
+	// SmokeTimeout bounds how long the drill waits for its smoke CI job to
+	// finish once the workflow is committed. Zero uses forge.SmokeCI's own
+	// default, which is what every frontend passes: the wait is dominated by
+	// the drilled host pulling a job-container image, not by anything the
+	// operator can usefully tune.
+	SmokeTimeout time.Duration
 }
 
 func (o Options) validate() error {
@@ -267,8 +309,18 @@ type Report struct {
 	// SnapshotAge is how old that snapshot was when the drill resolved it.
 	SnapshotAge time.Duration
 
+	// SmokeRepository is the scratch repository the smoke CI job ran in, in
+	// owner/name form, once the drill has got that far. It is empty when the
+	// drill failed before the smoke job. It names a repository that no longer
+	// exists by the time a caller reads it: teardown removes the drilled
+	// instance whole (DRIL-003), the scratch repository with it. It is
+	// reported so an operator reading a failed smoke job knows which
+	// repository the run belonged to.
+	SmokeRepository string
+
 	// Failure is nil when the rehearsal itself passed, and otherwise names
 	// the step of it that failed.
+
 	Failure *Failure
 
 	// Teardown is nil when the scratch target was left clean (DRIL-003),
@@ -294,11 +346,12 @@ func (r Report) Succeeded() bool { return r.Failure == nil && r.Teardown == nil 
 func (r Report) Clean() bool { return r.Teardown == nil }
 
 // Drill runs DRIL-001 as one CORE-002 job: resolve the most recent snapshot
-// at opts.Source, restore it onto opts.Host, and boot the full stack there
-// (restore.Restore, which ends in deploy.Up); then, whatever happened,
-// remove the rehearsal from the scratch target (DRIL-003). It returns a
-// Report naming the snapshot drilled, the specific step that failed if one
-// did, and whether the scratch target was left clean.
+// at opts.Source, restore it onto opts.Host, boot the full stack there
+// (restore.Restore, which ends in deploy.Up), and run a smoke CI job on what
+// booted (forge.SmokeCI); then, whatever happened, remove the rehearsal from
+// the scratch target (DRIL-003). It returns a Report naming the snapshot
+// drilled, the specific step that failed if one did, and whether the scratch
+// target was left clean.
 //
 // The returned error is always a *Failure carrying the step it names, so a
 // caller that wants the step rather than the message can errors.As for it
@@ -324,8 +377,8 @@ func Drill(ctx context.Context, job *events.Job, opts Options) (Report, error) {
 		return report, report.Teardown
 	}
 	job.Succeeded(fmt.Sprintf(
-		"drill succeeded: snapshot %s (captured %s ago) restored to the scratch target, the full stack booted there, and the target was torn down",
-		report.SnapshotKey, report.SnapshotAge.Round(time.Second),
+		"drill succeeded: snapshot %s (captured %s ago) restored to the scratch target, the full stack booted there, a smoke CI job ran in %s, and the target was torn down",
+		report.SnapshotKey, report.SnapshotAge.Round(time.Second), report.SmokeRepository,
 	))
 	return report, nil
 }
@@ -335,10 +388,11 @@ func Drill(ctx context.Context, job *events.Job, opts Options) (Report, error) {
 // The teardown is deferred rather than called at the end, because DRIL-003
 // is a promise about every exit path and a deferred call is the only
 // construct that keeps one: it runs after a successful drill, after a step
-// that failed and returned early, and while a panic from any depth of the
-// restore is unwinding. The one path it deliberately does not run on is a
-// failed opts.validate(), which returns before it: nothing has been
-// deployed at that point, and opts may not even carry a host to reach.
+// that failed and returned early — including a failed smoke CI job, the last
+// step before it — and while a panic from any depth of the restore is
+// unwinding. The one path it deliberately does not run on is a failed
+// opts.validate(), which returns before it: nothing has been deployed at
+// that point, and opts may not even carry a host to reach.
 //
 // The report is a named result so the deferred call can record the
 // teardown's outcome into the value actually returned. A panic discards it
@@ -362,7 +416,17 @@ func drill(ctx context.Context, job *events.Job, opts Options) (report Report) {
 
 	if step, err := restoreOnto(ctx, job, opts, key); err != nil {
 		report.Failure = &Failure{Step: step, Detail: err.Error()}
+		return report
 	}
+
+	result, err := forge.SmokeCI(ctx, deploy.ComposeRunner(opts.Host, opts.RemoteDir, opts.Bundle), job, forge.SmokeOptions{
+		Timeout: opts.SmokeTimeout,
+	})
+	if err != nil {
+		report.Failure = &Failure{Step: forge.StepSmokeCI, Detail: err.Error()}
+		return report
+	}
+	report.SmokeRepository = result.Repository
 	return report
 }
 

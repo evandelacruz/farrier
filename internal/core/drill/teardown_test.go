@@ -101,6 +101,70 @@ func TestDrillTearsDownAfterAFailedStep(t *testing.T) {
 	}
 }
 
+// TestDrillTearsDownAfterAFailedSmokeJob is the interaction between
+// DRIL-001's last step and DRIL-003's guarantee, and it is the case both
+// requirements are easiest to get wrong together: the smoke job is the last
+// thing the rehearsal does, it runs against a fully booted instance holding
+// production's state, and a drill that stopped at its failure would leave
+// exactly that instance running on the scratch host.
+//
+// So all three facts hold at once: the smoke job ran before the teardown,
+// the teardown still ran and left the target clean, and the report still
+// names the smoke job as the specific failing step.
+func TestDrillTearsDownAfterAFailedSmokeJob(t *testing.T) {
+	f := newFixture(t)
+	host := f.host()
+	host.failOn = "generate-access-token"
+
+	job := events.NewJob()
+	report, err := Drill(context.Background(), job, f.opts)
+	if err == nil {
+		t.Fatal("Drill: want an error from a failing smoke job")
+	}
+
+	// The rehearsal's verdict is unchanged by the teardown running after it.
+	if report.Failure == nil || report.Failure.Step != forge.StepSmokeCI {
+		t.Fatalf("report.Failure = %+v, want the drill to fail at %s", report.Failure, forge.StepSmokeCI)
+	}
+	var failure *Failure
+	if !errors.As(err, &failure) || failure.Step != forge.StepSmokeCI {
+		t.Errorf("Drill returned %v, want a *Failure naming %s", err, forge.StepSmokeCI)
+	}
+	terminal := job.Events()[len(job.Events())-1]
+	if terminal.State != events.StateFailed || !strings.Contains(terminal.Detail, forge.StepSmokeCI) {
+		t.Errorf("terminal event = %+v, want a failure naming %s", terminal, forge.StepSmokeCI)
+	}
+
+	// And the scratch target is clean anyway.
+	if !report.Clean() {
+		t.Fatalf("report.Clean() = false after a failed smoke job, teardown = %+v", report.Teardown)
+	}
+	assertScratchTargetClean(t, host, f.opts.RemoteDir)
+	if state := stepState(job, StepTeardown); state != events.StateSucceeded {
+		t.Errorf("teardown step reported %q, want %q", state, events.StateSucceeded)
+	}
+
+	// Order: the smoke job is what failed, so it must have been attempted
+	// before the instance it needed was torn down.
+	host.mu.Lock()
+	defer host.mu.Unlock()
+	smoked, tornDown := -1, -1
+	for i, command := range host.commands {
+		switch {
+		case smoked < 0 && strings.Contains(command, "docker compose exec -T -u git forgejo sh -ec"):
+			smoked = i
+		case tornDown < 0 && strings.Contains(command, "docker compose down"):
+			tornDown = i
+		}
+	}
+	if smoked < 0 || tornDown < 0 {
+		t.Fatalf("drill did not both attempt the smoke job and tear down: %v", host.commands)
+	}
+	if tornDown < smoked {
+		t.Errorf("the scratch target was torn down before the smoke job ran: %v", host.commands)
+	}
+}
+
 // TestDrillTearsDownAfterAnEarlyFailure covers the failure that happens
 // before the host is reached at all: the snapshot could not even be
 // resolved. There is nothing on the scratch target to remove, and the
