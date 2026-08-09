@@ -69,20 +69,12 @@ func runBackup(args []string) int {
 	defer cleanup()
 
 	job := events.NewJob()
-	sub, cancel := job.Subscribe()
-	defer cancel()
+	err = runJob(job, func() error {
+		return backup.Backup(ctx, job, opts)
+	})
 
-	done := make(chan struct{})
-	go func() {
-		printEvents(sub)
-		close(done)
-	}()
-
-	backupErr := backup.Backup(ctx, job, opts)
-	<-done
-
-	if backupErr != nil {
-		fmt.Fprintf(os.Stderr, "farrier: backup: %v\n", backupErr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: backup: %v\n", err)
 		return 1
 	}
 	return 0
