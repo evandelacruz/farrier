@@ -154,7 +154,7 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 - Forgejo `app.ini` is fully rendered from the manifest — the install wizard is pre-answered by configuration.
 - Admin bootstrap runs `forgejo admin user create` post-start; credentials are emitted once through the event stream.
 - Rendered `app.ini` enables Actions. Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no key to loosen it — so enabling Actions is the whole of that requirement.
-- Drill mode adds four overrides to the rendered `app.ini` — webhooks off, webhook host allow-list empty, mailer off, mirrors off — and publishes the forge's HTTPS port on the deploy host's loopback interface rather than every interface. Quarantine is a render- and deploy-time override; the restored state itself is never edited.
+- Drill mode adds four overrides to the rendered `app.ini` — webhooks off, webhook host allow-list empty, mailer off, mirrors off — publishes the forge's HTTPS port on the deploy host's loopback interface rather than every interface, and gives Caddy the bundle domain as a Compose network alias so the drilled host resolves that domain to the drilled instance rather than to production. Quarantine is a render- and deploy-time override; the restored state itself is never edited, and no DNS record is touched.
 - CI reconciliation at promote: a direct SQLite update resetting `running` → `queued` in the actions tables, before services start.
 
 ## API

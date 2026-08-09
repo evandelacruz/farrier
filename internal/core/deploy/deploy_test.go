@@ -83,6 +83,11 @@ type fakeHost struct {
 	// (stateversion.go), standing in for an unreadable host.
 	readVersionErr error
 
+	// failOutputOn fails any Output whose command contains it, standing in
+	// for a host that refuses one specific command — how Down's tests drive
+	// a failure at a chosen step of the teardown.
+	failOutputOn string
+
 	// versionAtConverge is the recorded forge version as it stood the
 	// moment `docker compose up` ran — what lets a test assert Up records
 	// the version it is about to start *before* starting it.
@@ -97,6 +102,10 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+
+	if f.failOutputOn != "" && strings.Contains(command, f.failOutputOn) {
+		return nil, errors.New("fakeHost: command failed: " + command)
+	}
 
 	// Serve reads of the recorded forge version out of the same map
 	// WriteFile stores into, so the fake's reads and writes agree the way

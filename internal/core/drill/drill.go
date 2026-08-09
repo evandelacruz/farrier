@@ -1,7 +1,7 @@
 // Package drill implements the rehearsal command `drill` (DRIL-001):
 // restore the most recent backup onto a scratch target, boot the full
-// stack there, run a smoke CI job, and report success or the specific step
-// that failed.
+// stack there, run a smoke CI job, report success or the specific step that
+// failed, and leave the scratch target clean (DRIL-003).
 //
 // Drill sequences already-landed pieces rather than reimplementing any of
 // them. backup.SnapshotAge resolves the newest snapshot at the destination
@@ -17,10 +17,10 @@
 // # The smoke CI job
 //
 // A restore that boots proves the state came back. It does not prove the
-// forge can do the thing a team stops working without, so the drill ends by
-// creating a scratch repository on the drilled instance with one trivial
-// workflow, letting the commit dispatch it, and waiting for the run to
-// finish (forge.SmokeCI, whose doc comment covers how). The outcome folds
+// forge can do the thing a team stops working without, so the last step of
+// the rehearsal creates a scratch repository on the drilled instance with
+// one trivial workflow, lets the commit dispatch it, and waits for the run
+// to finish (forge.SmokeCI, whose doc comment covers how). The outcome folds
 // into Report exactly like the restore steps: success, or forge.StepSmokeCI
 // named as the step that failed.
 //
@@ -28,8 +28,12 @@
 // unstubbed — the drill neither adds a runner nor checks whether one exists
 // first. A drilled instance with no runner able to claim the job is a
 // finding, not a special case, and is reported as the run never starting.
-// The scratch repository is left behind: disposing of the drilled target is
-// DRIL-003's job, and it disposes of the target whole.
+//
+// The smoke job is the last step of the rehearsal, not the last step of the
+// drill: teardown still follows it, and follows it on the path where the
+// smoke job is what failed. Nothing about the scratch repository needs
+// cleaning up on its own — teardown removes the drilled instance whole
+// (DRIL-003), and the repository lived only inside it.
 //
 // # What drill adds on top of restore
 //
@@ -68,8 +72,8 @@
 //
 // A drilled instance can reach the snapshot it restored and nothing
 // outside its host; the operator can reach it through an SSH tunnel to
-// that host and nobody else can reach it at all. Three properties, in
-// three places:
+// that host and nobody else can reach it at all. Four properties, in four
+// places:
 //
 //   - Outbound webhooks, email, and mirrors are disabled in the rendered
 //     app.ini (forge.AppINIOptions.Quarantine), reached from here through
@@ -104,6 +108,35 @@
 // (spec.md "Rehearsal"), and it should be a host the operator would be
 // willing to hand production's state to, because for the length of the
 // drill that is what it holds.
+//
+// # Teardown (DRIL-003)
+//
+// "For the length of the drill" is what teardown makes true. A rehearsal
+// that walks away leaves production's git repositories, database, SSH host
+// key, runner secret, and rendered app.ini sitting on a scratch host
+// indefinitely, plus a full stack still running against them — a second
+// copy of production, unwatched, that nobody decided to keep.
+//
+// So the last step of every drill is deploy.Down against the scratch
+// target: the drilled instance's containers, networks, and volumes are
+// removed, and then Options.RemoteDir is removed with everything under it.
+// The host is left with none of the drill's containers and none of its
+// files.
+//
+// Every drill means every drill. Teardown runs from a deferred call, so a
+// drill that succeeded, a drill that failed at verify-snapshot before
+// anything reached the host, a drill that failed at wait-forge with a
+// half-booted stack, and a drill unwinding a panic all reach it. A drill
+// whose context was canceled reaches it too, and teardown runs on a
+// detached context precisely so that it can: cancellation is the case that
+// leaves the most behind, not the one to skip cleanup for.
+//
+// Teardown reports through the job's step stream like every other step, and
+// its outcome lands in Report.Teardown rather than being folded into
+// Report.Failure. A rehearsal's verdict and a scratch target's cleanliness
+// are different facts, and a drill can end with either one bad: a teardown
+// failure is the operator's signal that some host still holds production's
+// state, and it is never swallowed by a rehearsal that otherwise passed.
 package drill
 
 import (
@@ -125,11 +158,28 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/restore"
 )
 
-// StepResolveSnapshot identifies the step Drill itself emits onto a job's
-// event stream before restore.Restore's own steps relay through: resolving
-// which snapshot at the destination is the most recent one (DRIL-001's
-// "the most recent backup").
-const StepResolveSnapshot = "resolve-snapshot"
+// Step identifiers Drill itself emits onto a job's event stream, around the
+// steps restore.Restore and deploy.Up relay through in between.
+const (
+	// StepResolveSnapshot is the first step of a drill: resolving which
+	// snapshot at the destination is the most recent one (DRIL-001's "the
+	// most recent backup").
+	StepResolveSnapshot = "resolve-snapshot"
+
+	// StepTeardown is the last step of a drill, and the one step that runs
+	// whether or not the ones before it did (DRIL-003): removing the
+	// rehearsal from the scratch target.
+	StepTeardown = "teardown"
+)
+
+// teardownTimeout bounds the teardown step. It is generous — a container
+// ignoring SIGTERM costs deploy.Down its own stop timeout, per service —
+// but bounded, because teardown deliberately runs on a context that may
+// already be canceled (see teardown), and an unbounded operation there
+// would make a canceled drill hang instead of stopping.
+//
+// A var rather than a const so tests can shorten it.
+var teardownTimeout = 5 * time.Minute
 
 // Host is everything Drill needs from a connected SSH session to the
 // scratch target — exactly restore.Host, restore.Restore's own requirement.
@@ -246,9 +296,10 @@ func (f *Failure) Error() string {
 }
 
 // Report is what a drill produces: which snapshot was drilled, how old it
-// was, and either success or the specific failing step. It is the same
-// value on both frontends — `drill` prints it, and a dashboard's drill
-// results panel (UI-002) renders it from the same job.
+// was, whether the rehearsal passed, and whether the scratch target was
+// left clean. It is the same value on both frontends — `drill` prints it,
+// and a dashboard's drill results panel (UI-002) renders it from the same
+// job.
 type Report struct {
 	// SnapshotKey is the destination key of the snapshot that was drilled:
 	// the most recent one at Options.Source, resolved once before the
@@ -260,51 +311,108 @@ type Report struct {
 
 	// SmokeRepository is the scratch repository the smoke CI job ran in, in
 	// owner/name form, once the drill has got that far. It is empty when the
-	// drill failed before the smoke job, and it is left on the drilled
-	// instance: DRIL-003 disposes of the scratch target whole.
+	// drill failed before the smoke job. It names a repository that no longer
+	// exists by the time a caller reads it: teardown removes the drilled
+	// instance whole (DRIL-003), the scratch repository with it. It is
+	// reported so an operator reading a failed smoke job knows which
+	// repository the run belonged to.
 	SmokeRepository string
 
-	// Failure is nil on success, and otherwise names the step that failed.
+	// Failure is nil when the rehearsal itself passed, and otherwise names
+	// the step of it that failed.
+
 	Failure *Failure
+
+	// Teardown is nil when the scratch target was left clean (DRIL-003),
+	// and otherwise carries StepTeardown and why the cleanup failed. It is
+	// reported separately from Failure because the two answer different
+	// questions and either can be true without the other: a rehearsal that
+	// failed at verify-snapshot still tears down cleanly, and a rehearsal
+	// that passed can still leave a scratch target holding production's
+	// state if the teardown itself failed. A non-nil Teardown means some
+	// host still has that state on it and needs an operator.
+	Teardown *Failure
 }
 
-// Succeeded reports whether the drill completed every step.
-func (r Report) Succeeded() bool { return r.Failure == nil }
+// Succeeded reports whether the drill completed every step, teardown
+// included. A caller that wants the rehearsal's own verdict — did the most
+// recent backup restore and boot — reads Failure directly; Succeeded is
+// deliberately the stricter question, so nothing reads "the drill
+// succeeded" off a run that left a scratch target dirty.
+func (r Report) Succeeded() bool { return r.Failure == nil && r.Teardown == nil }
+
+// Clean reports whether the scratch target was left with none of the
+// drill's containers and none of its state (DRIL-003).
+func (r Report) Clean() bool { return r.Teardown == nil }
 
 // Drill runs DRIL-001 as one CORE-002 job: resolve the most recent snapshot
-// at opts.Source, restore it onto opts.Host, and boot the full stack there
-// (restore.Restore, which ends in deploy.Up). It returns a Report naming
-// the snapshot drilled and, on failure, the specific step that failed.
+// at opts.Source, restore it onto opts.Host, boot the full stack there
+// (restore.Restore, which ends in deploy.Up), and run a smoke CI job on what
+// booted (forge.SmokeCI); then, whatever happened, remove the rehearsal from
+// the scratch target (DRIL-003). It returns a Report naming the snapshot
+// drilled, the specific step that failed if one did, and whether the scratch
+// target was left clean.
 //
-// The returned error is always a *Failure carrying the same step, so a
+// The returned error is always a *Failure carrying the step it names, so a
 // caller that wants the step rather than the message can errors.As for it
-// instead of reading Report.
+// instead of reading Report. When the rehearsal and the teardown both
+// failed, the returned error is the rehearsal's — the earlier and more
+// informative of the two — and the job's terminal event names both, so the
+// teardown failure is never the one that goes unreported.
 //
 // Drill owns job's terminal event, calling job.Succeeded or job.Failed
 // exactly once, after every step below has run or the first one fails.
 func Drill(ctx context.Context, job *events.Job, opts Options) (Report, error) {
 	report := drill(ctx, job, opts)
-	if report.Failure != nil {
+	switch {
+	case report.Failure != nil && report.Teardown != nil:
+		job.Failed(fmt.Sprintf("%s; the scratch target was also left dirty: %s",
+			report.Failure.Error(), report.Teardown.Detail))
+		return report, report.Failure
+	case report.Failure != nil:
 		job.Failed(report.Failure.Error())
 		return report, report.Failure
+	case report.Teardown != nil:
+		job.Failed(report.Teardown.Error())
+		return report, report.Teardown
 	}
 	job.Succeeded(fmt.Sprintf(
-		"drill succeeded: snapshot %s (captured %s ago) restored to the scratch target, the full stack booted, and a smoke CI job ran in %s",
+		"drill succeeded: snapshot %s (captured %s ago) restored to the scratch target, the full stack booted there, a smoke CI job ran in %s, and the target was torn down",
 		report.SnapshotKey, report.SnapshotAge.Round(time.Second), report.SmokeRepository,
 	))
 	return report, nil
 }
 
-func drill(ctx context.Context, job *events.Job, opts Options) Report {
+// drill sequences the rehearsal and guarantees the teardown.
+//
+// The teardown is deferred rather than called at the end, because DRIL-003
+// is a promise about every exit path and a deferred call is the only
+// construct that keeps one: it runs after a successful drill, after a step
+// that failed and returned early — including a failed smoke CI job, the last
+// step before it — and while a panic from any depth of the restore is
+// unwinding. The one path it deliberately does not run on is a failed
+// opts.validate(), which returns before it: nothing has been deployed at
+// that point, and opts may not even carry a host to reach.
+//
+// The report is a named result so the deferred call can record the
+// teardown's outcome into the value actually returned. A panic discards it
+// — nothing returns at all — but the teardown itself still runs, which is
+// the part of the guarantee that matters: the host is clean either way, and
+// a caller that panicked has a stack trace rather than a report to read.
+func drill(ctx context.Context, job *events.Job, opts Options) (report Report) {
 	if err := opts.validate(); err != nil {
 		return Report{Failure: &Failure{Detail: err.Error()}}
 	}
+
+	defer func() {
+		report.Teardown = teardown(ctx, job, opts)
+	}()
 
 	key, snapshotAge, err := resolveSnapshot(ctx, job, opts)
 	if err != nil {
 		return Report{Failure: &Failure{Step: StepResolveSnapshot, Detail: err.Error()}}
 	}
-	report := Report{SnapshotKey: key, SnapshotAge: snapshotAge}
+	report = Report{SnapshotKey: key, SnapshotAge: snapshotAge}
 
 	if step, err := restoreOnto(ctx, job, opts, key); err != nil {
 		report.Failure = &Failure{Step: step, Detail: err.Error()}
@@ -320,6 +428,42 @@ func drill(ctx context.Context, job *events.Job, opts Options) Report {
 	}
 	report.SmokeRepository = result.Repository
 	return report
+}
+
+// teardown removes the rehearsal from the scratch target: deploy.Down stops
+// and removes the drilled instance's containers and then removes
+// opts.RemoteDir, leaving the host without the containers, without the
+// restored git repositories and database, and without the deploy-time key
+// material Up wrote beside them (KEY-003). It reports through the same
+// CORE-002 step stream every other drill step uses, and returns nil only
+// when the target is actually clean.
+//
+// It runs on a context detached from ctx (context.WithoutCancel) under a
+// deadline of its own. A canceled drill is precisely the case that needs
+// the cleanup most — the operator interrupted a rehearsal partway through
+// booting production's state onto a scratch host — and inheriting the
+// cancellation would fail every command teardown issues and leave that
+// state behind at the one moment it is most likely to be forgotten. The
+// fresh deadline is what keeps that from turning "canceled" into "hangs".
+//
+// A failed teardown is reported, never swallowed. The drilled instance
+// carries production's identity (spec.md "Rehearsal"), so a scratch target
+// that still holds it after the drill has ended is something an operator
+// has to be told about, whether or not the rehearsal itself passed.
+func teardown(ctx context.Context, job *events.Job, opts Options) *Failure {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), teardownTimeout)
+	defer cancel()
+
+	job.Started(StepTeardown, "removing the rehearsal from the scratch target")
+	if err := deploy.Down(ctx, opts.Host, opts.Bundle, opts.RemoteDir); err != nil {
+		err = fmt.Errorf("drill: tear down the scratch target: %w", err)
+		job.Emit(StepTeardown, events.StateFailed, err.Error())
+		return &Failure{Step: StepTeardown, Detail: err.Error()}
+	}
+	job.Emit(StepTeardown, events.StateSucceeded, fmt.Sprintf(
+		"scratch target left clean: the drilled instance's containers are gone and %s has been removed", opts.RemoteDir,
+	))
+	return nil
 }
 
 // resolveSnapshot resolves the most recent snapshot at opts.Source and its
