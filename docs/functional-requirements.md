@@ -11,7 +11,6 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - CORE-001–003 precede everything.
 - KEY, BLOB, and STATE precede BKUP.
 - BKUP precedes RSTR; RSTR precedes FAIL, UPGR, and DRIL.
-- BKUP-006 precedes the remaining STAT work — STAT-001's last-backup age and STAT-002's measured lag both need a caller that resolves a real destination.
 - UP-004 precedes RSTR-001: restore has nowhere to put git data until `up` pins forge state to a host directory.
 - ORCH and FORGE precede UP.
 - DNS-001 precedes FAIL-004; ACME-001 precedes INIT-002.
