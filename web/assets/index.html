@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Farrier</title>
+    <link rel="stylesheet" href="/ui/app.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <h1>Farrier</h1>
+      <p class="tagline">Your forge, portable. Running on this machine.</p>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>The dashboard is serving</h2>
+        <p>
+          This page came from the <code>farrier</code> binary on your own
+          machine, over loopback. The local control API is served from this
+          same address, so nothing here reaches the network.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Views are on their way</h2>
+        <p>
+          Instance status, replication lag, backup history, drill results, and
+          promotion will live here. Until they land, every one of them runs
+          from the command line:
+        </p>
+        <ul class="commands">
+          <li><code>farrier status</code> — instance health and last-backup age</li>
+          <li><code>farrier backup</code> — capture, encrypt, verify a snapshot</li>
+          <li><code>farrier drill</code> — rehearse a restore on a scratch host</li>
+          <li><code>farrier promote</code> — fail over to a new host</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>Stop the dashboard with Ctrl-C in the terminal that started it.</p>
+    </footer>
+  </body>
+</html>

@@ -33,8 +33,11 @@ internal/core/        the engine — all logic lives here
   blob/               blob adapter interface + shipped adapters
   registry/           resolves a container image reference to its digest
   events/             the job/progress event model
+  ui/                 serves the dashboard and the API on one loopback
+                      listener, and opens the operator's browser
 internal/api/         loopback HTTP server, RPC endpoints, SSE
 web/                  dashboard (embedded into the binary via go:embed)
+  assets/             the page as served: static HTML and CSS, no toolchain
 tools/                agent orchestration — dev-only, never in the product binary
 docs/                 this documentation
 ```

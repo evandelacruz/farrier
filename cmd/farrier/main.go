@@ -26,6 +26,7 @@ var commands = map[string]func(args []string) int{
 	"promote": runPromote,
 	"upgrade": runUpgrade,
 	"drill":   runDrill,
+	"ui":      runUI,
 }
 
 func main() {
