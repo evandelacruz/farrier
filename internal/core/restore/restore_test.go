@@ -945,3 +945,53 @@ func TestOptionsValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoreQuarantinePassesThroughToDeploy pins both directions of
+// Options.Quarantine (DRIL-002). Restore is where drill's quarantine
+// reaches deploy.Up, so it has to carry the flag; and a restore is
+// otherwise an instance the operator means to use, so the default has to
+// leave it reachable and able to notify.
+func TestRestoreQuarantinePassesThroughToDeploy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		quarantine bool
+	}{
+		{"default restore is a usable instance", false},
+		{"quarantined restore is drill's rehearsal", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := validOptions(t)
+			opts.Quarantine = tc.quarantine
+			values := testKeyValues()
+			keysDir := opts.Bundle.Manifest.Drivers.Keystore.Config["path"].(string)
+			for _, name := range []string{state.KeyTLSCertificate, state.KeyTLSPrivateKey} {
+				if err := os.WriteFile(filepath.Join(keysDir, name), []byte(values[name]), 0o600); err != nil {
+					t.Fatalf("seed %s: %v", name, err)
+				}
+			}
+			host := opts.Host.(*fakeHost)
+
+			if err := Restore(context.Background(), events.NewJob(), opts); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+
+			appINI := host.files["/opt/farrier/forge/app.ini"]
+			if appINI == "" {
+				t.Fatalf("restore shipped no app.ini; wrote: %v", host.files)
+			}
+			composed := host.files["/opt/farrier/compose.tmp/docker-compose.yml"]
+			if composed == "" {
+				t.Fatalf("restore shipped no compose file; wrote: %v", host.files)
+			}
+
+			gotQuarantined := strings.Contains(appINI, "DISABLE_WEBHOOKS = true")
+			if gotQuarantined != tc.quarantine {
+				t.Errorf("app.ini disables webhooks = %v, want %v:\n%s", gotQuarantined, tc.quarantine, appINI)
+			}
+			gotLoopback := strings.Contains(composed, orchestrate.LoopbackAddress+":443:443")
+			if gotLoopback != tc.quarantine {
+				t.Errorf("compose binds https to loopback = %v, want %v:\n%s", gotLoopback, tc.quarantine, composed)
+			}
+		})
+	}
+}

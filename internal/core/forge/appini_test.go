@@ -33,7 +33,7 @@ func validSecrets() Secrets {
 }
 
 func TestRenderAppINISkipsInstallWizard(t *testing.T) {
-	out, err := RenderAppINI(validManifest(), validSecrets())
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{})
 	if err != nil {
 		t.Fatalf("RenderAppINI() error = %v", err)
 	}
@@ -44,7 +44,7 @@ func TestRenderAppINISkipsInstallWizard(t *testing.T) {
 }
 
 func TestRenderAppINIAnswersEveryWizardField(t *testing.T) {
-	out, err := RenderAppINI(validManifest(), validSecrets())
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{})
 	if err != nil {
 		t.Fatalf("RenderAppINI() error = %v", err)
 	}
@@ -75,7 +75,7 @@ func TestRenderAppINIAnswersEveryWizardField(t *testing.T) {
 // Caddy terminates TLS and proxies to Forgejo over plaintext, so Forgejo
 // binding its own TLS server (no cert available) breaks the deployment.
 func TestRenderAppINIServesPlaintextBehindCaddy(t *testing.T) {
-	out, err := RenderAppINI(validManifest(), validSecrets())
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{})
 	if err != nil {
 		t.Fatalf("RenderAppINI() error = %v", err)
 	}
@@ -95,7 +95,7 @@ func TestRenderAppINIServesPlaintextBehindCaddy(t *testing.T) {
 // [actions] exactly once also keeps the file valid: a duplicate section header
 // would silently shadow the first.
 func TestRenderAppINIEnablesActionsForForkPRApproval(t *testing.T) {
-	out, err := RenderAppINI(validManifest(), validSecrets())
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{})
 	if err != nil {
 		t.Fatalf("RenderAppINI() error = %v", err)
 	}
@@ -112,13 +112,13 @@ func TestRenderAppINIEnablesActionsForForkPRApproval(t *testing.T) {
 func TestRenderAppINIRequiresValidManifest(t *testing.T) {
 	m := validManifest()
 	m.Domain = ""
-	if _, err := RenderAppINI(m, validSecrets()); err == nil {
+	if _, err := RenderAppINI(m, validSecrets(), AppINIOptions{}); err == nil {
 		t.Fatal("RenderAppINI() with invalid manifest = nil error, want error")
 	}
 }
 
 func TestRenderAppININilManifest(t *testing.T) {
-	if _, err := RenderAppINI(nil, validSecrets()); err == nil {
+	if _, err := RenderAppINI(nil, validSecrets(), AppINIOptions{}); err == nil {
 		t.Fatal("RenderAppINI(nil, ...) = nil error, want error")
 	}
 }
@@ -137,7 +137,7 @@ func TestRenderAppINIRequiresSecrets(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := validSecrets()
 			tc.mutate(&s)
-			if _, err := RenderAppINI(validManifest(), s); err == nil {
+			if _, err := RenderAppINI(validManifest(), s, AppINIOptions{}); err == nil {
 				t.Fatalf("RenderAppINI() with %s = nil error, want error", tc.name)
 			}
 		})
@@ -150,7 +150,7 @@ func TestRenderAppINIRequiresSecrets(t *testing.T) {
 // content and must stay clean of key material.
 func TestRenderAppININeverEmbedsSecretsInTheBundle(t *testing.T) {
 	m := validManifest()
-	if _, err := RenderAppINI(m, validSecrets()); err != nil {
+	if _, err := RenderAppINI(m, validSecrets(), AppINIOptions{}); err != nil {
 		t.Fatalf("RenderAppINI() error = %v", err)
 	}
 	raw, err := yaml.Marshal(m)
@@ -160,6 +160,101 @@ func TestRenderAppININeverEmbedsSecretsInTheBundle(t *testing.T) {
 	for _, secret := range []string{"secret-key-value", "internal-token-value", "lfs-jwt-secret-value"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("manifest YAML contains secret material %q", secret)
+		}
+	}
+}
+
+// TestRenderAppINIQuarantineDisablesEveryOutboundPath is DRIL-002's
+// config half. Each key closes a different door, so each is asserted
+// separately: turning webhooks off does nothing about email, and turning
+// both off does nothing about a push mirror writing to production's real
+// remote.
+func TestRenderAppINIQuarantineDisablesEveryOutboundPath(t *testing.T) {
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{Quarantine: true})
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	text := string(out)
+
+	for _, tc := range []struct {
+		door string
+		want string
+	}{
+		{"repository and system webhooks", "DISABLE_WEBHOOKS = true"},
+		{"webhook delivery hosts", "[webhook]\nALLOWED_HOST_LIST =\n"},
+		{"outbound email", "[mailer]\nENABLED = false\n"},
+		{"push mirrors", "[mirror]\nENABLED = false\n"},
+	} {
+		if !strings.Contains(text, tc.want) {
+			t.Errorf("quarantined app.ini leaves %s open (want %q):\n%s", tc.door, tc.want, text)
+		}
+	}
+
+	// Duplicate section headers silently shadow the first, so each
+	// quarantine section must be rendered exactly once — the same hazard
+	// TestRenderAppINIEnablesActionsForForkPRApproval guards for [actions].
+	for _, section := range []string{"[security]", "[webhook]", "[mailer]", "[mirror]"} {
+		if got := strings.Count(text, section); got != 1 {
+			t.Errorf("quarantined app.ini has %d %s sections, want exactly 1:\n%s", got, section, text)
+		}
+	}
+}
+
+// TestRenderAppINIQuarantineKeepsActionsEnabled pins the one thing
+// quarantine must not shut off: a drill exists to prove CI runs on the
+// restored instance (DRIL-001), which it cannot do with Actions disabled.
+func TestRenderAppINIQuarantineKeepsActionsEnabled(t *testing.T) {
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{Quarantine: true})
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	if !strings.Contains(string(out), "[actions]\nENABLED = true\n") {
+		t.Errorf("quarantined app.ini disables Actions, so a drill cannot run its smoke job:\n%s", out)
+	}
+}
+
+// TestRenderAppINIWithoutQuarantineIsUnchanged guards the boundary the
+// other direction: quarantine is a drill-only override, and a production
+// deployment that quietly stopped delivering webhooks or email would be a
+// silent outage of exactly the kind nobody notices for a week.
+func TestRenderAppINIWithoutQuarantineIsUnchanged(t *testing.T) {
+	out, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{})
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	text := string(out)
+
+	for _, unwanted := range []string{"DISABLE_WEBHOOKS", "[webhook]", "[mailer]", "[mirror]"} {
+		if strings.Contains(text, unwanted) {
+			t.Errorf("ordinary app.ini carries quarantine override %q:\n%s", unwanted, text)
+		}
+	}
+}
+
+// TestRenderAppINIQuarantineKeepsIdentityIntact pins that quarantine
+// changes what the instance may do, never who it is. A drill that rendered
+// a different SECRET_KEY, domain, or SSH host key would no longer be
+// rehearsing the snapshot it restored (spec.md "Rehearsal").
+func TestRenderAppINIQuarantineKeepsIdentityIntact(t *testing.T) {
+	m, secrets := validManifest(), validSecrets()
+
+	quarantined, err := RenderAppINI(m, secrets, AppINIOptions{Quarantine: true})
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	text := string(quarantined)
+
+	for _, want := range []string{
+		"DOMAIN = " + m.Domain,
+		"ROOT_URL = https://" + m.Domain + "/",
+		"SECRET_KEY = " + secrets.SecretKey,
+		"INTERNAL_TOKEN = " + secrets.InternalToken,
+		"JWT_SECRET = " + secrets.LFSJWTSecret,
+		"SSH_SERVER_HOST_KEYS = " + SSHHostKeyPath,
+		"INSTALL_LOCK = true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("quarantined app.ini changed identity, missing %q:\n%s", want, text)
 		}
 	}
 }

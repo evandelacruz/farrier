@@ -106,6 +106,18 @@ func (s Secrets) validate() error {
 	return nil
 }
 
+// AppINIOptions carries the deploy-time choices that change what app.ini
+// says, as distinct from the manifest and key material, which say what the
+// instance *is*. The zero value renders an ordinary production deployment.
+type AppINIOptions struct {
+	// Quarantine renders the drill-mode overrides (DRIL-002): outbound
+	// webhooks, email, and mirrors are turned off in the rendered config
+	// regardless of what the restored database has configured. Only
+	// internal/core/drill's deploy path sets it, which is why `up` has no
+	// flag for it. See RenderAppINI's "Quarantine" section.
+	Quarantine bool
+}
+
 // RenderAppINI renders a complete Forgejo app.ini from a bundle manifest and
 // its resolved key material. The rendered file sets INSTALL_LOCK, so
 // Forgejo's install wizard is never presented (FORGE-001): every field the
@@ -115,7 +127,42 @@ func (s Secrets) validate() error {
 // The result is deploy-time configuration for the forge host, not bundle
 // content: callers must ship it to the host directly and never write it into
 // the bundle directory (KEY-003).
-func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
+//
+// # Quarantine
+//
+// With opts.Quarantine, the rendered file additionally shuts off every way
+// Forgejo reaches out on its own — DRIL-002's "outbound webhooks and email
+// disabled", and the half of it that config, rather than the network, has
+// to enforce.
+//
+// It is a config override rather than a database edit for the reason
+// spec.md "Rehearsal" gives: a drill instance carries production's
+// identity, and its database is production's database. The webhook rows,
+// mailer settings, and push mirrors in it are real, and rewriting them
+// would mean the drill no longer rehearses the snapshot it was handed —
+// the one thing a rehearsal exists to prove. Overriding at render time
+// leaves the restored state byte-for-byte what the snapshot held while the
+// instance running on top of it stays mute.
+//
+// Four keys, because Forgejo has four independent ways out:
+//
+//   - [security] DISABLE_WEBHOOKS turns the webhook feature off outright,
+//     covering both repository and system webhooks.
+//   - [webhook] ALLOWED_HOST_LIST, left empty, is a deny-all host matcher.
+//     It is the second lock on the same door: if a future change re-enables
+//     the feature, delivery still has nowhere it is permitted to go.
+//   - [mailer] ENABLED = false disables outbound email. Forgejo defaults it
+//     off and this renderer never turns it on, so the line is a guarantee
+//     rather than a change — one a later mailer feature cannot silently
+//     take away from a drill.
+//   - [mirror] ENABLED = false stops push mirrors. A push mirror is not a
+//     notification, but it is outbound, it fires on push, and it writes to
+//     production's real remotes with production's credentials — exactly
+//     what "the outside world hears nothing" rules out.
+//
+// Actions stays enabled under quarantine: a drill has to run a smoke CI job
+// (DRIL-001), and CI is what the rehearsal is proving.
+func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]byte, error) {
 	if m == nil {
 		return nil, fmt.Errorf("forge: manifest is required")
 	}
@@ -160,11 +207,26 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets) ([]byte, error) {
 	fmt.Fprintf(&b, "[security]\n")
 	fmt.Fprintf(&b, "INSTALL_LOCK = true\n")
 	fmt.Fprintf(&b, "SECRET_KEY = %s\n", secrets.SecretKey)
-	fmt.Fprintf(&b, "INTERNAL_TOKEN = %s\n\n", secrets.InternalToken)
+	fmt.Fprintf(&b, "INTERNAL_TOKEN = %s\n", secrets.InternalToken)
+	if opts.Quarantine {
+		fmt.Fprintf(&b, "DISABLE_WEBHOOKS = true\n")
+	}
+	fmt.Fprintf(&b, "\n")
 
 	fmt.Fprintf(&b, "[lfs]\n")
 	fmt.Fprintf(&b, "PATH = %s\n", lfsPath)
 	fmt.Fprintf(&b, "JWT_SECRET = %s\n\n", secrets.LFSJWTSecret)
+
+	if opts.Quarantine {
+		fmt.Fprintf(&b, "[webhook]\n")
+		fmt.Fprintf(&b, "ALLOWED_HOST_LIST =\n\n")
+
+		fmt.Fprintf(&b, "[mailer]\n")
+		fmt.Fprintf(&b, "ENABLED = false\n\n")
+
+		fmt.Fprintf(&b, "[mirror]\n")
+		fmt.Fprintf(&b, "ENABLED = false\n\n")
+	}
 
 	// Enabling Actions is also the whole of FORGE-003. Forgejo's fork-PR
 	// approval gate is unconditional once Actions is on — it exposes no

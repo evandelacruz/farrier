@@ -580,11 +580,16 @@ func TestDrillLeavesOrphanedCIJobsAlone(t *testing.T) {
 	}
 }
 
-// TestDrillNeverTouchesDNS pins DRIL-001's hardest boundary structurally
-// rather than behaviorally: flipping the bundle's DNS record is promote's
-// job, and a drill that repointed the domain at a scratch host would take
-// production down. Options exposes no DNS field, and this asserts the
-// package cannot reach a driver another way either.
+// TestDrillNeverTouchesDNS pins the hardest boundary structurally rather
+// than behaviorally: flipping the bundle's DNS record is promote's job, and
+// a drill that repointed the domain at a scratch host would take production
+// down. Options exposes no DNS field, and this asserts the package cannot
+// reach a driver another way either.
+//
+// It is also DRIL-002's second quarantine property ("DNS stays untouched"),
+// which is why it is asserted at the import graph: quarantine has to hold
+// for reasons a later change cannot quietly undo, and "no code path exists"
+// is a stronger guarantee than "this fixture didn't take one."
 func TestDrillNeverTouchesDNS(t *testing.T) {
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", nil, parser.ImportsOnly)

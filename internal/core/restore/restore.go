@@ -135,6 +135,14 @@ type Options struct {
 	// is an orphan on the host being restored or failed over to
 	// (spec.md "Failover").
 	ReconcileCI bool
+
+	// Quarantine is passed to deploy.Up unchanged (deploy.Options.
+	// Quarantine, DRIL-002): the restored instance comes up unable to send
+	// webhooks or email and reachable only through an SSH tunnel to its
+	// host. False — restore's default — leaves a plain restore's behavior
+	// unchanged, since a restore produces an instance meant to be used.
+	// drill (DRIL-001) is the only caller that sets it.
+	Quarantine bool
 }
 
 func (o Options) validate() error {
@@ -329,6 +337,7 @@ func runDeploy(ctx context.Context, job *events.Job, manifest *backup.Manifest, 
 	err = deploy.Up(ctx, deployJob, opts.Host, deployBundle, deploy.Options{
 		RemoteDir:  opts.RemoteDir,
 		CertIssuer: opts.CertIssuer,
+		Quarantine: opts.Quarantine,
 	})
 	<-relayed
 	return err

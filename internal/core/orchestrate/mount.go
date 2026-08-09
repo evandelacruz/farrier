@@ -36,6 +36,25 @@ func WithPorts(files map[string][]byte, service, hostPort, containerPort string)
 	return withServiceListEntry(files, "with ports", service, "ports", fmt.Sprintf("%s:%s", hostPort, containerPort))
 }
 
+// LoopbackAddress is the host interface WithLoopbackPorts binds a published
+// port to. Exported so a caller reasoning about reachability — or a test
+// asserting it — names the same address this package emits.
+const LoopbackAddress = "127.0.0.1"
+
+// WithLoopbackPorts is WithPorts bound to the deploy host's loopback
+// interface: the port is published as 127.0.0.1:hostPort->containerPort
+// rather than on every interface.
+//
+// A port published this way is reachable from processes on the host itself
+// and from an SSH tunnel terminating there, and from nowhere else — the
+// host's firewall, or the absence of one, does not enter into it, because
+// nothing is ever bound to a routable address. That is what DRIL-002's
+// "reachable only through an SSH tunnel" asks for, and why a drilled
+// instance gets this instead of WithPorts (deploy.configureTLS).
+func WithLoopbackPorts(files map[string][]byte, service, hostPort, containerPort string) (map[string][]byte, error) {
+	return withServiceListEntry(files, "with loopback ports", service, "ports", fmt.Sprintf("%s:%s:%s", LoopbackAddress, hostPort, containerPort))
+}
+
 // withServiceListEntry appends entry to field (a Compose list key such as
 // "volumes" or "ports") on service's definition across files, returning a
 // new map with the change; files itself is never mutated. op names the
