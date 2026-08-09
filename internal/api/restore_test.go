@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -184,7 +185,8 @@ func TestHandleRestoreSuccessWiresOptions(t *testing.T) {
 		return nil
 	}
 
-	rec := doRestore(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":"s3://bucket?endpoint=s3.example.com","snapshot":"20260101T000000Z.age","remoteDir":"/srv/farrier"}`)
+	from := t.TempDir()
+	rec := doRestore(t, s, fmt.Sprintf(`{"bundleDir":"/tmp/bundle","target":"ssh://user@host","from":%q,"snapshot":"20260101T000000Z.age","remoteDir":"/srv/farrier"}`, from))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusAccepted, rec.Body.String())
 	}
