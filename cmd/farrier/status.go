@@ -8,24 +8,33 @@ import (
 	"os"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/status"
 )
 
-// runStatus implements the `status` command (STAT-001): it connects to the
-// target over SSH and calls status.Check, printing the resulting report.
-// status is a read: its exit code reflects whether the report could be
-// produced, not whether the instance it describes is healthy — an operator
-// reads the printed report for that, the same way `docker ps` exits 0
-// whether or not the containers it lists are up.
+// runStatus implements the `status` command (STAT-001, STAT-002): it
+// connects to the target over SSH and calls status.Check, printing the
+// resulting report. status is a read: its exit code reflects whether the
+// report could be produced, not whether the instance it describes is
+// healthy — an operator reads the printed report for that, the same way
+// `docker ps` exits 0 whether or not the containers it lists are up.
+//
+// -to names the same golden-path backup destination `backup -to` writes
+// to (spec.md "Golden path"); omitted, Options.Destination stays nil and
+// the report's Lag — last-backup age (STAT-001) and replication lag
+// (STAT-002) are the same measurement once a destination is wired in,
+// tech-spec.md "Status" — reports unmeasured, exactly as it did before
+// this flag existed.
 func runStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (required)")
 	target := fs.String("target", "", "ssh://user@host[:port] of the forge host (required)")
 	remoteDir := fs.String("remote-dir", "/opt/farrier", "directory on the host farrier was deployed into")
 	diskPath := fs.String("disk-path", status.DefaultDiskPath, "filesystem path on the host to report disk headroom for")
+	to := fs.String("to", "", "golden-path backup destination to report last-backup age and replication lag against: an s3:// URI or a filesystem directory (optional; omit for unmeasured, spec.md \"Golden path\")")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file (default: ~/.ssh/known_hosts)")
 	timeout := fs.Duration("ssh-timeout", 0, "SSH dial and handshake timeout (default: orchestrate.DefaultTimeout)")
@@ -50,6 +59,12 @@ func runStatus(args []string) int {
 		return 1
 	}
 
+	destination, err := backup.ResolveOptionalDestination(*to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: status: resolve destination: %v\n", err)
+		return 1
+	}
+
 	ctx := context.Background()
 	client, err := orchestrate.Connect(ctx, *target, orchestrate.Options{
 		KeyFile:        *keyFile,
@@ -63,11 +78,12 @@ func runStatus(args []string) int {
 	defer client.Close()
 
 	report, err := status.Check(ctx, status.Options{
-		Runner:    client,
-		Bundle:    b,
-		RemoteDir: *remoteDir,
-		Keystore:  driver,
-		DiskPath:  *diskPath,
+		Runner:      client,
+		Bundle:      b,
+		RemoteDir:   *remoteDir,
+		Keystore:    driver,
+		DiskPath:    *diskPath,
+		Destination: destination,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "farrier: status: %v\n", err)

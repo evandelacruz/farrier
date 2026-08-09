@@ -139,6 +139,43 @@ func TestPrefixedAdapterScopesKeys(t *testing.T) {
 	}
 }
 
+func TestResolveOptionalDestinationEmptyIsNil(t *testing.T) {
+	dest, err := ResolveOptionalDestination("")
+	if err != nil {
+		t.Fatalf("ResolveOptionalDestination(\"\"): %v", err)
+	}
+	if dest != nil {
+		t.Fatalf("ResolveOptionalDestination(\"\") = %v, want nil", dest)
+	}
+
+	dest, err = ResolveOptionalDestination("   ")
+	if err != nil {
+		t.Fatalf("ResolveOptionalDestination(\"   \"): %v", err)
+	}
+	if dest != nil {
+		t.Fatalf("ResolveOptionalDestination(\"   \") = %v, want nil", dest)
+	}
+}
+
+func TestResolveOptionalDestinationResolvesFilesystemPath(t *testing.T) {
+	dir := t.TempDir() + "/backups"
+	dest, err := ResolveOptionalDestination(dir)
+	if err != nil {
+		t.Fatalf("ResolveOptionalDestination(%q): %v", dir, err)
+	}
+	if _, ok := dest.(*blob.LocalAdapter); !ok {
+		t.Fatalf("ResolveOptionalDestination(%q) = %T, want *blob.LocalAdapter", dir, dest)
+	}
+}
+
+func TestResolveOptionalDestinationPropagatesError(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	if _, err := ResolveOptionalDestination("s3://my-bucket?endpoint=localhost:9000"); err == nil {
+		t.Fatal("ResolveOptionalDestination: want error when AWS credentials are unset, got nil")
+	}
+}
+
 func TestOpenDestinationThenWriteRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	adapter, err := OpenDestination(dir)

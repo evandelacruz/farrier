@@ -1,15 +1,17 @@
 // Package status implements the instance-health report STAT-001 requires:
 // which of the bundle's deployed services are up, whether its TLS
-// certificate is still valid and how close it is to expiry, and how much
-// disk headroom the forge host has left.
+// certificate is still valid and how close it is to expiry, how much disk
+// headroom the forge host has left, and last-backup age — plus STAT-002's
+// replication lag.
 //
-// STAT-001 also requires reporting last-backup age. That part is deferred
-// (docs/status.json carries the remaining note): finding the most recent
-// snapshot needs a stable convention for what backup writes to its
-// destination and how status finds it there, and backup (BKUP-001..005),
-// which owns the snapshot format and destination (tech-spec.md "Snapshot
-// format"), has not landed. Nothing here invents that convention ahead of
-// backup itself defining it.
+// Last-backup age and replication lag are the same measurement: the age of
+// the newest object at Options.Destination, the golden-path backup
+// destination `backup.SnapshotKey` names objects under (tech-spec.md
+// "Status"). The caller (`cmd/farrier status -to`, `POST /status?to=`)
+// resolves that destination via backup.ResolveOptionalDestination and
+// passes it in; omitted, Destination stays nil and Lag reports unmeasured,
+// same as an operator-assembled transport outside the system's own
+// measurement (spec.md "Replication lag").
 package status
 
 import (
