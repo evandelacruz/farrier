@@ -59,7 +59,7 @@ type Server struct {
 	newKeystore    func(driverName string, config map[string]any) (keystore.Driver, error)
 	newBlob        func(driverName string, config map[string]any) (blob.Adapter, error)
 	dialSSH        func(ctx context.Context, target string, opts orchestrate.Options) (backupHost, error)
-	backupRun      func(ctx context.Context, job *events.Job, opts backup.Options) error
+	backupRun      func(ctx context.Context, job *events.Job, opts backup.Options) (string, error)
 	dialRestore    func(ctx context.Context, target string, opts orchestrate.Options) (restore.Host, error)
 	restoreRun     func(ctx context.Context, job *events.Job, opts restore.Options) error
 	dialPromote    func(ctx context.Context, target string, opts orchestrate.Options) (promote.Host, error)

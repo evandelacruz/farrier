@@ -97,14 +97,22 @@ func (o Options) validate() error {
 // own existing tests), so Backup gives it a private job of its own and
 // relays its step events onto job as they happen, leaving job's own
 // terminal event for Backup alone to decide.
-func Backup(ctx context.Context, job *events.Job, opts Options) error {
+//
+// Backup returns the destination key Write stored the snapshot under, so a
+// caller that took a backup on the operator's behalf can name the exact
+// snapshot afterwards rather than re-deriving it by listing the
+// destination — which would be ambiguous the moment anything else writes
+// there. upgrade.Upgrade depends on that to point a failed upgrade back at
+// the pre-upgrade snapshot it took (UPGR-002); on a failed backup the key
+// is empty, because nothing was written.
+func Backup(ctx context.Context, job *events.Job, opts Options) (string, error) {
 	key, err := backup(ctx, job, opts)
 	if err != nil {
 		job.Failed(err.Error())
-		return err
+		return "", err
 	}
 	job.Succeeded(fmt.Sprintf("backup written to %s", key))
-	return nil
+	return key, nil
 }
 
 func backup(ctx context.Context, job *events.Job, opts Options) (string, error) {

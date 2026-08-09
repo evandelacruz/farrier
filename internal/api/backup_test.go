@@ -139,9 +139,9 @@ func TestHandleBackupDialFailureFailsJob(t *testing.T) {
 	s.dialSSH = func(ctx context.Context, target string, opts orchestrate.Options) (backupHost, error) {
 		return nil, errors.New("connection refused")
 	}
-	s.backupRun = func(ctx context.Context, job *events.Job, opts backup.Options) error {
+	s.backupRun = func(ctx context.Context, job *events.Job, opts backup.Options) (string, error) {
 		t.Fatal("backupRun should not be called when dial fails")
-		return nil
+		return "", nil
 	}
 
 	rec := doBackup(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","to":"/tmp/dest"}`)
@@ -241,10 +241,10 @@ func TestHandleBackupSuccessWiresOptions(t *testing.T) {
 		return blob.NewLocal(t.TempDir())
 	}
 	var gotOpts backup.Options
-	s.backupRun = func(ctx context.Context, job *events.Job, opts backup.Options) error {
+	s.backupRun = func(ctx context.Context, job *events.Job, opts backup.Options) (string, error) {
 		gotOpts = opts
 		job.Succeeded("backup written to 20260101T000000Z.age")
-		return nil
+		return "20260101T000000Z.age", nil
 	}
 
 	rec := doBackup(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","to":"s3://bucket?endpoint=s3.example.com","remoteDir":"/srv/farrier"}`)
@@ -295,10 +295,10 @@ func TestHandleBackupDefaultsRemoteDir(t *testing.T) {
 		return blob.NewLocal(t.TempDir())
 	}
 	var ranBackup bool
-	s.backupRun = func(ctx context.Context, job *events.Job, opts backup.Options) error {
+	s.backupRun = func(ctx context.Context, job *events.Job, opts backup.Options) (string, error) {
 		ranBackup = true
 		job.Succeeded("done")
-		return nil
+		return "20260101T000000Z.age", nil
 	}
 
 	rec := doBackup(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","to":"/tmp/dest"}`)

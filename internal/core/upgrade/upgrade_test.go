@@ -142,6 +142,32 @@ type fakeHost struct {
 	dbBytes      []byte
 	servicesDown bool
 	diskFull     bool
+
+	// failCommand makes every command containing it fail, so a test can
+	// break the upgrade at a chosen step without breaking the ones before
+	// it.
+	failCommand string
+
+	// downAfterConverge flips servicesDown the moment deploy.Up converges
+	// the host, so the post-upgrade health check fails against an instance
+	// that did restart on the new image — the failure UPGR-002 most has to
+	// survive, since Forgejo has migrated its schema by then.
+	downAfterConverge bool
+}
+
+const convergeCommand = "docker compose up -d"
+
+// injectFailure records command and applies the failCommand and
+// downAfterConverge knobs. It must be called with f.mu held.
+func (f *fakeHost) injectFailure(command string) error {
+	f.commands = append(f.commands, command)
+	if f.downAfterConverge && strings.Contains(command, convergeCommand) {
+		f.servicesDown = true
+	}
+	if f.failCommand != "" && strings.Contains(command, f.failCommand) {
+		return fmt.Errorf("fakeHost: %s failed", f.failCommand)
+	}
+	return nil
 }
 
 func newFakeHost(dbBytes []byte) *fakeHost {
@@ -154,8 +180,11 @@ func (f *fakeHost) Target() orchestrate.Target {
 
 func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	f.mu.Lock()
-	f.commands = append(f.commands, command)
+	err := f.injectFailure(command)
 	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 
 	switch {
 	case strings.Contains(command, "docker compose ps"):
@@ -187,8 +216,11 @@ func (f *fakeHost) WriteFile(ctx context.Context, path string, content []byte, m
 
 func (f *fakeHost) Run(ctx context.Context, command string, stdout, stderr io.Writer) error {
 	f.mu.Lock()
-	f.commands = append(f.commands, command)
+	err := f.injectFailure(command)
 	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	if strings.Contains(command, "sqlite3") {
 		stdout.Write(f.dbBytes)
 	}
