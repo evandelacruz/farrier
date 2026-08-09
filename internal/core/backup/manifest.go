@@ -50,3 +50,20 @@ func writeManifest(dir string, manifest *Manifest) error {
 	}
 	return nil
 }
+
+// ReadManifest reads and parses ManifestFile from within dir — writeManifest's
+// inverse, and restore.Restore's entry point into a snapshot Fetch and
+// DecryptArchive have already turned back into a plain directory: it reads
+// the manifest Verify checks the rest of that directory against before
+// anything from it is installed anywhere.
+func ReadManifest(dir string) (*Manifest, error) {
+	data, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if err != nil {
+		return nil, fmt.Errorf("backup: read manifest: %w", err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("backup: parse manifest: %w", err)
+	}
+	return &manifest, nil
+}

@@ -190,6 +190,19 @@ func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdou
 	}
 }
 
+// RunStdin executes command on the host in a fresh SSH session, streaming
+// stdin to the process and its stdout and stderr to the given writers
+// (either may be nil to discard). It is Run's counterpart for the opposite
+// direction: Run lets a remote command's output stream to the caller (used
+// to capture a tar archive, e.g. SSHGitCapturer.Archive); RunStdin lets the
+// caller stream content into a remote command (used by restore.Restore to
+// extract a decrypted snapshot's git archives and database file onto a
+// host without holding either in memory). Canceling ctx closes the session
+// the same way Run's does.
+func (c *Client) RunStdin(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return c.run(ctx, command, stdin, stdout, stderr)
+}
+
 // CheckHost verifies the host meets the whole of what ORCH-001 requires
 // beyond SSH itself: Docker, reachable over the same SSH session used for
 // everything else. Its error names Docker specifically — the only thing

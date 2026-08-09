@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,55 @@ const snapshotSuffix = ".age"
 // out of the name.
 func SnapshotKey(t time.Time) string {
 	return t.UTC().Format(snapshotTimeFormat) + snapshotSuffix
+}
+
+// LatestSnapshotKey lists every object at dest and returns the key of the
+// one with the newest Modified time — the same "list a destination, take
+// the newest Modified time" lookup status.ReplicationLag already performs
+// (tech-spec.md "Status"), reused here so `restore` and (once it lands)
+// `promote` can resolve "the latest snapshot" (spec.md "Standby model:
+// cold") the same way, rather than parsing SnapshotKey's timestamp back out
+// of a name. It returns an error if dest holds no objects.
+func LatestSnapshotKey(ctx context.Context, dest blob.Adapter) (string, error) {
+	if dest == nil {
+		return "", errors.New("backup: latest snapshot: destination is required")
+	}
+	objects, err := dest.List(ctx, "")
+	if err != nil {
+		return "", fmt.Errorf("backup: latest snapshot: list destination: %w", err)
+	}
+	if len(objects) == 0 {
+		return "", errors.New("backup: latest snapshot: destination has no snapshots")
+	}
+	sort.Slice(objects, func(i, j int) bool { return objects[i].Modified.After(objects[j].Modified) })
+	return objects[0].Key, nil
+}
+
+// Fetch downloads the object at key from dest to localPath, the inverse of
+// Write (BKUP-005): restore.Restore uses it to pull a snapshot archive onto
+// local disk before DecryptArchive and Verify can run against it.
+func Fetch(ctx context.Context, dest blob.Adapter, key, localPath string) error {
+	if dest == nil {
+		return errors.New("backup: fetch: destination is required")
+	}
+	if strings.TrimSpace(key) == "" {
+		return errors.New("backup: fetch: key is required")
+	}
+	rc, err := dest.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("backup: fetch: get %s: %w", key, err)
+	}
+	defer rc.Close()
+
+	f, err := os.OpenFile(localPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("backup: fetch: create %s: %w", localPath, err)
+	}
+	if _, err := io.Copy(f, rc); err != nil {
+		f.Close()
+		return fmt.Errorf("backup: fetch: write %s: %w", localPath, err)
+	}
+	return f.Close()
 }
 
 // OpenDestination resolves the golden path's `backup --to <uri>` (spec.md

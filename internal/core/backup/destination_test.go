@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -136,6 +138,87 @@ func TestPrefixedAdapterScopesKeys(t *testing.T) {
 	}
 	if len(objects) != 1 || objects[0].Key != "snap.age" {
 		t.Fatalf("List = %+v, want one object keyed %q (prefix stripped)", objects, "snap.age")
+	}
+}
+
+func TestLatestSnapshotKeyRejectsNilDestination(t *testing.T) {
+	if _, err := LatestSnapshotKey(context.Background(), nil); err == nil {
+		t.Fatal("LatestSnapshotKey(nil): want error, got nil")
+	}
+}
+
+func TestLatestSnapshotKeyRejectsEmptyDestination(t *testing.T) {
+	adapter := newFakeAdapter()
+	if _, err := LatestSnapshotKey(context.Background(), adapter); err == nil {
+		t.Fatal("LatestSnapshotKey: want error for a destination with no snapshots, got nil")
+	}
+}
+
+func TestLatestSnapshotKeyReturnsNewest(t *testing.T) {
+	// A real destination, not fakeAdapter: LatestSnapshotKey sorts by
+	// Object.Modified, which fakeAdapter never populates (write_test.go's
+	// own doc comment: it exists for Write's error paths, not for
+	// Modified-based ordering).
+	dir := t.TempDir()
+	adapter, err := OpenDestination(dir)
+	if err != nil {
+		t.Fatalf("OpenDestination: %v", err)
+	}
+
+	older := SnapshotKey(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	newer := SnapshotKey(time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC))
+	if err := adapter.Put(context.Background(), older, bytes.NewReader([]byte("a")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := adapter.Put(context.Background(), newer, bytes.NewReader([]byte("b")), 1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	// Both Puts land at whatever real wall-clock instant this test runs
+	// at, which can round to the same mtime on some filesystems — set
+	// them explicitly far apart so the assertion is about LatestSnapshotKey
+	// picking the newer Modified time, not filesystem timestamp
+	// resolution.
+	now := time.Now()
+	if err := os.Chtimes(filepath.Join(dir, older), now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, newer), now, now); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	got, err := LatestSnapshotKey(context.Background(), adapter)
+	if err != nil {
+		t.Fatalf("LatestSnapshotKey: %v", err)
+	}
+	if got != newer {
+		t.Errorf("LatestSnapshotKey = %q, want %q", got, newer)
+	}
+}
+
+func TestFetchDownloadsObject(t *testing.T) {
+	adapter := newFakeAdapter()
+	if err := adapter.Put(context.Background(), "snap.age", bytes.NewReader([]byte("snapshot-bytes")), -1); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "fetched.age")
+	if err := Fetch(context.Background(), adapter, "snap.age", dest); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read fetched file: %v", err)
+	}
+	if string(got) != "snapshot-bytes" {
+		t.Errorf("fetched content = %q, want %q", got, "snapshot-bytes")
+	}
+}
+
+func TestFetchRejectsMissingKey(t *testing.T) {
+	adapter := newFakeAdapter()
+	if err := Fetch(context.Background(), adapter, "does-not-exist", filepath.Join(t.TempDir(), "out")); err == nil {
+		t.Fatal("Fetch: want error for a missing key, got nil")
 	}
 }
 

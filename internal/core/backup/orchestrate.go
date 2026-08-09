@@ -214,7 +214,7 @@ func runCapture(ctx context.Context, job *events.Job, dir string, opts Options) 
 func verifyEncrypted(ctx context.Context, job *events.Job, archivePath, destDir string, identity age.Identity, manifest *Manifest, keyNames []string) error {
 	job.Started(StepVerifyEncrypted, "verifying encrypted snapshot")
 
-	if err := decryptArchive(ctx, archivePath, destDir, identity); err != nil {
+	if err := DecryptArchive(ctx, archivePath, destDir, identity); err != nil {
 		err = fmt.Errorf("backup: decrypt snapshot for verification: %w", err)
 		job.Emit(StepVerifyEncrypted, events.StateFailed, err.Error())
 		return err
@@ -228,11 +228,15 @@ func verifyEncrypted(ctx context.Context, job *events.Job, archivePath, destDir 
 	return nil
 }
 
-// decryptArchive decrypts the age archive at archivePath with identity and
+// DecryptArchive decrypts the age archive at archivePath with identity and
 // extracts its tar contents into destDir, undoing exactly what encryptTo
-// did — the same tar format tarDir's writer produces, so this is Verify's
-// only additional input beyond what Run's own verify pass already used.
-func decryptArchive(ctx context.Context, archivePath, destDir string, identity age.Identity) error {
+// did — the same tar format tarDir's writer produces. verifyEncrypted uses
+// it to check the exact bytes Write is about to send off the host;
+// restore.Restore uses the same function to turn a fetched snapshot back
+// into a plain directory Verify can check before anything from it is
+// installed anywhere (tech-spec.md "Snapshot format": "Verification at
+// creation and at restore runs the same code path").
+func DecryptArchive(ctx context.Context, archivePath, destDir string, identity age.Identity) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
