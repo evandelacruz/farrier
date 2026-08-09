@@ -78,7 +78,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **UP-001** · `up` must deploy the full stateless layer given only `ssh://user@host` and a bundle.
 - **UP-002** · `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately.
 - **UP-003** · Re-running `up` against a live host must be safe and must converge that host to the bundle definition.
-- **UP-004** · `up` must place every stateful kind — git repositories, the database, and blobs — on a host directory bind-mounted into the container that serves it, so recreating or replacing a container never destroys forge state.
+- **UP-004** · `up` must place every stateful kind the forge itself serves — git repositories, the database, and LFS objects — on a host directory bind-mounted into the container that serves it, so recreating or replacing a container never destroys forge state. A `local` blob adapter's directory is created on the host but not mounted; no container reads it.
 
 ## IMPT — repository import
 

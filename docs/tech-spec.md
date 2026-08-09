@@ -401,12 +401,16 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
 ```
 <RemoteDir>/state/git      → forgejo:/data/git/repositories
 <RemoteDir>/state/gitea    → forgejo:/data/gitea          (SQLite database, LFS objects)
-<RemoteDir>/state/blobs    → the local blob adapter's path, when the bundle uses one
+<RemoteDir>/state/blobs    created, not mounted — the local blob adapter's path, when the bundle uses one; no container reads it
 ```
 
 This is what makes the stateless/stateful split in spec.md real. Without it every kind of state lives in the forgejo container's writable layer, and `Converge`'s `docker compose up -d --remove-orphans` — which recreates any service whose resolved config changed — destroys it. Host state being disposable applies to the *stateless* layer only; `<RemoteDir>/state` is the one directory on the host that is not.
 
 It is also what `state.SSHGitExporter` and `backup.SSHGitCapturer` already assume. Both run `find` and `tar -C <root>` directly over SSH with no `docker exec` wrapper, unlike `state.SSHDatabaseExporter`, which wraps because the database is reached through the running Forgejo process rather than as a file. Git capture was written against a host-visible repository root; UP-004 supplies it.
+
+`deploy.Up` (`configureState`) creates `<RemoteDir>/state/git` and `<RemoteDir>/state/gitea` before Converge runs, owned by the uid:gid the official Forgejo image's `git` user runs as (1000:1000, the image's unoverridden default) — Docker otherwise creates a missing bind-mount source root-owned, which Forgejo can never write to — and bind-mounts both into the forgejo service at `forge.RepoRoot` and `forge.DataPath`. `forge.DataPath` is also where `RenderAppINI` stores LFS objects, attachments, avatars, and CI artifacts by default, so this one mount already keeps every kind of state Forgejo itself writes durable.
+
+`<RemoteDir>/state/blobs` is created, unmounted, only when the bundle's blob driver is `local`: nothing in the tree today configures Forgejo's own storage to write anywhere other than `forge.DataPath`, so there is no container-side path yet for a local blob adapter's content to land at. This reserves the directory ahead of that wiring rather than guessing at it.
 
 ## Snapshot orchestration (`backup`, BKUP-006)
 
