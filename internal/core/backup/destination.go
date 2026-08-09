@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/blob"
+	"github.com/evandelacruz/farrier/internal/core/state"
 )
 
 // snapshotTimeFormat renders a snapshot's capture time so object keys sort
@@ -64,6 +65,26 @@ func OpenDestination(uri string) (blob.Adapter, error) {
 		return blob.NewLocal(uri)
 	}
 	return openS3Destination(uri)
+}
+
+// ResolveOptionalDestination resolves an operator-supplied `-to`/`to`
+// destination the same way OpenDestination does, except an empty uri is
+// valid here: it means the operator hasn't named a golden-path destination
+// for this call, so status.Options.Destination stays nil and `status`
+// reports unmeasured lag (tech-spec.md "Status", spec.md "Replication
+// lag") — never OpenDestination's own error for an empty uri, which
+// `backup` itself never allows since a backup with nowhere to write is
+// always a mistake.
+//
+// `cmd/farrier status` and POST /status both call this rather than
+// duplicating the "empty means nil" branch (CLAUDE.md "one core, thin
+// skins"), the same pattern BuildOptions (options.go) established for
+// backup's own host-derived Options fields.
+func ResolveOptionalDestination(uri string) (state.BlobExporter, error) {
+	if strings.TrimSpace(uri) == "" {
+		return nil, nil
+	}
+	return OpenDestination(uri)
 }
 
 func openS3Destination(uri string) (blob.Adapter, error) {

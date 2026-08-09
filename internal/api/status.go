@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/status"
 )
@@ -80,7 +81,10 @@ func newStatusResponse(r status.Report) statusResponse {
 // every mutation verb, status is a read — it dials the target, builds the
 // bundle's keystore driver, and calls status.Check synchronously, the same
 // as the `status` CLI command, returning the report directly instead of a
-// job ID.
+// job ID. The optional `to` query parameter names the same golden-path
+// backup destination `backup --to` writes to (backup.ResolveOptionalDestination);
+// omitted, Options.Destination stays nil and Lag reports unmeasured, same as
+// leaving `status -to` off on the CLI.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	bundleDir := q.Get("bundleDir")
@@ -125,6 +129,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	destination, err := backup.ResolveOptionalDestination(q.Get("to"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("to: %w", err))
+		return
+	}
+
 	ctx := r.Context()
 	host, err := s.dial(ctx, target, orchestrate.Options{
 		KeyFile:        q.Get("sshKeyFile"),
@@ -138,11 +148,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer host.Close()
 
 	report, err := s.statusCheck(ctx, status.Options{
-		Runner:    host,
-		Bundle:    b,
-		RemoteDir: remoteDir,
-		Keystore:  driver,
-		DiskPath:  diskPath,
+		Runner:      host,
+		Bundle:      b,
+		RemoteDir:   remoteDir,
+		Keystore:    driver,
+		DiskPath:    diskPath,
+		Destination: destination,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

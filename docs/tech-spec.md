@@ -426,7 +426,7 @@ The whole sequence is one CORE-002 job, so the CLI and the dashboard render the 
 
 `backup.Backup` (`internal/core/backup/orchestrate.go`) is that orchestrator: it resolves the destination, runs `Run` against a private job and relays its step events onto the caller's job live (`Run` still ends whatever job it's given — its own existing, tested contract — so composing it under a shared job needs this indirection; `Encrypt` and `Write` already take the caller's job directly), age-encrypts and writes as above, and additionally re-runs `Verify` against the decrypted form of the archive `Write` is about to send off the host, before it goes. `cmd/farrier backup` and `POST /backup` both call it, resolving the SSH-backed `state` exporters, the bundle's blob driver (`blob.New`, resolving `Manifest.Drivers.Blob`), and the age backup key (`backup.ResolveIdentity`) the same way for both frontends.
 
-`status` still has no destination to report a last-backup age or replication lag against (STAT-001, STAT-002): neither `cmd/farrier status` nor `POST /status` resolves the bundle's configured destination through `backup.OpenDestination` yet, so both still always pass a `nil` `status.Options.Destination`.
+`status` reports last-backup age and replication lag against the same golden-path destination `backup --to` writes to (STAT-001, STAT-002): `cmd/farrier status -to` and `POST /status?to=` take the same destination string `backup -to` does, resolved through `backup.ResolveOptionalDestination` — a thin wrapper over `OpenDestination` that also accepts an empty string, returning a nil `state.BlobExporter` rather than `OpenDestination`'s own "uri is required" error, since `status` (unlike `backup`) is meaningful with no destination configured. Both frontends pass the result into `status.Options.Destination`.
 
 ## Status (`status`, STAT-001, STAT-002)
 
@@ -470,16 +470,19 @@ instance's current state each time it's called, never a cached one:
      golden-path destination" apart from "operator-assembled transport"
      from a `blob.Adapter` alone.
 
-   `backup.OpenDestination` (BKUP-005, "Snapshot destination" above) is now
-   what resolves a destination into a `blob.Adapter`, but no CLI/API
-   orchestrator wires `backup --to` end to end yet (that composes `Run`,
-   `Encrypt`, `Write`, and BKUP-004's still-unimplemented verification), so
-   today `cmd/farrier status` always passes a `nil` `Destination`, since no
-   destination is persisted anywhere yet, and the CLI always prints
-   `unmeasured`. Once that orchestrator exists, the caller resolves the
-   bundle's configured destination through `backup.OpenDestination` and
-   starts passing it in, and lag reporting lights up with no further change
-   to `status.Check` or its CLI skin.
+   Neither the bundle manifest nor any other bundle-level config persists a
+   destination (tech-spec.md "Bundle directory" lists everything the
+   manifest carries; a backup destination is not among them) — the same
+   posture `backup --to` already takes (spec.md "Golden path": the
+   destination lives in the operator's cron line, never stored by the
+   system). `status` follows suit: `cmd/farrier status -to` and
+   `POST /status?to=` take the destination as an optional argument, the
+   same string `backup -to` takes, resolved through
+   `backup.ResolveOptionalDestination` (a thin `OpenDestination` wrapper
+   that treats an empty string as "no destination" rather than an error)
+   into a `state.BlobExporter` and passed as `Options.Destination`. Omitted,
+   `Destination` stays `nil` and the CLI prints `unmeasured`, exactly as
+   before this flag existed.
 
 `status.Check` returns an error naming which of the four failed rather
 than a partially-filled report — consistent with the rest of the core's
@@ -489,18 +492,15 @@ calls `status.Check`, and prints the report; its exit code reflects
 whether the report could be produced, not whether the instance it
 describes is healthy.
 
-**Last-backup age is not implemented yet.** STAT-001 also requires it —
-distinct from STAT-002's replication lag, since it's the age of the
-bundle's own last backup rather than a destination's — but still needs the
-same no-CLI-orchestrator-yet caller described just above to resolve a
-destination and pass it in. The snapshot listing/naming convention itself
-is no longer missing: `backup.SnapshotKey` (BKUP-005, "Snapshot
-destination" above) is what `backup` writes to its destination and what
-`status` will locate the newest entry through, the same way
-`ReplicationLag` already does — by listing the destination and taking the
-newest `Modified` time, not by parsing a name.
-`docs/status.json` carries STAT-001 as partial with this as the
-remaining slice.
+**Last-backup age (STAT-001) and replication lag (STAT-002) are the same
+measurement.** STAT-001's "last-backup age" is the age of the bundle's own
+last backup, distinct in language from STAT-002's "how stale is my
+replica" — but both read the newest object's `Modified` time across the
+same `Options.Destination`, via `backup.SnapshotKey` (BKUP-005, "Snapshot
+destination" above), the golden-path destination `backup` writes every
+snapshot to. Once a destination is wired in, `Report.Lag` answers both
+requirements with one field; there is no separate last-backup-age
+computation to invent.
 
 ## Importing repositories (`import`, IMPT-001, IMPT-002, IMPT-003)
 
