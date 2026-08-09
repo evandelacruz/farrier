@@ -1,6 +1,7 @@
 // Package drill implements the rehearsal command `drill` (DRIL-001):
 // restore the most recent backup onto a scratch target, boot the full
-// stack there, and report success or the specific step that failed.
+// stack there, run a smoke CI job, and report success or the specific step
+// that failed.
 //
 // Drill sequences already-landed pieces rather than reimplementing any of
 // them. backup.SnapshotAge resolves the newest snapshot at the destination
@@ -10,7 +11,25 @@
 // naming the defect, installs the snapshot's original identity, and ends by
 // running deploy.Up (UP-001..004), which is what "boot the full stack"
 // means here: the same converge, readiness wait, and admin bootstrap a real
-// deployment runs, against the state the restore just placed.
+// deployment runs, against the state the restore just placed. forge.SmokeCI
+// then runs the smoke job on the instance that just booted.
+//
+// # The smoke CI job
+//
+// A restore that boots proves the state came back. It does not prove the
+// forge can do the thing a team stops working without, so the drill ends by
+// creating a scratch repository on the drilled instance with one trivial
+// workflow, letting the commit dispatch it, and waiting for the run to
+// finish (forge.SmokeCI, whose doc comment covers how). The outcome folds
+// into Report exactly like the restore steps: success, or forge.StepSmokeCI
+// named as the step that failed.
+//
+// It exercises the colocated runner FORGE-005 deploys, unchanged and
+// unstubbed — the drill neither adds a runner nor checks whether one exists
+// first. A drilled instance with no runner able to claim the job is a
+// finding, not a special case, and is reported as the run never starting.
+// The scratch repository is left behind: disposing of the drilled target is
+// DRIL-003's job, and it disposes of the target whole.
 //
 // # What drill adds on top of restore
 //
@@ -64,7 +83,19 @@
 //     interface rather than on every interface
 //     (orchestrate.WithLoopbackPorts, via deploy.Options.Quarantine), so
 //     the only route in is an SSH tunnel terminating on that host — the
-//     same SSH access Farrier already needs to run the drill at all.
+//     same SSH access Farrier already needs to run the drill at all. The
+//     smoke job inherits this rather than working around it: it drives the
+//     instance from inside its own container over that SSH session, and
+//     opens nothing.
+//   - The bundle domain resolves, on the drilled host's Docker network, to
+//     the drilled Caddy (orchestrate.WithNetworkAlias, also via
+//     deploy.Options.Quarantine). The colocated runner connects to the
+//     bundle domain and DNS still points that domain at production, so
+//     without the alias the drilled runner would attach to production's job
+//     queue — with the same runner secret production's own runner holds —
+//     and run production's CI on the scratch host. The alias is why the
+//     smoke job's run is claimed by the drilled instance's runner and by
+//     nothing else.
 //
 // What quarantine does not do is make the scratch target itself safe to
 // share: anything with a shell on that host can reach the instance over
@@ -89,6 +120,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
+	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/restore"
 )
@@ -149,6 +181,13 @@ type Options struct {
 	// Now overrides the clock the drilled snapshot's age is measured
 	// against. Zero uses time.Now.
 	Now time.Time
+
+	// SmokeTimeout bounds how long the drill waits for its smoke CI job to
+	// finish once the workflow is committed. Zero uses forge.SmokeCI's own
+	// default, which is what every frontend passes: the wait is dominated by
+	// the drilled host pulling a job-container image, not by anything the
+	// operator can usefully tune.
+	SmokeTimeout time.Duration
 }
 
 func (o Options) validate() error {
@@ -219,6 +258,12 @@ type Report struct {
 	// SnapshotAge is how old that snapshot was when the drill resolved it.
 	SnapshotAge time.Duration
 
+	// SmokeRepository is the scratch repository the smoke CI job ran in, in
+	// owner/name form, once the drill has got that far. It is empty when the
+	// drill failed before the smoke job, and it is left on the drilled
+	// instance: DRIL-003 disposes of the scratch target whole.
+	SmokeRepository string
+
 	// Failure is nil on success, and otherwise names the step that failed.
 	Failure *Failure
 }
@@ -244,8 +289,8 @@ func Drill(ctx context.Context, job *events.Job, opts Options) (Report, error) {
 		return report, report.Failure
 	}
 	job.Succeeded(fmt.Sprintf(
-		"drill succeeded: snapshot %s (captured %s ago) restored to the scratch target and the full stack booted",
-		report.SnapshotKey, report.SnapshotAge.Round(time.Second),
+		"drill succeeded: snapshot %s (captured %s ago) restored to the scratch target, the full stack booted, and a smoke CI job ran in %s",
+		report.SnapshotKey, report.SnapshotAge.Round(time.Second), report.SmokeRepository,
 	))
 	return report, nil
 }
@@ -263,7 +308,17 @@ func drill(ctx context.Context, job *events.Job, opts Options) Report {
 
 	if step, err := restoreOnto(ctx, job, opts, key); err != nil {
 		report.Failure = &Failure{Step: step, Detail: err.Error()}
+		return report
 	}
+
+	result, err := forge.SmokeCI(ctx, deploy.ComposeRunner(opts.Host, opts.RemoteDir, opts.Bundle), job, forge.SmokeOptions{
+		Timeout: opts.SmokeTimeout,
+	})
+	if err != nil {
+		report.Failure = &Failure{Step: forge.StepSmokeCI, Detail: err.Error()}
+		return report
+	}
+	report.SmokeRepository = result.Repository
 	return report
 }
 

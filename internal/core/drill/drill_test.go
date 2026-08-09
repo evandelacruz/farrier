@@ -233,6 +233,10 @@ func testBundle(t *testing.T, keysDir string) *bundle.Bundle {
 		Manifest: *bundle.NewManifest(testDomain, map[string]string{
 			"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
 			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
+			// The colocated runner every deployment gets by default
+			// (FORGE-005), so a drilled instance in these tests has the
+			// runner its smoke CI job needs (DRIL-001).
+			forge.RunnerService: "code.forgejo.org/forgejo/runner@sha256:" + strings.Repeat("d", 64),
 		}, bundle.DriverConfig{
 			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
 			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
@@ -426,6 +430,7 @@ func TestDrillEndToEnd(t *testing.T) {
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
 		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepConverge,
 		deploy.StepWaitForge, deploy.StepWaitCaddy,
+		forge.StepSmokeCI,
 	}
 	started, terminal := stepOutcomes(job)
 	for _, step := range wantSteps {

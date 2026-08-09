@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
+	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
 
@@ -21,6 +22,22 @@ type composeRunner struct {
 	host      Host
 	remoteDir string
 	bundle    *bundle.Bundle
+}
+
+// ComposeRunner adapts an already-deployed host into a forge.Runner: every
+// command it runs lands in the Compose project Up converged at remoteDir,
+// the same way Up's own post-converge steps (admin bootstrap, runner
+// registration) reach it.
+//
+// It is exported for callers that run something against the instance after
+// Up has returned rather than as part of it — internal/core/drill's smoke CI
+// job (DRIL-001), which needs a booted instance before it has anything to
+// dispatch. b is only read for the names of its Compose files, so passing
+// the bundle Up was given rather than the deploy-time-layered copy it
+// shipped is correct: layering changes those files' contents, never their
+// names.
+func ComposeRunner(host Host, remoteDir string, b *bundle.Bundle) forge.Runner {
+	return &composeRunner{host: host, remoteDir: remoteDir, bundle: b}
 }
 
 // Run prefixes command with the deployment's compose project reference and

@@ -5,9 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
+	"gopkg.in/yaml.v3"
 )
 
 // The tests here are DRIL-002's acceptance bar, driven end to end through
@@ -102,5 +104,56 @@ func TestDrilledInstanceKeepsTheSnapshotsIdentity(t *testing.T) {
 		if !strings.Contains(appINI, want) {
 			t.Errorf("drilled app.ini missing %q; quarantine changed the instance's identity:\n%s", want, appINI)
 		}
+	}
+}
+
+// TestDrilledRunnerReachesTheDrilledInstance is the property the smoke job
+// (DRIL-001) depends on and quarantine owns. The colocated runner connects
+// to the bundle domain, and a drill leaves DNS pointing that domain at
+// production — so on the drilled host the domain has to resolve to the
+// drilled Caddy on the deployment's own Docker network. Without the alias
+// the drilled runner would attach to production's job queue, holding the
+// same runner secret production's own runner holds, and run production's CI
+// on the scratch target.
+func TestDrilledRunnerReachesTheDrilledInstance(t *testing.T) {
+	f := newFixture(t)
+	if _, err := Drill(context.Background(), events.NewJob(), f.opts); err != nil {
+		t.Fatalf("Drill: %v", err)
+	}
+
+	composed := drilledFile(t, f.host(), "/opt/farrier-drill/compose.tmp/docker-compose.yml")
+
+	// Decoded generically: only Caddy is in Compose's mapping form for
+	// networks, every other service keeping the list form Render emits.
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(composed), &doc); err != nil {
+		t.Fatalf("parse drilled compose: %v\n%s", err, composed)
+	}
+	services, _ := doc["services"].(map[string]any)
+	service, _ := services[caddy.Service].(map[string]any)
+	networks, ok := service["networks"].(map[string]any)
+	if !ok {
+		t.Fatalf("drilled caddy declares no per-network options, so it carries no alias:\n%s", composed)
+	}
+
+	var aliased bool
+	for _, options := range networks {
+		opts, _ := options.(map[string]any)
+		aliases, _ := opts["aliases"].([]any)
+		for _, alias := range aliases {
+			if alias == testDomain {
+				aliased = true
+			}
+		}
+	}
+	if !aliased {
+		t.Errorf("drilled caddy does not answer to %s on the deployment network:\n%s", testDomain, composed)
+	}
+
+	// The runner's own configuration is untouched: it still connects to the
+	// bundle domain over HTTPS, exactly as production's does. The alias
+	// changes where that resolves on the drilled host, nothing else.
+	if !strings.Contains(composed, forge.RunnerInstanceURL(testDomain)) {
+		t.Errorf("drilled runner no longer connects to the bundle domain:\n%s", composed)
 	}
 }
