@@ -19,11 +19,12 @@ import (
 // Key names for the bundle key material INIT-003 generates beyond
 // Forgejo's own three (forge.KeySecretKey, forge.KeyInternalToken,
 // forge.KeyLFSJWTSecret — owned by the forge package since forge is what
-// consumes them). Nothing consumes these yet: the TLS certificate installs
-// into Caddy at `up`, the SSH host key installs at restore (RSTR-004,
-// spec.md "Identity" > "Key material"), and the age key encrypts and
-// decrypts snapshots (BKUP-003). Their names live here, next to the code
-// that first generates them, until a consumer package claims them.
+// consumes them). The TLS certificate and the SSH host key both install
+// into the running service on every `up` (deploy.configureTLS,
+// deploy.configureSSHHostKey — the latter RSTR-004), and the age key
+// encrypts and decrypts snapshots (BKUP-003). Their names live here, next
+// to the code that first generates them, until a consumer package claims
+// them.
 const (
 	// KeyTLSCertificate is the PEM-encoded certificate chain issued during
 	// zone-control proof (INIT-002) and persisted here as bundle identity.

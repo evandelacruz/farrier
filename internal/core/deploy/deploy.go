@@ -39,13 +39,14 @@ import (
 // Step identifiers Up emits through the job's event stream (CORE-002), in
 // the order it runs them. forge.StepAdminBootstrap follows StepWaitForge.
 const (
-	StepCheckHost      = "check-host"
-	StepConfigureForge = "configure-forge"
-	StepConfigureTLS   = "configure-tls"
-	StepConfigureState = "configure-state"
-	StepConverge       = "converge"
-	StepWaitForge      = "wait-forge"
-	StepWaitCaddy      = "wait-caddy"
+	StepCheckHost       = "check-host"
+	StepConfigureForge  = "configure-forge"
+	StepConfigureTLS    = "configure-tls"
+	StepConfigureState  = "configure-state"
+	StepConfigureSSHKey = "configure-ssh-host-key"
+	StepConverge        = "converge"
+	StepWaitForge       = "wait-forge"
+	StepWaitCaddy       = "wait-caddy"
 )
 
 // hostConfigDir is the directory under RemoteDir Up writes deploy-time
@@ -104,10 +105,12 @@ type Options struct {
 // Forgejo's app.ini, resolves the bundle's persisted TLS certificate and
 // renders and ships Caddy's config (UP-002), gives forge state a durable
 // home on the host and bind-mounts it into the forgejo service (UP-004),
-// converges the host to the bundle's Compose definition plus that config,
-// waits for Forgejo to accept commands, provisions the first admin
-// account, and waits for Caddy to accept commands so the forge is serving
-// HTTPS and usable in a browser before Up returns.
+// installs the bundle's persisted ed25519 SSH host key where that app.ini
+// points Forgejo's git-over-SSH server at (RSTR-004), converges the host to
+// the bundle's Compose definition plus that config, waits for Forgejo to
+// accept commands, provisions the first admin account, and waits for Caddy
+// to accept commands so the forge is serving HTTPS and usable in a browser
+// before Up returns.
 //
 // Every step is safe to repeat against a host Up has already deployed to
 // (UP-003): CheckHost and waitReady are read-only, configureForge always
@@ -116,10 +119,11 @@ type Options struct {
 // persisted certificate untouched unless it's actually due for renewal
 // (configureTLS's doc comment), configureState's directory creation and
 // chown are both idempotent (configureState's doc comment),
-// orchestrate.Converge is idempotent by construction (its own doc
-// comment), and forge.Bootstrap treats an admin account that already
-// exists as done rather than a failure. Nothing here reads back what's
-// already running before deciding what to do — the bundle alone
+// configureSSHHostKey always writes the same persisted key back (its own
+// doc comment), orchestrate.Converge is idempotent by construction (its
+// own doc comment), and forge.Bootstrap treats an admin account that
+// already exists as done rather than a failure. Nothing here reads back
+// what's already running before deciding what to do — the bundle alone
 // determines the outcome, same as Converge.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
@@ -176,6 +180,13 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		return fmt.Errorf("deploy: configure state: %w", err)
 	}
 	job.Emit(StepConfigureState, events.StateSucceeded, "state directories ready and mounted")
+
+	job.Started(StepConfigureSSHKey, "installing ssh host key")
+	if err := configureSSHHostKey(ctx, host, b, opts.RemoteDir); err != nil {
+		job.Emit(StepConfigureSSHKey, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: configure ssh host key: %w", err)
+	}
+	job.Emit(StepConfigureSSHKey, events.StateSucceeded, "ssh host key installed")
 
 	job.Started(StepConverge, "converging host to bundle definition")
 	deployed := &bundle.Bundle{Manifest: b.Manifest, Compose: compose}

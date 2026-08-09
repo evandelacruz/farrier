@@ -55,6 +55,7 @@ func TestRenderAppINIAnswersEveryWizardField(t *testing.T) {
 		"DOMAIN = forge.example.com",
 		"ROOT_URL = https://forge.example.com/",
 		"SSH_DOMAIN = forge.example.com",
+		"SSH_SERVER_HOST_KEYS = " + SSHHostKeyPath,
 		"DB_TYPE = sqlite3",
 		"PATH = /data/gitea/gitea.db",
 		"ROOT = /data/git/repositories",
