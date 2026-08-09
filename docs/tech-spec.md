@@ -18,6 +18,8 @@ internal/core/        the engine — all logic lives here
   restore/            snapshot verification, rebuild, identity install
   promote/            failover sequencing: restore, reconcile CI, flip DNS
   upgrade/            upgrade sequencing: health gate, backup, bump version, converge
+  drill/              rehearsal sequencing: restore the latest snapshot to a
+                      scratch target, boot it, report the failing step
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing, and the host state layout below

@@ -16,6 +16,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/dns"
+	"github.com/evandelacruz/farrier/internal/core/drill"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/importer"
 	"github.com/evandelacruz/farrier/internal/core/initialize"
@@ -67,6 +68,8 @@ type Server struct {
 	promoteRun     func(ctx context.Context, job *events.Job, opts promote.Options) error
 	dialUpgrade    func(ctx context.Context, target string, opts orchestrate.Options) (upgradeHost, error)
 	upgradeRun     func(ctx context.Context, job *events.Job, opts upgrade.Options) error
+	dialDrill      func(ctx context.Context, target string, opts orchestrate.Options) (drill.Host, error)
+	drillRun       func(ctx context.Context, job *events.Job, opts drill.Options) (drill.Report, error)
 }
 
 // New returns a Server wired to the real core implementations: the same
@@ -104,15 +107,17 @@ func New() *Server {
 			return orchestrate.Connect(ctx, target, opts)
 		},
 		upgradeRun: upgrade.Upgrade,
+		dialDrill: func(ctx context.Context, target string, opts orchestrate.Options) (drill.Host, error) {
+			return orchestrate.Connect(ctx, target, opts)
+		},
+		drillRun: drill.Drill,
 	}
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
-// POST /import, POST /backup, POST /restore, POST /promote,
-// POST /upgrade, GET /status, and GET /jobs/{id}/events, the RPC verbs for
-// every core operation currently implemented (tech-spec.md "API"). Verbs
-// for operations not yet landed in internal/core (drill) are added here as
-// each one lands.
+// POST /import, POST /backup, POST /restore, POST /promote, POST /upgrade,
+// POST /drill, GET /status, and GET /jobs/{id}/events — an RPC verb for
+// every core operation (API-001, tech-spec.md "API").
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
@@ -122,6 +127,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /restore", s.handleRestore)
 	mux.HandleFunc("POST /promote", s.handlePromote)
 	mux.HandleFunc("POST /upgrade", s.handleUpgrade)
+	mux.HandleFunc("POST /drill", s.handleDrill)
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /jobs/{id}/events", s.handleJobEvents)
 	return mux
