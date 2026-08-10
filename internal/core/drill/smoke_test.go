@@ -44,10 +44,31 @@ func TestDrillRunsASmokeCIJob(t *testing.T) {
 	}
 
 	if report.SmokeRepository == "" {
-		t.Error("report names no scratch repository for the smoke job")
+		t.Fatal("report names no scratch repository for the smoke job")
 	}
-	if !strings.Contains(commands[0], strings.TrimPrefix(report.SmokeRepository, "admin/")) {
-		t.Errorf("report names repository %q, which the smoke command never mentions", report.SmokeRepository)
+	// The report names the repository as owner/name, and the smoke script
+	// writes those two on separate lines — so match each against its own
+	// line. The owner is the forge's admin account, read from the forge
+	// package rather than written out here: a literal would go stale the
+	// moment that account is renamed, and go stale silently, since a wrong
+	// prefix just leaves the rest of the assertion checking a string the
+	// script never emits.
+	admin, err := forge.NewAdminAccount("forge.example.com")
+	if err != nil {
+		t.Fatalf("NewAdminAccount: %v", err)
+	}
+	owner, name, ok := strings.Cut(report.SmokeRepository, "/")
+	if !ok {
+		t.Fatalf("report names repository %q, want owner/name form", report.SmokeRepository)
+	}
+	if owner != admin.Username {
+		t.Errorf("report names repository %q, owned by %q — want the admin account %q", report.SmokeRepository, owner, admin.Username)
+	}
+	if !strings.Contains(commands[0], "owner="+owner) {
+		t.Errorf("smoke command never sets owner=%s:\n%s", owner, commands[0])
+	}
+	if !strings.Contains(commands[0], "repo="+name) {
+		t.Errorf("report names repository %q, which the smoke command never mentions:\n%s", report.SmokeRepository, commands[0])
 	}
 
 	started, terminal := stepOutcomes(job)

@@ -19,8 +19,8 @@ func TestSmokeCICreatesARepositoryCommitsAWorkflowAndWaitsForTheRun(t *testing.T
 	if err != nil {
 		t.Fatalf("SmokeCI: %v", err)
 	}
-	if result.Repository != "admin/smoke-repo" {
-		t.Errorf("Repository = %q, want %q", result.Repository, "admin/smoke-repo")
+	if want := adminUsername + "/smoke-repo"; result.Repository != want {
+		t.Errorf("Repository = %q, want %q", result.Repository, want)
 	}
 
 	cmd := runner.gotCommand
@@ -108,7 +108,7 @@ func TestSmokeCIGeneratesAFreshRepositoryNameEachCall(t *testing.T) {
 	if a.Repository == b.Repository {
 		t.Fatalf("two calls used the same scratch repository %q", a.Repository)
 	}
-	if !strings.HasPrefix(a.Repository, "admin/farrier-drill-smoke-") {
+	if !strings.HasPrefix(a.Repository, adminUsername+"/farrier-drill-smoke-") {
 		t.Errorf("Repository = %q, want an admin-owned farrier-drill-smoke- name", a.Repository)
 	}
 }

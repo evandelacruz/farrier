@@ -159,6 +159,10 @@ func SmokeCI(ctx context.Context, runner Runner, job *events.Job, opts SmokeOpti
 		return SmokeResult{}, fmt.Errorf("forge: smoke ci: %s", detail)
 	}
 
+	// The scratch repository belongs to the first admin account, because
+	// that is whose token the script mints above — so its owner segment is
+	// adminUsername, not a name of its own. Renaming that constant moves
+	// this path, which is why forge_test pins the two together.
 	result := SmokeResult{Repository: adminUsername + "/" + repo}
 	job.Emit(StepSmokeCI, events.StateSucceeded, fmt.Sprintf(
 		"smoke CI job succeeded: %s ran to completion in scratch repository %s",

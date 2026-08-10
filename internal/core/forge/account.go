@@ -17,7 +17,20 @@ import (
 // bootstrap command.
 const Service = "forgejo"
 
-const adminUsername = "admin"
+// adminUsername is the login name of the forge's first admin account, and
+// also the owner of the scratch repository the drill's smoke job creates
+// (see smoke.go) — the two are the same account and must stay the same
+// string.
+//
+// It is deliberately not "admin". Forgejo reserves that name, and
+// `forgejo admin user create --username admin` fails outright with
+// "CreateUser: name is reserved [name: admin]", which left `up` unable to
+// provision its first admin on any host (found on a real deployment,
+// 2026-08-10). "farrier" is confirmed accepted by Forgejo and says which
+// tool created the account. Anything changing it must be checked against a
+// running Forgejo: the reserved list is upstream data, not something this
+// repository can assert.
+const adminUsername = "farrier"
 const passwordLength = 24
 
 // passwordCharset is 64 characters — an exact divisor of 256 — so mapping
@@ -39,9 +52,13 @@ type AdminAccount struct {
 }
 
 // NewAdminAccount generates the first admin account for a forge at domain:
-// username "admin", email admin@domain, and a fresh random password. Every
-// call returns its own password — none is ever reused or derived from
-// anything else.
+// the fixed username above, that same name @domain as the email, and a
+// fresh random password. Every call returns its own password — none is ever
+// reused or derived from anything else.
+//
+// The email's local part is the username rather than a second literal, so
+// there is one name to change and no way for the two to drift apart. Nothing
+// constrains it otherwise: Forgejo reserves usernames, not addresses.
 func NewAdminAccount(domain string) (AdminAccount, error) {
 	if strings.TrimSpace(domain) == "" {
 		return AdminAccount{}, fmt.Errorf("forge: domain is required")
@@ -52,7 +69,7 @@ func NewAdminAccount(domain string) (AdminAccount, error) {
 	}
 	return AdminAccount{
 		Username: adminUsername,
-		Email:    "admin@" + domain,
+		Email:    adminUsername + "@" + domain,
 		Password: keystore.NewSecret(password),
 	}, nil
 }

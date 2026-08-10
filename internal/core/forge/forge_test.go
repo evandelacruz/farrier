@@ -22,11 +22,11 @@ func TestNewAdminAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAdminAccount: %v", err)
 	}
-	if a.Username != "admin" {
-		t.Errorf("Username = %q, want %q", a.Username, "admin")
+	if a.Username != adminUsername {
+		t.Errorf("Username = %q, want %q", a.Username, adminUsername)
 	}
-	if a.Email != "admin@forge.example.com" {
-		t.Errorf("Email = %q, want %q", a.Email, "admin@forge.example.com")
+	if want := adminUsername + "@forge.example.com"; a.Email != want {
+		t.Errorf("Email = %q, want %q", a.Email, want)
 	}
 	if len(a.Password.Reveal()) != passwordLength {
 		t.Errorf("len(Password) = %d, want %d", len(a.Password.Reveal()), passwordLength)
@@ -35,6 +35,58 @@ func TestNewAdminAccount(t *testing.T) {
 		if !strings.ContainsRune(passwordCharset, r) {
 			t.Fatalf("Password contains char %q outside charset", r)
 		}
+	}
+}
+
+// TestAdminUsernameIsNotReserved guards the one decision behind the
+// username constant. On 2026-08-10 a deployment failed with "CreateUser:
+// name is reserved [name: admin]" — Forgejo reserves "admin", so `up` could
+// not create the first admin account on any host, and the operator was left
+// with a forge they could not log into. The obvious word is the broken one;
+// this is here so the next person to tidy the constant sees that before
+// they change it.
+//
+// Forgejo's reserved list lives upstream and will drift, so this does not
+// copy it. Only a running Forgejo can answer whether a name is acceptable;
+// what a unit test can do is stop a silent return to the name already known
+// to fail.
+func TestAdminUsernameIsNotReserved(t *testing.T) {
+	if adminUsername == "admin" {
+		t.Error(`adminUsername is "admin", which Forgejo reserves — CreateUser rejects it and no admin account is ever created`)
+	}
+	a, err := NewAdminAccount("forge.example.com")
+	if err != nil {
+		t.Fatalf("NewAdminAccount: %v", err)
+	}
+	if a.Username == "admin" {
+		t.Errorf("Username = %q, which Forgejo reserves", a.Username)
+	}
+}
+
+// TestSmokeRepositoryOwnerIsTheAdminAccount pins the coupling between the
+// admin username and the drill smoke job's repository owner. The smoke
+// script mints its API token from the admin account, so the repository it
+// creates lands under that account — changing one without the other builds
+// a path that points at a user who does not exist.
+func TestSmokeRepositoryOwnerIsTheAdminAccount(t *testing.T) {
+	a, err := NewAdminAccount("forge.example.com")
+	if err != nil {
+		t.Fatalf("NewAdminAccount: %v", err)
+	}
+	runner := &fakeRunner{}
+	result, err := SmokeCI(context.Background(), runner, events.NewJob(), SmokeOptions{Repository: "smoke-repo"})
+	if err != nil {
+		t.Fatalf("SmokeCI: %v", err)
+	}
+	owner, _, ok := strings.Cut(result.Repository, "/")
+	if !ok {
+		t.Fatalf("Repository = %q, want owner/name form", result.Repository)
+	}
+	if owner != a.Username {
+		t.Errorf("smoke repository owner = %q, admin username = %q — they must be the same account", owner, a.Username)
+	}
+	if !strings.Contains(runner.gotCommand, "owner="+a.Username) {
+		t.Errorf("smoke script does not set owner=%s: %q", a.Username, runner.gotCommand)
 	}
 }
 
