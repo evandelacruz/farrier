@@ -54,19 +54,16 @@ func publishGitSSH(compose map[string][]byte, m *bundle.Manifest, quarantine boo
 
 // gitSSHDetail is the event detail publishGitSSH's step reports (CORE-002):
 // the clone URL the operator can actually use, spelled the way Forgejo will
-// display it. Port 22 renders as scp-style `git@domain:owner/repo.git`,
-// anything else carries the port, matching how Forgejo itself renders the
-// two cases (spec.md "Reaching the forge").
+// display it. The spelling comes from bundle.Manifest.GitSSHCloneURL, the
+// same function `publish` writes into a project's `origin` (IMPT-004), so
+// the URL reported here and the URL configured there cannot diverge.
 //
 // It names no key material — the host key is identified by where it came
 // from, never by its bytes (KEY-003).
 func gitSSHDetail(m *bundle.Manifest, quarantine bool) string {
 	port := m.GitSSHPortOrDefault()
 
-	clone := fmt.Sprintf("ssh://git@%s:%d/<owner>/<repo>.git", m.Domain, port)
-	if port == 22 {
-		clone = fmt.Sprintf("git@%s:<owner>/<repo>.git", m.Domain)
-	}
+	clone := m.GitSSHCloneURL("<owner>", "<repo>")
 	if quarantine {
 		return fmt.Sprintf("ssh host key installed; git over SSH published on %s:%d only, reachable through an SSH tunnel (DRIL-002)", orchestrate.LoopbackAddress, port)
 	}
