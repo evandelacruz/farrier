@@ -124,7 +124,7 @@ Two constraints shape the implementations:
 All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol for out-of-tree ones. The exec protocol is generic and lives once, in `internal/core/driver` (CORE-003): `driver.Exec` runs an executable once per call, writing `{"method", "params"}` to its stdin and reading `{"ok", "result", "error"}` from its stdout. One process per call, no long-lived session.
 
 - **DNS:** `Set(record, value, ttl)`, `Delete(record)`. Shipped: `cloudflare`, `rfc2136`.
-- **Keystore:** `Resolve(keyName) → secret` on every driver; `Store(keyName, secret)` on the optional `Writer` side, which `init` requires. Shipped: `file`, `command`.
+- **Keystore:** `Resolve(keyName) → secret` on every driver; `Store(keyName, secret)` on the optional `Writer` side, which `init` requires; `DescribeTarget(keyName) → string` on the optional `Describer` side, which names where key material lands so `init` can report it (INIT-006). A driver that cannot say — `command` hands storage to an operator's command, and the exec protocol has no `describe` method — returns nothing and is reported by driver name alone. Shipped: `file`, `command`.
 - **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every `List` result carries `Modified`, the time an object was last written; an exec adapter written before that field existed omits it, which decodes as the zero time meaning *unknown* — never "very old".
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
