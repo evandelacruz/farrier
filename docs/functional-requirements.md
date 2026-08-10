@@ -23,7 +23,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 ## CORE — engine foundation
 
-- **CORE-001** · The bundle must be a plain directory containing a YAML manifest (domain, image digests, driver config, state declarations) and rendered Compose files, holding zero key material. It must function identically after being copied to another machine, given key access.
+- **CORE-001** · The bundle must be a plain directory containing a YAML manifest (domain, image digests, driver config, state declarations) and rendered Compose files. Secret key material must never touch the bundle directory; public key material, such as the SSH host key's public half, may live in the manifest (KEY-003). It must function identically after being copied to another machine, given key access.
 - **CORE-002** · Every long-running operation must be a job identified by ID, emitting a single progress event stream (`jobId`, `step`, `state`, `detail`, `timestamp`) that both frontends render.
 - **CORE-003** · Driver extension points must be published as a Go interface plus an exec protocol (JSON on stdin/stdout), so third parties ship drivers as standalone executables without Go.
 
@@ -31,7 +31,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 - **KEY-001** · The `file` driver must resolve key material from a local path.
 - **KEY-002** · The `command` driver must resolve key material from the stdout of any operator-specified command, and must store it through a second operator-specified command that receives the secret on stdin — so `init` mints straight into the operator's own secret manager, with no plaintext copy written anywhere along the way.
-- **KEY-003** · Key material must never appear in logs, event streams, command output, or the bundle directory.
+- **KEY-003** · Secret key material must never appear in logs, event streams, command output, or the bundle directory; public key material, such as the SSH host key's public half, may live in the manifest.
 - **KEY-004** · The exec keystore protocol must carry a `store` method alongside `resolve`, so an out-of-tree driver can receive minted key material rather than only serving it back. Whether a driver can store must be decided from its config before the driver is built, so `init` rejects a resolve-only keystore at validate rather than after proving zone control and generating key material.
 
 ## BLOB — blob adapters

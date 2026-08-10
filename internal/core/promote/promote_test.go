@@ -77,8 +77,17 @@ func testKeyValues() map[string]string {
 	values[forge.KeyRunnerSecret] = "0123456789abcdef0123456789abcdef01234567"
 	values[state.KeyTLSCertificate] = testTLSCert
 	values[state.KeyTLSPrivateKey] = testTLSKey
+	// A real authorized-keys shape, because the bundle manifest carries a
+	// copy of this key and Manifest.Validate rejects one it cannot read as
+	// a host-key pin.
+	values[state.KeySSHHostKeyPublic] = testHostPublicKey
 	return values
 }
+
+// testHostPublicKey is the instance's SSH host public key: the value the
+// snapshot captures, the value deploy.Up ships to the promoted host, and
+// the copy the bundle manifest carries for `publish` to pin against.
+const testHostPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAPromoteTestHostKeyBlobAAAAAAAAAAAAA farrier@instance"
 
 type fakeKeyExporter struct {
 	values map[string]string
@@ -217,14 +226,16 @@ func (fakeCertIssuer) EnsureValid(cfg acme.Config, existing *acme.Certificate, n
 
 func testBundle(t *testing.T, keysDir string) *bundle.Bundle {
 	t.Helper()
+	m := bundle.NewManifest(testDomain, map[string]string{
+		"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
+		"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
+	}, bundle.DriverConfig{
+		Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
+		Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
+	}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"})
+	m.SSHHostKeyPublic = testHostPublicKey
 	return &bundle.Bundle{
-		Manifest: *bundle.NewManifest(testDomain, map[string]string{
-			"forgejo": "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("a", 64),
-			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
-		}, bundle.DriverConfig{
-			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
-			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
-		}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"}),
+		Manifest: *m,
 		Compose: map[string][]byte{
 			"docker-compose.yml": []byte("services:\n  forgejo:\n    image: x\n  caddy:\n    image: y\n"),
 		},
@@ -414,6 +425,16 @@ func TestPromoteEndToEnd(t *testing.T) {
 	// for byte, that ReconcileCI's reset lands in it before this ships).
 	if len(host.commandsContaining("cat > '/opt/farrier/state/gitea/gitea.db'")) != 1 {
 		t.Errorf("want exactly one database placement command, got %v", host.commands)
+	}
+
+	// RSTR-004, from the manifest's side: the promoted host presents the
+	// snapshot's own SSH host key, and the manifest's copy of its public
+	// half is still that key. `publish` pins the endpoint against that
+	// copy, so a promotion that left it stale would break every push to
+	// the instance it just rescued.
+	sshKeyPath := "/opt/farrier/state/gitea/" + strings.TrimPrefix(forge.SSHHostKeyPath, forge.DataPath+"/")
+	if got := host.files[sshKeyPath+".pub"]; strings.TrimSpace(got) != opts.Bundle.Manifest.SSHHostKeyPublic {
+		t.Errorf("promoted instance presents %q, but the manifest pins %q", got, opts.Bundle.Manifest.SSHHostKeyPublic)
 	}
 
 	// The DNS flip applied the bundle's own domain to the configured

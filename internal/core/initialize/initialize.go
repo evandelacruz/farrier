@@ -405,6 +405,14 @@ func Run(ctx context.Context, job *events.Job, params Params) (b *bundle.Bundle,
 	reportKeyMaterial(job, params.Keystore.Driver, keystoreDriver, material, found.Reuse)
 
 	job.Started(StepWrite, "writing the bundle")
+	// The manifest carries the host key's public half, so publishing a
+	// project to this instance can pin its identity without holding the
+	// keystore. It is filled in here rather than in buildManifest because
+	// the key does not exist until the step above stored it — and Compose
+	// does not derive from it, so nothing has to be re-rendered.
+	if err := recordHostPublicKey(ctx, keystoreDriver, &bundleToWrite.Manifest); err != nil {
+		return fail(job, StepWrite, withRecovery(err, dir))
+	}
 	if err := bundleToWrite.Save(dir); err != nil {
 		return fail(job, StepWrite, withRecovery(fmt.Errorf("initialize: %w", err), dir))
 	}

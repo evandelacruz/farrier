@@ -95,7 +95,8 @@ func inspectRepo(ctx context.Context, git Git, dir, remoteName string) (localRep
 //
 // Pinning rather than trusting on first use is what makes the push
 // non-interactive and what makes it verify: the instance's host key is
-// bundle identity (state.KeySSHHostKeyPublic, installed on every deploy),
+// bundle identity (bundle.Manifest.SSHHostKeyPublic, the public half of the
+// key deploy.Up installs on the host on every deploy),
 // so publish already knows the key the endpoint must present, and a host
 // answering with a different one fails the push instead of being accepted
 // silently. The file holds only the public half, lives outside the bundle

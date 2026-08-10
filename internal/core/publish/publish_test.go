@@ -167,9 +167,25 @@ func (f *fakeForge) server(t *testing.T) *httptest.Server {
 // --- helpers --------------------------------------------------------------
 
 // testManifest is a manifest carrying only what publish reads: the
-// instance's domain and git-over-SSH port, and a file keystore holding the
-// instance's SSH host public key.
+// instance's domain and git-over-SSH port, and the instance's SSH host
+// public key.
+//
+// Its keystore points at an empty directory on purpose. Publishing must
+// not open the keystore at all — that is the whole point of the manifest
+// carrying the key — so any test that starts doing so fails here rather
+// than passing quietly on a key it should not have been able to read.
 func testManifest(t *testing.T, port int) *bundle.Manifest {
+	t.Helper()
+	m := legacyManifest(t, port)
+	m.SSHHostKeyPublic = strings.TrimSpace(testHostKey)
+	m.Drivers.Keystore.Config = map[string]any{"path": t.TempDir()}
+	return m
+}
+
+// legacyManifest is a manifest written before the host public key became a
+// manifest field: the key is only in the bundle's keystore, which is where
+// publish has to fall back to so bundles already on disk keep their pin.
+func legacyManifest(t *testing.T, port int) *bundle.Manifest {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, state.KeySSHHostKeyPublic), []byte(testHostKey), 0o600); err != nil {
@@ -629,6 +645,54 @@ func TestKnownHostsLineOmitsThePortOn22(t *testing.T) {
 	}
 	if strings.Contains(line, "farrier@instance") {
 		t.Errorf("line = %q, want the comment dropped", line)
+	}
+}
+
+// Pinning the endpoint is not a privileged act: the key is public, and
+// requiring the keystore to read it meant requiring read access to
+// SECRET_KEY, INTERNAL_TOKEN, and the age backup key alongside it. That is
+// what stopped anyone but an instance's owner from publishing to a shared
+// instance. Here the keystore names a driver that cannot even be built, so
+// a line still coming out proves nothing consulted it.
+func TestKnownHostsLineComesFromTheManifestWithoutTheKeystore(t *testing.T) {
+	m := testManifest(t, 2222)
+	m.Drivers.Keystore = bundle.DriverRef{}
+
+	line, err := knownHostsLine(context.Background(), m)
+	if err != nil {
+		t.Fatalf("knownHostsLine: %v", err)
+	}
+	if want := "[git.example.com]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPublishTestHostKeyBlobAAAAAAAAAAAAAAAAAAAA\n"; line != want {
+		t.Errorf("line = %q, want %q", line, want)
+	}
+}
+
+// A bundle written before the manifest carried the key falls back to the
+// keystore, so its push keeps the same pin it has always had rather than
+// losing it to an upgrade.
+func TestKnownHostsLineFallsBackToTheKeystore(t *testing.T) {
+	fromKeystore, err := knownHostsLine(context.Background(), legacyManifest(t, 2222))
+	if err != nil {
+		t.Fatalf("knownHostsLine: %v", err)
+	}
+	fromManifest, err := knownHostsLine(context.Background(), testManifest(t, 2222))
+	if err != nil {
+		t.Fatalf("knownHostsLine: %v", err)
+	}
+	if fromKeystore != fromManifest {
+		t.Errorf("keystore line = %q, manifest line = %q, want the same pin from either source", fromKeystore, fromManifest)
+	}
+}
+
+// The fallback is a fallback, not a licence to give up: a bundle with the
+// key in neither place fails the push rather than accepting whatever host
+// answers.
+func TestKnownHostsLineFailsWhenNeitherSourceHasTheKey(t *testing.T) {
+	m := testManifest(t, 2222)
+	m.SSHHostKeyPublic = ""
+
+	if _, err := knownHostsLine(context.Background(), m); err == nil {
+		t.Fatal("knownHostsLine = nil error, want a refusal when nothing holds the host key")
 	}
 }
 

@@ -226,6 +226,16 @@ func TestRunDerivesTheSSHPublicHalfWhenAnUnfinishedRunStoredOnlyThePrivate(t *te
 	if got := storedKey(t, keysDir, KeySSHHostKeyPublic); got != want {
 		t.Errorf("stored public half = %q, want the public half of the stored private key %q", got, want)
 	}
+	// The manifest's copy comes from the keystore, not from whatever this
+	// run happened to generate, so a resumed init records the derived half
+	// rather than nothing at all.
+	loaded, err := bundle.Load(BundleDir(params))
+	if err != nil {
+		t.Fatalf("bundle.Load: %v", err)
+	}
+	if loaded.Manifest.SSHHostKeyPublic != strings.TrimSpace(want) {
+		t.Errorf("manifest ssh host public key = %q, want the derived %q", loaded.Manifest.SSHHostKeyPublic, strings.TrimSpace(want))
+	}
 }
 
 // The safety the whole design turns on: key material with no record

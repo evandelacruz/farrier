@@ -7,11 +7,13 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"strings"
 
 	"filippo.io/age"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/evandelacruz/farrier/internal/core/acme"
+	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
@@ -189,6 +191,35 @@ func sshPublicKeyFor(private string) (string, error) {
 		return "", fmt.Errorf("parse the stored %s: %w", KeySSHHostKey, err)
 	}
 	return string(ssh.MarshalAuthorizedKey(signer.PublicKey())), nil
+}
+
+// recordHostPublicKey copies the instance's SSH host public key out of the
+// keystore and into the manifest, so a reader who needs the fingerprint —
+// `publish`, pinning the endpoint it pushes to — does not need read access
+// to the store holding SECRET_KEY, INTERNAL_TOKEN, and the age backup key
+// (bundle.Manifest.SSHHostKeyPublic).
+//
+// It reads back through the driver rather than reusing the value in hand
+// because the keystore is the source of truth for key material and the
+// manifest carries a copy: reading what was actually stored is what makes
+// the copy provably the same key, whether this run generated it, derived it
+// from a stored private half, or kept it from an earlier unfinished init.
+// The private half is untouched and stays where it is.
+//
+// The value is shape-checked here rather than left for Manifest.Validate to
+// reject at Save, so a keystore that hands back something unusable is named
+// as the problem.
+func recordHostPublicKey(ctx context.Context, driver keystore.Driver, m *bundle.Manifest) error {
+	secret, err := driver.Resolve(ctx, KeySSHHostKeyPublic)
+	if err != nil {
+		return fmt.Errorf("initialize: read the stored %s to record it in the manifest: %w", KeySSHHostKeyPublic, err)
+	}
+	public := strings.TrimSpace(secret.Reveal())
+	if _, _, err := bundle.SplitSSHPublicKey(public); err != nil {
+		return fmt.Errorf("initialize: the stored %s %w", KeySSHHostKeyPublic, err)
+	}
+	m.SSHHostKeyPublic = public
+	return nil
 }
 
 // ageKeyWarning is INIT-006's second half: the sentence an operator has to

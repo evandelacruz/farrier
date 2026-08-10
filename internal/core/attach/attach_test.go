@@ -207,6 +207,9 @@ func namelessBundleDir(t *testing.T) (dir string, keysDir string) {
 		Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
 	}, bundle.ACMEConfig{})
 	m.GitSSHPort = bundle.DefaultGitSSHPort
+	// The manifest's copy of the host public key, as `init` writes it: the
+	// same key the keystore holds, minus the trailing newline.
+	m.SSHHostKeyPublic = "ssh-ed25519 AAAA host"
 
 	compose, err := orchestrate.Render(m)
 	if err != nil {
@@ -455,6 +458,17 @@ func TestAttachPreservesTheInstance(t *testing.T) {
 	// targets key material and blobs live behind.
 	if named.Manifest.GitSSHPort != before.Manifest.GitSSHPort {
 		t.Errorf("git-over-ssh port moved: %d -> %d", before.Manifest.GitSSHPort, named.Manifest.GitSSHPort)
+	}
+	// Naming an instance changes its domain, not its host key. The
+	// manifest's copy of that key is what `publish` pins the endpoint
+	// against, so a stale one would break every push after an attach with a
+	// fingerprint mismatch — against a key the instance never stopped
+	// presenting.
+	if named.Manifest.SSHHostKeyPublic != before.Manifest.SSHHostKeyPublic {
+		t.Errorf("manifest ssh host public key changed: %q -> %q", before.Manifest.SSHHostKeyPublic, named.Manifest.SSHHostKeyPublic)
+	}
+	if want := strings.TrimSpace(keysAfter[state.KeySSHHostKeyPublic]); named.Manifest.SSHHostKeyPublic != want {
+		t.Errorf("manifest ssh host public key = %q, want the key the keystore still holds, %q", named.Manifest.SSHHostKeyPublic, want)
 	}
 	for component, image := range before.Manifest.Images {
 		if named.Manifest.Images[component] != image {

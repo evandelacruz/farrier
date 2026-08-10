@@ -85,8 +85,18 @@ func testKeyValues() map[string]string {
 	}
 	values[state.KeyTLSCertificate] = testTLSCert
 	values[state.KeyTLSPrivateKey] = testTLSKey
+	// A real authorized-keys shape, because the bundle manifest carries a
+	// copy of this key and Manifest.Validate rejects one it cannot read as
+	// a host-key pin.
+	values[state.KeySSHHostKeyPublic] = testHostPublicKey
 	return values
 }
+
+// testHostPublicKey is the instance's SSH host public key: the value the
+// snapshot captures, the value deploy.Up ships to the host, and the copy
+// the bundle manifest carries for `publish` to pin against. One constant,
+// because the whole point is that the three agree.
+const testHostPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAARestoreTestHostKeyBlobAAAAAAAAAAAAA farrier@instance"
 
 // fakeKeyExporter is the source side of a snapshot's key material: exactly
 // the set restore.keyNames() expects, so backup.Verify's completeness check
@@ -238,14 +248,16 @@ func (fakeCertIssuer) EnsureValid(cfg acme.Config, existing *acme.Certificate, n
 // installKeys writes into keysDir is exactly what deploy.Up reads back.
 func testBundle(t *testing.T, keysDir string) *bundle.Bundle {
 	t.Helper()
+	m := bundle.NewManifest(testDomain, map[string]string{
+		"forgejo": testTargetForgeImage,
+		"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
+	}, bundle.DriverConfig{
+		Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
+		Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
+	}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"})
+	m.SSHHostKeyPublic = testHostPublicKey
 	return &bundle.Bundle{
-		Manifest: *bundle.NewManifest(testDomain, map[string]string{
-			"forgejo": testTargetForgeImage,
-			"caddy":   "docker.io/library/caddy@sha256:" + strings.Repeat("b", 64),
-		}, bundle.DriverConfig{
-			Keystore: bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}},
-			Blob:     bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
-		}, bundle.ACMEConfig{DNSProvider: "manual", Email: "ops@example.com"}),
+		Manifest: *m,
 		Compose: map[string][]byte{
 			"docker-compose.yml": []byte("services:\n  forgejo:\n    image: x\n  caddy:\n    image: y\n"),
 		},
@@ -722,6 +734,14 @@ func TestRestoreEndToEnd(t *testing.T) {
 	}
 	if got := host.files[sshKeyPath+".pub"]; got != values[state.KeySSHHostKeyPublic] {
 		t.Errorf("shipped ssh host key public half = %q, want the snapshot's own %q", got, values[state.KeySSHHostKeyPublic])
+	}
+	// And the manifest's copy of that public half is still the key the
+	// restored instance presents. That copy is what `publish` pins the
+	// endpoint against, so if a restore could leave it stale, every push
+	// after a recovery would fail on a fingerprint mismatch — which is the
+	// opposite of what pinning the key is for.
+	if got := host.files[sshKeyPath+".pub"]; strings.TrimSpace(got) != opts.Bundle.Manifest.SSHHostKeyPublic {
+		t.Errorf("restored instance presents %q, but the manifest pins %q", got, opts.Bundle.Manifest.SSHHostKeyPublic)
 	}
 
 	// Blobs were restored into the target adapter.
