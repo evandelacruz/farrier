@@ -51,7 +51,7 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 	var keystoreConfig, blobConfig, images keyValueFlag
 	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
 	fs.Var(&blobConfig, "blob-config", "blob driver config as key=value (repeatable)")
-	fs.Var(&images, "image", "image override as component=reference (repeatable); unset components default to their pinned latest")
+	fs.Var(&images, "image", "image override as component=reference (repeatable); unset components use the built-in default tag, resolved to a digest like any other reference")
 
 	if err := fs.Parse(args); err != nil {
 		return initialize.Params{}, 2

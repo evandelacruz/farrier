@@ -73,14 +73,29 @@ const (
 // DefaultImageRefs are the images init pins when the caller doesn't
 // override a component: Forgejo itself, Caddy, and the Forgejo Actions
 // runner — the stateless components every bundle needs (spec.md "What it's
-// built on"). Each is a tag, not yet a digest — Run resolves it through the
-// registry package, so the manifest always ends up digest-pinned
-// (tech-spec.md "Bundle directory") even though the default here is a
-// floating tag.
+// built on").
+//
+// These govern exactly one thing: what a fresh `init` picks up on day one.
+// Run resolves each tag to a digest and writes the digest into the manifest
+// (tech-spec.md "Bundle directory"), `up` deploys that digest unchanged, and
+// `upgrade -image` takes an explicit reference rather than consulting these.
+// A deployed bundle is frozen by design — nothing here ever moves it.
+//
+// Every default must be a tag that resolves. `latest` is not: Forgejo
+// publishes no such tag, so defaulting to it made `init` fail at
+// StepResolveImages with a registry 404 unless the operator passed an
+// override — on the first command a new operator runs.
 var DefaultImageRefs = map[string]string{
-	"forgejo":           "codeberg.org/forgejo/forgejo:latest",
-	"caddy":             "docker.io/library/caddy:latest",
-	forge.RunnerService: "code.forgejo.org/forgejo/runner:latest",
+	// Forgejo's LTS line, supported to July 2027. Deliberately not 16: that
+	// is the non-LTS current release, supported only to October 2026.
+	"forgejo": "codeberg.org/forgejo/forgejo:15",
+	// A fixed point release, matching what docker.io/library/caddy:latest
+	// resolves to today.
+	"caddy": "docker.io/library/caddy:2.11.4",
+	// The runner's current stable major. Not coupled to the Forgejo pin:
+	// the runner is forward-compatible across a wide range of Forgejo
+	// versions, so the two lines move independently.
+	forge.RunnerService: "code.forgejo.org/forgejo/runner:3",
 }
 
 // requiredComponents are the images a bundle cannot function without:
