@@ -2,7 +2,8 @@
 // (spec.md "Stateless vs. stateful" — the forge app, CI orchestration, and
 // runners) to a target host given only an ssh://user@host address and a
 // bundle. It also implements UP-002: ending that deployment with the forge
-// serving HTTPS at the bundle domain; UP-003: re-running Up against a host
+// serving HTTPS at the bundle domain — a guarantee about a *named* bundle,
+// see "Named bundles only" below; UP-003: re-running Up against a host
 // it has already deployed to is safe and converges that host to the
 // bundle definition, rather than requiring a fresh host every time; and
 // UP-004: forge state — git repositories and the database — lives on the
@@ -10,6 +11,21 @@
 // it, so recreating that container never destroys it; and UP-005: git over
 // SSH is served at the bundle domain on the host port the manifest
 // declares, using the bundle's own SSH host key.
+//
+// # Named bundles only
+//
+// Everything this package deploys is addressed by the bundle domain: the
+// certificate it issues, the Caddy site it renders, the ROOT_URL in
+// app.ini, the clone URLs Forgejo displays. A nameless bundle (INIT-005)
+// has none of that, and so has no HTTPS endpoint for Up to complete
+// against. Serving one — over plain HTTP at an address the operator
+// supplies, with git over SSH unchanged — is UP-006's job, and it is a
+// separate requirement rather than a fallback hidden inside this one.
+//
+// So Up refuses a nameless bundle outright, before it touches the host,
+// naming UP-006. That refusal is deliberate: making UP-002's
+// HTTPS check conditional without it would leave `up` deploying a Forgejo
+// nothing can reach and reporting success.
 //
 // It is the sequencing layer over packages that already do the real work:
 // orchestrate (SSH transport, Compose rendering and convergence, ORCH-001
@@ -141,7 +157,12 @@ type Options struct {
 // host to the bundle's Compose definition plus that config, waits for
 // Forgejo to accept commands, provisions the first admin account, registers
 // that runner against the instance, and waits for Caddy to accept commands
-// so the forge is serving HTTPS and usable in a browser before Up returns.
+// so the forge is serving HTTPS and usable in a browser before Up returns
+// (UP-002).
+//
+// That last guarantee is what makes b's domain a precondition rather than
+// a detail: Up requires a named bundle and refuses a nameless one before
+// the first step, pointing at UP-006 (see the package doc).
 //
 // Every step is safe to repeat against a host Up has already deployed to
 // (UP-003): CheckHost and waitReady are read-only, configureForge always
@@ -184,6 +205,16 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	if strings.TrimSpace(opts.RemoteDir) == "" {
 		return fmt.Errorf("deploy: remote directory is required")
+	}
+	// UP-002's completion guarantee is HTTPS at the bundle domain, and a
+	// nameless bundle (INIT-005) has no domain to serve at, no certificate
+	// to serve with, and no ROOT_URL to render. Refuse here, ahead of
+	// CheckHost, so a nameless bundle leaves the host exactly as it found
+	// it rather than failing partway through configureForge with the same
+	// news (forge.RenderAppINI takes this posture for the same reason).
+	// UP-006 is the requirement that lifts this.
+	if !b.Manifest.Named() {
+		return fmt.Errorf("deploy: up requires a bundle domain to serve HTTPS at (UP-002); this bundle is nameless, and serving one over plain HTTP at an operator-supplied address is not implemented yet (UP-006)")
 	}
 
 	job.Started(StepCheckHost, "checking Docker is reachable")

@@ -46,10 +46,7 @@
     "INIT-005": "landed",
     "INIT-006": "landed",
     "UP-001": "landed",
-    "UP-002": {
-      "state": "partial",
-      "remaining": "Assumes a bundle domain: a nameless bundle (INIT-005) has no HTTPS endpoint to complete against, and UP-006 governs that case."
-    },
+    "UP-002": "landed",
     "UP-003": "landed",
     "UP-004": "landed",
     "UP-005": "landed",
