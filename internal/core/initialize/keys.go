@@ -83,48 +83,60 @@ var keyMaterialOrder = []string{
 // the caller's deliberate signal — Run checks a named bundle's proof
 // returned a usable certificate before calling, so a nil here is never a
 // prover that silently returned nothing.
-func generateKeyMaterial(cert *acme.Certificate) (map[string]keystore.Secret, error) {
+//
+// A name in reuse is one an earlier, unfinished init already wrote to this
+// keystore target (inspectKeystore). Nothing is generated for it: the
+// instance keeps the identity that attempt gave it, which is the only
+// reading that lets a failed init be retried without either overwriting
+// non-rotating key material or handing the instance a SECRET_KEY that
+// doesn't match the one in the keystore.
+func generateKeyMaterial(cert *acme.Certificate, reuse map[string]bool) (map[string]keystore.Secret, error) {
 	if cert != nil && (len(cert.Certificate) == 0 || len(cert.PrivateKey) == 0) {
 		return nil, fmt.Errorf("initialize: certificate from zone-control proof is incomplete")
 	}
 
-	secretKey, err := randomSecret()
-	if err != nil {
-		return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeySecretKey, err)
+	material := map[string]keystore.Secret{}
+	for _, name := range []string{forge.KeySecretKey, forge.KeyInternalToken, forge.KeyLFSJWTSecret} {
+		if reuse[name] {
+			continue
+		}
+		secret, err := randomSecret()
+		if err != nil {
+			return nil, fmt.Errorf("initialize: generate %s: %w", name, err)
+		}
+		material[name] = keystore.NewSecret(secret)
 	}
-	internalToken, err := randomSecret()
-	if err != nil {
-		return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeyInternalToken, err)
+	if !reuse[forge.KeyRunnerSecret] {
+		// Generated through forge rather than randomSecret: Forgejo's
+		// offline runner registration reads the first 16 of the secret's 40
+		// hex characters as the runner's identifier, so its format is fixed
+		// by Forgejo and belongs next to the code that uses it (FORGE-005).
+		runnerSecret, err := forge.NewRunnerSecret()
+		if err != nil {
+			return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeyRunnerSecret, err)
+		}
+		material[forge.KeyRunnerSecret] = keystore.NewSecret(runnerSecret)
 	}
-	lfsJWTSecret, err := randomSecret()
-	if err != nil {
-		return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeyLFSJWTSecret, err)
+	// The host key and its public half are one key, so they are generated
+	// as one: reusing half a pair would leave the keystore advertising a
+	// public key no client could match. inspectKeystore guarantees the two
+	// arrive here either both reused or both not — a stored private key
+	// with no stored public half is completed by deriving the public half
+	// from it, never by minting a new pair.
+	if !reuse[KeySSHHostKey] && !reuse[KeySSHHostKeyPublic] {
+		sshPrivate, sshPublic, err := generateSSHHostKey()
+		if err != nil {
+			return nil, fmt.Errorf("initialize: generate %s: %w", KeySSHHostKey, err)
+		}
+		material[KeySSHHostKey] = keystore.NewSecret(sshPrivate)
+		material[KeySSHHostKeyPublic] = keystore.NewSecret(sshPublic)
 	}
-	// Generated through forge rather than randomSecret: Forgejo's offline
-	// runner registration reads the first 16 of the secret's 40 hex
-	// characters as the runner's identifier, so its format is fixed by
-	// Forgejo and belongs next to the code that uses it (FORGE-005).
-	runnerSecret, err := forge.NewRunnerSecret()
-	if err != nil {
-		return nil, fmt.Errorf("initialize: generate %s: %w", forge.KeyRunnerSecret, err)
-	}
-	sshPrivate, sshPublic, err := generateSSHHostKey()
-	if err != nil {
-		return nil, fmt.Errorf("initialize: generate %s: %w", KeySSHHostKey, err)
-	}
-	ageIdentity, err := age.GenerateX25519Identity()
-	if err != nil {
-		return nil, fmt.Errorf("initialize: generate %s: %w", KeyAgeBackupKey, err)
-	}
-
-	material := map[string]keystore.Secret{
-		forge.KeySecretKey:     keystore.NewSecret(secretKey),
-		forge.KeyInternalToken: keystore.NewSecret(internalToken),
-		forge.KeyLFSJWTSecret:  keystore.NewSecret(lfsJWTSecret),
-		forge.KeyRunnerSecret:  keystore.NewSecret(runnerSecret),
-		KeySSHHostKey:          keystore.NewSecret(sshPrivate),
-		KeySSHHostKeyPublic:    keystore.NewSecret(sshPublic),
-		KeyAgeBackupKey:        keystore.NewSecret(ageIdentity.String()),
+	if !reuse[KeyAgeBackupKey] {
+		ageIdentity, err := age.GenerateX25519Identity()
+		if err != nil {
+			return nil, fmt.Errorf("initialize: generate %s: %w", KeyAgeBackupKey, err)
+		}
+		material[KeyAgeBackupKey] = keystore.NewSecret(ageIdentity.String())
 	}
 	if cert != nil {
 		material[KeyTLSCertificate] = keystore.NewSecret(string(cert.Certificate))
@@ -164,6 +176,21 @@ func generateSSHHostKey() (private, public string, err error) {
 	return string(pem.EncodeToMemory(block)), string(ssh.MarshalAuthorizedKey(sshPub)), nil
 }
 
+// sshPublicKeyFor derives the authorized-keys form of an SSH host key
+// already held in the keystore. It exists for one narrow case: an
+// unfinished init that stored KeySSHHostKey and died before storing
+// KeySSHHostKeyPublic. The public half is not a secret and is not
+// independent of the private half, so recomputing it is the only correct
+// repair — generating a fresh pair would need to overwrite a non-rotating
+// private key, which the rotation guard rightly refuses.
+func sshPublicKeyFor(private string) (string, error) {
+	signer, err := ssh.ParsePrivateKey([]byte(private))
+	if err != nil {
+		return "", fmt.Errorf("parse the stored %s: %w", KeySSHHostKey, err)
+	}
+	return string(ssh.MarshalAuthorizedKey(signer.PublicKey())), nil
+}
+
 // ageKeyWarning is INIT-006's second half: the sentence an operator has to
 // have read before they walk away from `init`. It says what docs/security.md
 // ("Backups are exactly as private as the age key") and docs/operating.md
@@ -198,15 +225,29 @@ const ageKeyWarning = "the age backup key (" + KeyAgeBackupKey + ") is the one u
 // Nothing here touches a Secret. The report is built from key names and
 // destinations only, so key material cannot reach the event stream even by
 // accident (KEY-003).
-func reportKeyMaterial(job *events.Job, driverName string, driver keystore.Driver, material map[string]keystore.Secret) {
+// Key material an earlier unfinished init already stored (reuse) is
+// reported exactly like material this run wrote, and marked as kept: it is
+// in the keystore, it is this instance's identity, and an operator who
+// only ever sees the successful run's output would otherwise be told about
+// two of nine keys and left to guess at the rest.
+func reportKeyMaterial(job *events.Job, driverName string, driver keystore.Driver, material map[string]keystore.Secret, reuse map[string]bool) {
 	job.Started(StepReportKeys, "where each piece of key material was stored")
+	reported := false
 	for _, name := range keyMaterialOrder {
-		if _, ok := material[name]; !ok {
+		_, stored := material[name]
+		switch {
+		case stored:
+			job.Emit(StepReportKeys, events.StateSucceeded, fmt.Sprintf("%s → %s", name, describeLocation(driverName, driver, name)))
+		case reuse[name]:
+			job.Emit(StepReportKeys, events.StateSucceeded, fmt.Sprintf("%s → %s (kept from an earlier unfinished init)", name, describeLocation(driverName, driver, name)))
+		default:
 			continue
 		}
-		job.Emit(StepReportKeys, events.StateSucceeded, fmt.Sprintf("%s → %s", name, describeLocation(driverName, driver, name)))
+		if name == KeyAgeBackupKey {
+			reported = true
+		}
 	}
-	if _, ok := material[KeyAgeBackupKey]; ok {
+	if reported {
 		job.Emit(StepReportKeys, events.StateSucceeded, ageKeyWarning)
 	}
 }
@@ -222,9 +263,12 @@ func describeLocation(driverName string, driver keystore.Driver, keyName string)
 
 // storeKeyMaterial stores every key/secret pair in material through
 // writer, in keyMaterialOrder, stopping at the first Store failure. Keys
-// already written before the failure remain on disk, so a retried init
-// hits the overwrite guard on the first of them — the operator must clear
-// the keystore directory before re-running init.
+// written before the failure stay in the keystore — nothing here can take
+// them back, and a driver that could would be a driver that can delete a
+// live instance's identity. What makes that survivable is the resume
+// record Run writes before the first Store (resume.go): the next init
+// reads it, finds those keys, and keeps them instead of colliding with
+// them.
 func storeKeyMaterial(ctx context.Context, writer keystore.Writer, material map[string]keystore.Secret) error {
 	for _, name := range keyMaterialOrder {
 		secret, ok := material[name]

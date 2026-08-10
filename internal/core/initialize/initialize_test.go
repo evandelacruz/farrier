@@ -249,14 +249,16 @@ func TestRunFailsWithReasonWhenZoneControlProofFails(t *testing.T) {
 	}
 	assertJobFailed(t, job)
 
-	var resolvedAnyImage bool
+	// Proof runs after image resolution now, so the thing a failed proof
+	// must not have reached is the keystore: no key material stored means
+	// nothing to recover from and no resume record on disk.
 	for _, ev := range job.Events() {
-		if ev.Step == StepResolveImages {
-			resolvedAnyImage = true
+		if ev.Step == StepGenerateKeys {
+			t.Errorf("Run reached the generate-keys step after zone-control proof failed: %+v", ev)
 		}
 	}
-	if resolvedAnyImage {
-		t.Error("Run resolved images after zone-control proof failed, want it to stop early")
+	if _, err := os.Stat(filepath.Join(BundleDir(params), IncompleteFile)); !os.IsNotExist(err) {
+		t.Errorf("stat resume record: %v, want it never written when the run failed before storing key material", err)
 	}
 }
 
@@ -516,7 +518,12 @@ func TestRunGeneratesAndStoresAllKeyMaterial(t *testing.T) {
 	}
 }
 
-func TestRunGeneratesKeysBeforeResolvingImages(t *testing.T) {
+// Everything that can fail without persisting anything runs before the
+// first Store, so an ordinary failure leaves the keystore untouched and a
+// retry is just a retry. This is the ordering the non-atomic-init defect
+// came from getting backwards: image resolution failed on a real first run
+// after all seven pieces of key material had already been written.
+func TestRunDoesEveryFallibleStepBeforeStoringKeyMaterial(t *testing.T) {
 	params := validParams(t, &fakeResolver{})
 	job := events.NewJob()
 
@@ -524,20 +531,20 @@ func TestRunGeneratesKeysBeforeResolvingImages(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	var keysStep, imagesStep = -1, -1
-	for i, ev := range job.Events() {
-		if ev.Step == StepGenerateKeys && ev.State == events.StateSucceeded {
-			keysStep = i
+	at := func(step string, state events.State) int {
+		for i, ev := range job.Events() {
+			if ev.Step == step && ev.State == state {
+				return i
+			}
 		}
-		if ev.Step == StepResolveImages && ev.State == events.StateStarted {
-			imagesStep = i
+		t.Fatalf("did not see %s %s; events = %+v", step, state, job.Events())
+		return -1
+	}
+	keys := at(StepGenerateKeys, events.StateStarted)
+	for _, earlier := range []string{StepResolveImages, StepRenderCompose, StepProveZoneControl} {
+		if done := at(earlier, events.StateSucceeded); done >= keys {
+			t.Errorf("%s finished at event %d, generate-keys started at %d, want it done first", earlier, done, keys)
 		}
-	}
-	if keysStep == -1 || imagesStep == -1 {
-		t.Fatalf("did not see both steps: keysStep=%d imagesStep=%d, events=%+v", keysStep, imagesStep, job.Events())
-	}
-	if keysStep >= imagesStep {
-		t.Errorf("generate-keys succeeded at event %d, resolve-images started at %d, want keys generated first", keysStep, imagesStep)
 	}
 }
 
