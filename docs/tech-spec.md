@@ -46,7 +46,7 @@ Every operator command is one core package sequencing others, with `cmd/farrier`
 
 ## Bundle directory
 
-A plain directory, designed to live in a private git repo.
+A plain directory at `.farrier/` in the project it serves, versioned with it.
 
 ```
 farrier.yaml          manifest: domain, git-over-SSH host port, pinned image

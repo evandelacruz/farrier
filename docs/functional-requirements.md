@@ -14,6 +14,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - UP-004 precedes RSTR-001: restore has nowhere to put git data until `up` pins forge state to a host directory.
 - ORCH and FORGE precede UP.
 - DNS-001 precedes FAIL-004; ACME-001 precedes INIT-002.
+- UP-005 precedes IMPT-004: nothing can push to an `origin` the instance does not serve.
 - API-001 precedes all UI.
 
 ---
@@ -39,6 +40,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 - **ORCH-001** · The system must reach hosts over SSH using the operator's existing agent or key file, requiring nothing on the host beyond Docker and SSH.
 - **ORCH-002** · The system must render Compose definitions from the manifest, ship them to the host, and converge the host to that definition idempotently; drift is overwritten.
+- **ORCH-003** · A target of `ssh://user@localhost` must run the identical path as any remote host: no local mode, no branch on locality, nothing skipped.
 
 ## FORGE — forge configuration
 
@@ -69,9 +71,10 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 ## INIT — bundle creation
 
-- **INIT-001** · `init` must create a bundle from a DNS name and a keystore target.
+- **INIT-001** · `init` must create a bundle from a project folder, a DNS name, and a keystore target, writing it to `.farrier/` inside that folder so the forge definition is versioned with the code it serves.
 - **INIT-002** · `init` must prove control of the DNS zone via an ACME DNS-01 challenge and fail, with the reason, when proof fails.
 - **INIT-003** · `init` must generate all key material: Forgejo `SECRET_KEY` and `INTERNAL_TOKEN`, LFS JWT secret, TLS certificates, SSH host keys, and the age backup key.
+- **INIT-004** · `init` must refuse to overwrite an existing `.farrier/` bundle, naming the folder, so re-running it against an initialized project cannot clobber a live instance's identity.
 
 ## UP — deployment
 
@@ -86,6 +89,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **IMPT-001** · `import` must migrate repositories from GitHub or GitLab given a source URL and token: code, full history, LFS objects, default branch.
 - **IMPT-002** · `import` must support optional continuous mirror sync from the source.
 - **IMPT-003** · `import` must report per-repository success or failure and must leave no partially-registered repository behind on failure.
+- **IMPT-004** · Farrier must publish the local project folder to its instance: create the repository, push the folder's existing history, and set `origin` to the instance's SSH URL — so a project with no forge behind it reaches a working remote without going through GitHub or GitLab first.
 
 ## BKUP — backup
 
