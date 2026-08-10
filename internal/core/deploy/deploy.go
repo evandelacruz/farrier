@@ -206,8 +206,9 @@ type Options struct {
 // re-ships app.ini and re-derives its checksum so a changed manifest is
 // visible to Converge (WithEnv's doc comment), configureTLS reuses the
 // persisted certificate untouched unless it's actually due for renewal
-// (configureTLS's doc comment), configureState's directory creation and
-// chown are both idempotent (configureState's doc comment),
+// (configureTLS's doc comment), configureState's directory creation, chown,
+// and access probe all leave an already-correct host as they found it
+// (configureState's doc comment),
 // configureSSHHostKey always writes the same persisted key back (its own
 // doc comment), publishGitSSH derives its port mapping from the manifest
 // alone, orchestrate.Converge is idempotent by construction (its
@@ -308,12 +309,17 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 
 	job.Started(StepConfigureState, "creating host state directories")
-	compose, err = configureState(ctx, host, b, opts.RemoteDir, compose)
+	var stateOwned bool
+	compose, stateOwned, err = configureState(ctx, host, b, opts.RemoteDir, compose)
 	if err != nil {
 		job.Emit(StepConfigureState, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure state: %w", err)
 	}
-	job.Emit(StepConfigureState, events.StateSucceeded, "state directories ready and mounted")
+	if stateOwned {
+		job.Emit(StepConfigureState, events.StateSucceeded, "state directories ready and mounted")
+	} else {
+		job.Emit(StepConfigureState, events.StateSucceeded, "state directories ready and mounted; this host does not let ownership be set from here, and the forge can read and write them anyway")
+	}
 
 	job.Started(StepConfigureGitSSH, "installing ssh host key and publishing git over ssh")
 	if err := configureSSHHostKey(ctx, host, b, opts.RemoteDir); err != nil {
