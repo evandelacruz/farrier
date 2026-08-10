@@ -8,7 +8,20 @@ Point Farrier at a project folder and it stands up a self-hosted forge for it �
 
 ### 1. Build the binary
 
-You need Go (version in `go.mod` — currently 1.24.7). Nothing else: Farrier is one static binary with no runtime dependencies.
+You need Go 1.24.7 or newer (the version in `go.mod`). Nothing else: Farrier is one static binary with no runtime dependencies.
+
+```bash
+go version        # already have it? skip ahead
+```
+
+If not, install it from [go.dev/dl](https://go.dev/dl/) — official builds for macOS, Linux, and Windows, with install steps at [go.dev/doc/install](https://go.dev/doc/install). Or use a package manager, as long as it gives you 1.24.7+:
+
+```bash
+brew install go              # macOS
+sudo apt install golang-go   # Debian/Ubuntu — check `go version`, distro packages lag
+```
+
+Then build:
 
 ```bash
 git clone https://github.com/evandelacruz/farrier.git
