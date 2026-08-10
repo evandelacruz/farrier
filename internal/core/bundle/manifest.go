@@ -120,7 +120,7 @@ type Manifest struct {
 	// endpoint (spec.md "Reaching the forge"). It is bundle identity, so a
 	// restored or promoted instance answers on the same port with the same
 	// host key and existing remotes keep working (RSTR-004).
-	GitSSHPort int `yaml:"gitSSHPort,omitempty"`
+	GitSSHPort int `yaml:"gitSshPort,omitempty"`
 
 	Images            map[string]string  `yaml:"images"`
 	Drivers           DriverConfig       `yaml:"drivers"`
