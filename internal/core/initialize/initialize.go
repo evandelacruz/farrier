@@ -101,10 +101,13 @@ var DefaultImageRefs = map[string]string{
 	// A fixed point release, matching what docker.io/library/caddy:latest
 	// resolves to today.
 	"caddy": "docker.io/library/caddy:2.11.4",
-	// The runner's current stable major. Not coupled to the Forgejo pin:
+	// The runner's current stable major, and not coupled to the Forgejo pin:
 	// the runner is forward-compatible across a wide range of Forgejo
-	// versions, so the two lines move independently.
-	forge.RunnerService: "code.forgejo.org/forgejo/runner:3",
+	// versions, so the two lines version independently and their numbers do
+	// not track each other. Forgejo 15 pairs with runner 13, which looks like
+	// a mismatch and is not one — check code.forgejo.org rather than
+	// inferring a number from the Forgejo pin.
+	forge.RunnerService: "code.forgejo.org/forgejo/runner:13",
 }
 
 // requiredComponents are the images a bundle cannot function without:
