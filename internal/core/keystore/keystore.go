@@ -3,6 +3,11 @@
 // carries only a driver name and its non-secret config — a directory, a
 // command, an executable to run — never the secret itself (CORE-001).
 //
+// Some drivers also write, through the optional Writer side, which is
+// what lets init mint a new instance's key material into the operator's
+// own secret manager instead of a file on disk. Writer is a
+// construction-time fact, not a call-time one — see Writer.
+//
 // Two drivers ship in-tree: file (KEY-001) and command (KEY-002). Any
 // other driver name is reached through the CORE-003 exec protocol, so a
 // third party can add a keystore driver as a standalone executable
@@ -47,14 +52,18 @@ type Driver interface {
 
 // Writer is the optional write side of a Driver: it stores a piece of key
 // material under keyName, so it can later be read back through Resolve.
-// Only drivers with an obvious, unambiguous place to put a secret implement
-// it — FileDriver does, since its storage is just a directory on disk.
-// CommandDriver deliberately does not: KEY-002 defines it as reading the
-// stdout of an operator-specified command, a one-way interface with no
-// generic notion of "write a secret here." A caller (initialize.Run,
-// INIT-003) that needs to generate and persist key material checks for
-// Writer with a type assertion and fails clearly when the configured
-// driver doesn't implement it, rather than silently doing nothing.
+// Only a driver that has been told where to put a secret implements it.
+// FileDriver always does, since its storage is just a directory on disk;
+// the command driver does only when the operator configured a
+// storeCommand, in which case New builds a WritableCommandDriver rather
+// than a CommandDriver.
+//
+// Whether a driver implements Writer is therefore settled when the driver
+// is built, never at the moment of the call (KEY-004). A caller
+// (initialize.Run, INIT-003) that needs to generate and persist key
+// material type-asserts Writer during validation and fails clearly there —
+// before it proves zone control or generates anything — instead of
+// discovering a read-only keystore once key material already exists.
 type Writer interface {
 	Store(ctx context.Context, keyName string, secret Secret) error
 }
@@ -108,4 +117,22 @@ func stringConfig(config map[string]any, field string) (string, error) {
 		return "", fmt.Errorf("config.%s must be a non-empty string", field)
 	}
 	return s, nil
+}
+
+// optionalStringConfig reads a string field a driver treats as optional,
+// reporting whether it was present at all. A field that is present but
+// blank or not a string is an error rather than a silent absence: presence
+// is what decides a driver's store capability (tech-spec "Keystore driver
+// config"), so downgrading a typo'd or empty storeCommand to "resolve-only"
+// would turn a one-character manifest mistake into a confusing "this
+// keystore cannot store key material" much later.
+func optionalStringConfig(config map[string]any, field string) (string, bool, error) {
+	if _, present := config[field]; !present {
+		return "", false, nil
+	}
+	s, err := stringConfig(config, field)
+	if err != nil {
+		return "", false, err
+	}
+	return s, true, nil
 }
