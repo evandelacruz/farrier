@@ -182,6 +182,49 @@ func TestRunResolvesDefaultImagesWhenNoOverride(t *testing.T) {
 	}
 }
 
+// TestDefaultImageRefsCarryNonFloatingTags guards the defect that made
+// `farrier init` fail out of the box: every default was tagged ":latest",
+// and Forgejo publishes no such tag, so the very first command a new
+// operator runs died at StepResolveImages with a registry 404.
+//
+// It asserts the shape, not the versions — which major or point release
+// each component is pinned to is a judgment call that moves, but a floating
+// or absent tag is always the bug coming back.
+func TestDefaultImageRefsCarryNonFloatingTags(t *testing.T) {
+	for component, ref := range DefaultImageRefs {
+		name, tag, found := strings.Cut(lastPathSegment(ref), ":")
+		if !found || name == "" || tag == "" {
+			t.Errorf("%s = %q: default must carry an explicit tag", component, ref)
+			continue
+		}
+		if tag == "latest" || tag == "main" || tag == "edge" || tag == "nightly" {
+			t.Errorf("%s = %q: %q is a floating tag; pin a release", component, ref, tag)
+		}
+	}
+}
+
+// lastPathSegment returns the part of an image reference after the final
+// "/", which is the only segment a tag can appear in — a registry host may
+// carry a port, and "host:5000/repo" must not read as a tag.
+func lastPathSegment(ref string) string {
+	if i := strings.LastIndex(ref, "/"); i != -1 {
+		return ref[i+1:]
+	}
+	return ref
+}
+
+// TestDefaultImageRefsCoverEveryRequiredComponent keeps the defaults and
+// the components Run refuses to write a bundle without from drifting apart:
+// a required component with no default is an `init` that cannot run without
+// an -image override, which is the same failure in a different shape.
+func TestDefaultImageRefsCoverEveryRequiredComponent(t *testing.T) {
+	for _, component := range requiredComponents {
+		if DefaultImageRefs[component] == "" {
+			t.Errorf("required component %q has no default image", component)
+		}
+	}
+}
+
 func TestRunUsesImageOverride(t *testing.T) {
 	resolver := &fakeResolver{}
 	params := validParams(t, resolver)
