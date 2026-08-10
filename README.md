@@ -2,17 +2,22 @@
 
 *A farrier travels with a portable forge — the whole shop packed to move, set up wherever the work is.*
 
-A CLI and local web dashboard that stand up a portable, self-hosted software forge — git hosting, pull requests, code review, secrets, and CI/CD with runners — as a provider-agnostic bundle. One command brings it up. One command backs it up. One command restores it onto a fresh host anywhere.
+Point Farrier at a project folder and it stands up a self-hosted forge for it — git hosting, pull requests, code review, secrets, and CI/CD with runners — with a remote ready to push to. Each project gets its own portable forge, not a shared central server. One command brings it up. One command backs it up. One command restores it onto a fresh host anywhere.
 
 ## Quick start
 
-You bring a Linux host with Docker and SSH, a DNS name you control, and a place to keep keys. Farrier owns the rest:
+You bring a host with Docker and SSH — your own machine counts — and a place to keep keys. A DNS name is optional: with one, the forge gets HTTPS and relocates by DNS flip; without one, it comes up in a minute on plain HTTP and you can attach a name later. Farrier owns the rest:
 
 ```bash
-# Create the bundle — proves zone control, generates key material
-farrier init forge.example.com
+# Make this project a forge — generates key material, writes the bundle to
+# .farrier/ beside your code. With a name: proves zone control, issues TLS.
+cd my-project && farrier init myproject.example.com
 
-# Deploy onto a host — forge live at your domain when it finishes
+# ...or with no name at all — nothing to own, plain HTTP, name it later
+cd my-project && farrier init
+
+# Deploy onto a host — forge live at your domain, origin ready to push to.
+# The host can be anywhere, including this machine: ssh://user@localhost
 farrier up ssh://user@host
 
 # Encrypted, verified snapshot (directory or S3-compatible URI)
@@ -63,4 +68,4 @@ Apache 2.0 — use it, fork it, ship it commercially. It requires attribution: k
 
 ## Status
 
-Core engine, drivers, and orchestration are landing; operator commands (`init`, `up`, `backup`, …) are still open. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).
+The forge and the whole portability layer — `up`, `backup`, `restore`, `promote`, `upgrade`, `drill`, `status`, `ui` — are landed. The project-folder on-ramp is not: `init` does not yet write to `.farrier/` or run without a domain, `up` does not yet publish git-over-SSH, and there is no path from a local folder to a working `origin`. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).

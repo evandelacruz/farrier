@@ -47,6 +47,6 @@ Git hosting, PRs, code review, secrets, CI/CD, and the portability layer. No iss
 
 - **Language:** Go, single static binary, dashboard embedded via `go:embed`. `tools/` is TypeScript agent orchestration — dev-only, never shipped in the binary. See [AGENTS.md](AGENTS.md) for setup and the one build-ordering gotcha.
 - **The backlog:** requirement IDs in `docs/functional-requirements.md`, delivery state in `docs/status.json`. Cite IDs in commits and PR bodies. Never renumber an ID.
-- **Repo host:** GitHub for now; agents work in branches and land through PRs with review and green CI. "Farrier hosts Farrier" is a named milestone, and `import` is its acceptance test.
+- **Repo host:** GitHub for now; agents work in branches and land through PRs with review and green CI. "Farrier hosts Farrier" is a named milestone; [spec.md](docs/spec.md) holds its cutover sequence and what counts as met — landing one pull request end to end on the new instance, then `backup` and `drill`. `import` is step 2 of that sequence, not the test.
 - **License:** Apache 2.0. Keep the license and NOTICE intact.
 - **Writing style in docs:** crisp, affirmative statements, high-level context first with details beneath, plain-English headlines. State what the system does; skip editorial hedging.

@@ -22,6 +22,7 @@
     "BLOB-002": "landed",
     "ORCH-001": "landed",
     "ORCH-002": "landed",
+    "ORCH-003": "open",
     "FORGE-001": "landed",
     "FORGE-002": "landed",
     "FORGE-003": "landed",
@@ -37,16 +38,31 @@
     "STATE-002": "landed",
     "STATE-003": "landed",
     "STATE-004": "landed",
-    "INIT-001": "landed",
-    "INIT-002": "landed",
+    "INIT-001": {
+      "state": "partial",
+      "remaining": "Takes a DNS name and keystore target but not a project folder: the bundle is written where the operator points, with no `.farrier/` default and no notion of the folder it serves."
+    },
+    "INIT-002": {
+      "state": "partial",
+      "remaining": "Proof is unconditional: a nameless bundle (INIT-005) must skip DNS-01 and certificate issuance rather than failing."
+    },
     "INIT-003": "landed",
+    "INIT-004": "open",
+    "INIT-005": "open",
     "UP-001": "landed",
-    "UP-002": "landed",
+    "UP-002": {
+      "state": "partial",
+      "remaining": "Assumes a bundle domain: a nameless bundle (INIT-005) has no HTTPS endpoint to complete against, and UP-006 governs that case."
+    },
     "UP-003": "landed",
     "UP-004": "landed",
+    "UP-005": "open",
+    "UP-006": "open",
+    "UP-007": "open",
     "IMPT-001": "landed",
     "IMPT-002": "landed",
     "IMPT-003": "landed",
+    "IMPT-004": "open",
     "BKUP-001": "landed",
     "BKUP-002": "landed",
     "BKUP-003": "landed",

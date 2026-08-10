@@ -2,11 +2,13 @@
 
 Design reference: every settled decision, what the system does, and how.
 
-The system runs a complete self-hosted forge — git, pull requests, code review, secrets, CI/CD — as a portable bundle, operated through a CLI and a local web dashboard. The core idea: identity and state belong to the bundle, hosts are disposable, and moving the whole forge to a new host is a verified, one-command operation. The design splits cleanly into what the system owns (deployment, identity, verified backup and restore, promotion) and what the operator owns (hosts, replication topology, DNS redundancy).
+The system turns a project folder into a complete self-hosted forge — git, pull requests, code review, secrets, CI/CD — with a remote ready to push to, operated through a CLI and a local web dashboard. The core idea: identity and state belong to the bundle, hosts are disposable, and moving the whole forge to a new host is a verified, one-command operation. The design splits cleanly into what the system owns (deployment, identity, verified backup and restore, promotion) and what the operator owns (hosts, replication topology, DNS redundancy).
 
 ## What it is
 
-A tool that deploys, backs up, relocates, and restores a self-hosted forge, built as an orchestration and portability layer over existing open-source components. It ships as one binary with two frontends: a CLI and a local web dashboard.
+Given any project folder, Farrier stands up a self-contained self-hosted forge for it — git hosting, pull requests, code review, and CI/CD — with a remote ready to push to. Each project gets its own portable forge instance rather than a shared central server.
+
+It ships as one binary with two frontends: a CLI and a local web dashboard, built as an orchestration and portability layer over existing open-source components.
 
 In scope:
 
@@ -57,10 +59,21 @@ A forge's identity — its URL, its keys, its certificates — is what welds it 
 
 ### The domain
 
-- Every bundle owns a DNS name the operator controls, required at `init`.
-- All identity derives from it: clone URLs, webhooks, runner registration, OAuth callbacks, LFS endpoints. Hosts are fungible; the domain is permanent.
-- `init` proves zone control via an ACME DNS-01 challenge, front-loading the project's one external dependency to day one.
+- A named bundle owns a DNS name the operator controls, given at `init`. A bundle may also be nameless ("Instances without a name"), which trades permanence for a first minute that costs nothing.
+- All identity derives from the name: clone URLs, webhooks, runner registration, OAuth callbacks, LFS endpoints. Hosts are fungible; the domain is permanent. A nameless instance puts its address in that role, which is why relocating one breaks remotes.
+- Given a name, `init` proves zone control via an ACME DNS-01 challenge, front-loading the project's one external dependency to day one.
 - Records are created with a 60-second TTL so DNS flips land within the promotion downtime window.
+
+### Reaching the forge
+
+Two ports carry every client protocol, and both are part of the identity the bundle owns:
+
+- **HTTPS on 443**, terminated by Caddy with a core-issued certificate. Browser, REST API, git-over-HTTPS, and LFS all arrive here.
+- **Git over SSH on 2222 by default**, served by Forgejo's own SSH server using the bundle's host key. The port is a manifest field, so an operator whose host sshd lives elsewhere can set 22 and get bare `git@domain:owner/repo.git` URLs. The default is 2222 because the host's sshd normally owns 22 — `up` reaches hosts over it (ORCH-001), and taking it would require reconfiguring the host, which Farrier deliberately does not ask for. The cost of the default is a port in the SSH clone URL, which Forgejo renders into the URLs it displays.
+
+The port belongs to the instance: one bundle owns one domain, and every repository on it answers at the same endpoint.
+
+The host key is bundle key material, so a restored or promoted instance answers on the same port with the same key and existing remotes and `known_hosts` entries keep working.
 
 ### Key material
 
@@ -76,6 +89,34 @@ Key material is non-rotating by default: once `init` writes a piece of it, nothi
 ### Runners across relocation
 
 Runner registrations live in the database, and runners dial out to the domain. After promotion, remote runners reconnect automatically; colocated runners restart with the bundle.
+
+## The unit: one forge per project
+
+The thing Farrier hands you is a forge for one project, and the project folder is where it starts.
+
+- **The bundle lives in the project, at `.farrier/`.** Manifest and rendered Compose definitions sit beside the code, holding no key material, so the forge definition is versioned with the thing it serves and travels with it. This is the default and the shape the design optimizes for: `cd my-project && farrier init`, and that project has its own forge.
+- **One instance may serve several projects, and then the bundle lives on its own.** An instance hosts as many repositories as the operator puts on it — ten projects on one instance is one address, one backup, one drill, and a Forgejo that lists all ten. Nothing in the code differs; it is how many times `init` and `up` are run. But a bundle serving ten projects belongs to none of them, so `init` takes an explicit location for that case rather than making one project arbitrarily own the forge that hosts the other nine. A location argument, not a mode.
+- **`init` takes a folder; `up` takes a host.** They stay separate commands. `init` makes a folder into a forge definition; `up` puts it on a machine.
+- **A host is a host.** `ssh://user@localhost` and `ssh://user@a-vps` run the same path. There is no local mode — locality is an argument, not a branch. ACME DNS-01 proves zone control by writing a TXT record rather than answering an inbound request, so an instance on the operator's own machine holds a publicly valid certificate for its name exactly like a remote one.
+- **An FQDN belongs to an instance, not a repository.** Apex or subdomain is immaterial — what matters is a name the operator controls in DNS, unique to that instance, since the name is the identity. Every repository on that instance shares the endpoint. Subdomains are simply the cheap way to run many instances: one owned zone, a name per project, nothing new to register.
+- **Shared or not is usage, not a mode.** An instance hosts as many repositories as the operator puts on it. One project per instance is the default shape and the reason the design carries no org, team, or tenancy modeling — but nothing forbids several, and no code path differs.
+
+The first push is part of standing it up: Farrier creates the repository on the instance from the folder, pushes its existing history, and sets `origin` to the instance's SSH URL. `import` (below) remains the on-ramp for a project that already lives on GitHub or GitLab.
+
+### Instances without a name
+
+Requiring a domain before anything works puts the cost first: own a name, hold a DNS API token or paste a TXT record and wait for it to propagate, and only then get a forge. For someone trying the thing for the first time, that is where they stop.
+
+So a name is optional. `init` with no domain produces a **nameless bundle** — no DNS-01 proof, no certificate, nothing for the operator to own — and `up` serves it over plain HTTP at whatever address the operator gives, on their own machine or on a remote host. Every other piece of key material is generated as usual: a nameless instance is a complete instance in all respects but its name.
+
+What that costs, stated plainly:
+
+- **The web UI is unencrypted.** Git over SSH is encrypted regardless — pushing to a nameless instance across the internet is safe — but pull requests, review, and login travel in the clear, so a nameless instance belongs on a LAN, a VPN, or a tailnet.
+- **The address is the identity, so moving breaks remotes.** A named instance relocates by DNS flip and no remote ever changes; that is what identity-in-the-bundle buys, and a nameless instance is the one case that opts out. Attaching a domain later is supported and in-place — repositories, history, pull requests, review comments, CI history, secrets, and the SSH host key all survive, because they are bundle and host state rather than identity. Consumers re-point their remote once.
+
+A tailnet name is the best of the nameless options: stable, private, reachable from anywhere the operator is logged in, and it does not drift the way an IP does.
+
+Named from the start remains the recommendation for anything that will outlive the experiment. The nameless tier exists so the first minute costs nothing, not so the domain can be avoided forever.
 
 ## Who this is for: private repositories
 
@@ -121,14 +162,14 @@ The system defines the state interface; the operator owns transport and topology
 
 ## Bundle config is shareable; keys resolve through drivers
 
-The bundle configuration (manifest, Compose definitions, pinned versions) is a plain directory designed to live in a private git repo or synced folder, so any teammate can operate the instance from their own machine. Key material stays out of the repo and resolves at runtime through a keystore driver:
+The bundle configuration (manifest, Compose definitions, pinned versions) is a plain directory living at `.farrier/` in the project it serves, so any teammate who can clone the project can operate the instance from their own machine. Key material stays out of the repo and resolves at runtime through a keystore driver:
 
 - **`file`:** a path to a local directory; each piece of key material is a file named by its key name. The default.
 - **`command`:** any command that prints the key — one interface that covers 1Password CLI, Vault, `pass`, sops, cloud secret managers, and anything else the team already uses.
 
-The driver interface is published; the plugin posture matches DNS drivers and blob adapters. Teammate onboarding is: clone the bundle repo, obtain the key through the team's keystore.
+The driver interface is published; the plugin posture matches DNS drivers and blob adapters. Teammate onboarding is: clone the project, obtain the key through the team's keystore.
 
-The `file` driver's path — and the `local` blob adapter's, the same shape of config — must be absolute (XCUT-001). The manifest carries that path as the literal string an operator gave it; a relative one would silently re-resolve against whatever directory a command happens to run from, which differs by machine and even by shell session on the same machine. A teammate who wants `file` to work needs the key material reachable at the same absolute path everywhere they run Farrier from — a synced folder mounted consistently, not a path relative to wherever they happened to clone the bundle repo.
+The `file` driver's path — and the `local` blob adapter's, the same shape of config — must be absolute (XCUT-001). The manifest carries that path as the literal string an operator gave it; a relative one would silently re-resolve against whatever directory a command happens to run from, which differs by machine and even by shell session on the same machine. A teammate who wants `file` to work needs the key material reachable at the same absolute path everywhere they run Farrier from — a synced folder mounted consistently, not a path relative to wherever they happened to clone the project.
 
 ## What the system owns: verified restores
 
@@ -191,7 +232,7 @@ The full lifecycle — create, deploy, import, protect, relocate, verify, upgrad
 
 | Command | Function |
 |---|---|
-| `init` | Create a bundle: domain, zone-control proof, key material, manifest. |
+| `init` | Make a project folder into a forge definition: domain, zone-control proof, key material, manifest, written to `.farrier/`. |
 | `import` | Bring existing repositories in from GitHub or GitLab, with history, LFS, and optional mirror sync. |
 | `up` | Deploy the stateless layer against bundle state on a target host. Ends with the forge live in a browser: configuration fully rendered from the manifest, install wizard pre-answered, first admin account provisioned with credentials handed to the operator. |
 | `backup` | Produce a complete, verified, encrypted snapshot to an S3 URI or directory. |
@@ -207,6 +248,28 @@ The full lifecycle — create, deploy, import, protect, relocate, verify, upgrad
 `drill` keeps the escape hatch verified instead of trusted. It restores the most recent backup onto a scratch target (remote host or local container), boots the full stack in quarantine, runs a smoke CI job, and reports success or the specific failure.
 
 Quarantine exists because a drill instance carries production's identity. In drill mode: outbound notifications (webhooks, email) are disabled by config override, DNS stays untouched, and the operator reaches the instance through an SSH tunnel. The drill proves the backup restores and CI runs while the outside world hears nothing.
+
+## Farrier hosts Farrier
+
+The project moves its own development onto an instance it deploys. This is the acceptance test for the whole system: every command runs against real work, on a repository whose loss would matter, operated by the person who wrote it.
+
+The cutover, in order:
+
+1. `init` a bundle for the project's domain, then `up` it on a host.
+2. `import` this repository from GitHub — code, full history, LFS objects, default branch.
+3. Re-enter CI secrets and re-create branch protection on the new instance. Neither travels with an import, and neither is Farrier's to carry: they are Forgejo configuration the operator owns.
+4. Land one pull request end to end — branch, push over SSH, review, green CI on a Forgejo Actions runner, merge.
+5. `backup`, then `drill`, before the GitHub copy stops being the working one.
+
+**Milestone met** when step 4 lands and step 5 passes. Issue and pull-request history stay on GitHub; the repository moves, its GitHub metadata does not.
+
+### A copy of the bundle must survive the instance
+
+The bundle lives at `.farrier/` in the project, and the project is hosted on the forge that bundle deploys. That closes a loop: the instance goes down, and the definition needed to restore it is inside the thing that is down.
+
+Ordinary git already breaks the loop — every developer clone carries `.farrier/`, so a working copy on any machine is a complete bundle. The rule is that at least one such copy must exist somewhere the instance does not serve, and that the operator knows which one it is. A single-developer instance whose only clone is on a laptop that dies has lost its bundle as surely as one that kept it nowhere.
+
+This is operator discipline rather than an enforced constraint. Key material is unaffected: it never lives in the bundle, and its custody is the keystore driver's ("Key custody").
 
 ## Distribution and licensing
 
