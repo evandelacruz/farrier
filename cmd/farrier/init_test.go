@@ -150,3 +150,33 @@ func withSilencedStderr(t *testing.T, fn func() int) int {
 
 	return fn()
 }
+
+// UP-005: the git-over-SSH host port is an init flag, defaulting to 2222
+// so a fresh bundle serves git over SSH without the operator naming a port.
+func TestParseInitFlagsGitSSHPort(t *testing.T) {
+	base := []string{"-domain", "example.com", "-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"}
+
+	params, code := parseInitFlags(base)
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.GitSSHPort != bundle.DefaultGitSSHPort {
+		t.Errorf("GitSSHPort = %d, want the default %d", params.GitSSHPort, bundle.DefaultGitSSHPort)
+	}
+
+	params, code = parseInitFlags(append(append([]string{}, base...), "-git-ssh-port", "22"))
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.GitSSHPort != 22 {
+		t.Errorf("GitSSHPort = %d, want 22", params.GitSSHPort)
+	}
+
+	code = withSilencedStderr(t, func() int {
+		_, code := parseInitFlags(append(append([]string{}, base...), "-git-ssh-port", "70000"))
+		return code
+	})
+	if code != 2 {
+		t.Errorf("parseInitFlags with an unusable -git-ssh-port: exit code = %d, want 2", code)
+	}
+}

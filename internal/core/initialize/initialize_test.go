@@ -638,6 +638,53 @@ func TestRunStoresAWellFormedRunnerSecret(t *testing.T) {
 	}
 }
 
+// UP-005: the git-over-SSH host port is written into the manifest even at
+// its default, so farrier.yaml shows the operator which port clients reach
+// git on and that it is theirs to change.
+func TestRunRecordsTheGitSSHPort(t *testing.T) {
+	b, err := Run(context.Background(), events.NewJob(), validParams(t, &fakeResolver{}))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if b.Manifest.GitSSHPort != bundle.DefaultGitSSHPort {
+		t.Errorf("manifest git-over-ssh port = %d, want the default %d written out explicitly", b.Manifest.GitSSHPort, bundle.DefaultGitSSHPort)
+	}
+}
+
+func TestRunHonorsAnExplicitGitSSHPort(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.GitSSHPort = 22
+
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := b.Manifest.GitSSHPortOrDefault(); got != 22 {
+		t.Errorf("manifest git-over-ssh port = %d, want the operator's 22", got)
+	}
+}
+
+// An unusable port is caught in the validate step, before an ACME exchange
+// is spent and key material generated — the same place every other
+// unusable input is caught.
+func TestRunRejectsAnInvalidGitSSHPort(t *testing.T) {
+	prover := &fakeProver{}
+	params := validParams(t, &fakeResolver{})
+	params.Prover = prover
+	params.GitSSHPort = 70000
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err == nil {
+		t.Fatal("Run() = nil, want an error naming the port")
+	} else if !strings.Contains(err.Error(), "70000") {
+		t.Errorf("error = %v, want it to name the rejected port", err)
+	}
+	if len(prover.calls) != 0 {
+		t.Errorf("zone control was proven despite an unusable port: %v", prover.calls)
+	}
+}
+
 // INIT-004: a project that already holds a bundle is never re-initialized
 // over. The bundle directory carries the running instance's identity, so a
 // second init must fail, name the folder, and leave the first bundle

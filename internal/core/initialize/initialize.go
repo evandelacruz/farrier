@@ -166,6 +166,15 @@ type Params struct {
 	// re-running init.
 	ColocatedRunner *bool
 
+	// GitSSHPort is the host port the instance serves git over SSH on
+	// (UP-005). Zero takes bundle.DefaultGitSSHPort; an operator whose host
+	// sshd does not own 22 sets it to 22 and gets bare
+	// `git@domain:owner/repo.git` clone URLs. Like ColocatedRunner, the
+	// resolved value is written into the manifest explicitly, so
+	// farrier.yaml shows the knob and changing it later is an edit plus a
+	// re-run of `up` rather than a re-run of init.
+	GitSSHPort int
+
 	// Resolver resolves image refs to digests; nil uses registry.Resolve.
 	Resolver Resolver
 	// Prover proves ACME DNS-01 zone control; nil uses a real ACME exchange
@@ -203,6 +212,9 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	}
 	if strings.TrimSpace(params.ACMEDNSProvider) == "" {
 		return fail(job, StepValidate, fmt.Errorf("initialize: acme dns-01 provider is required"))
+	}
+	if err := bundle.ValidateGitSSHPort(params.GitSSHPort); err != nil {
+		return fail(job, StepValidate, fmt.Errorf("initialize: %w", err))
 	}
 	keystoreWriter, ok := keystoreDriver.(keystore.Writer)
 	if !ok {
@@ -247,6 +259,13 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	// off (FORGE-005, spec.md "CI trust boundary").
 	colocatedRunner := params.ColocatedRunner == nil || *params.ColocatedRunner
 	manifest.Actions.ColocatedRunner = &colocatedRunner
+	// Same reason: written out even at its default so farrier.yaml shows
+	// the operator which port clients reach git over SSH on, and that it is
+	// theirs to change (UP-005, spec.md "Reaching the forge").
+	manifest.GitSSHPort = params.GitSSHPort
+	if manifest.GitSSHPort == 0 {
+		manifest.GitSSHPort = bundle.DefaultGitSSHPort
+	}
 	compose, err := orchestrate.Render(manifest)
 	if err != nil {
 		return fail(job, StepWrite, fmt.Errorf("initialize: %w", err))
