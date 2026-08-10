@@ -251,7 +251,7 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	}
 	keystoreWriter, ok := keystoreDriver.(keystore.Writer)
 	if !ok {
-		return fail(job, StepValidate, fmt.Errorf("initialize: keystore driver %q cannot store generated key material; give the command driver a storeCommand, use the file driver, or provision Forgejo's key material manually first", params.Keystore.Driver))
+		return fail(job, StepValidate, fmt.Errorf("initialize: keystore driver %q cannot store generated key material; give the command driver a storeCommand, declare store: true on an out-of-tree driver that implements it, use the file driver, or provision Forgejo's key material manually first", params.Keystore.Driver))
 	}
 	if named {
 		job.Emit(StepValidate, events.StateSucceeded, fmt.Sprintf("project folder %s is ready; domain and driver targets are valid", params.Project))

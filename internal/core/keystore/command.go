@@ -128,7 +128,7 @@ func (d WritableCommandDriver) Store(ctx context.Context, keyName string, secret
 		if ctx.Err() != nil {
 			return fmt.Errorf("keystore: command: store key %q: %w", keyName, ctx.Err())
 		}
-		return fmt.Errorf("keystore: command: store key %q: %w%s", keyName, err, stderrSuffix(redactSecret(stderr.String(), secret)))
+		return fmt.Errorf("keystore: command: store key %q: %w%s", keyName, err, stderrSuffix(redactAll(stderr.String(), secret.Reveal())))
 	}
 	return nil
 }
@@ -155,19 +155,6 @@ func newCommandDriver(config map[string]any) (Driver, error) {
 		return resolver, nil
 	}
 	return WritableCommandDriver{CommandDriver: resolver, StoreCommand: storeCommand}, nil
-}
-
-// redactSecret removes key material from text a failing command wrote to
-// stderr, so surfacing that stderr for diagnosis cannot leak the very
-// value being stored (KEY-003). The match is a plain substring one, which
-// can over-redact a trivially short value — the safe direction, and not a
-// case that arises for the high-entropy material init generates.
-func redactSecret(text string, secret Secret) string {
-	value := secret.Reveal()
-	if value == "" {
-		return text
-	}
-	return strings.ReplaceAll(text, value, redacted)
 }
 
 func stderrSuffix(stderr string) string {

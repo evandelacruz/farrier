@@ -56,7 +56,9 @@ type Driver interface {
 // FileDriver always does, since its storage is just a directory on disk;
 // the command driver does only when the operator configured a
 // storeCommand, in which case New builds a WritableCommandDriver rather
-// than a CommandDriver.
+// than a CommandDriver; an out-of-tree exec driver does only when the
+// operator declared config.store, since one Go type serves every driver
+// executable and the executable itself cannot be asked (see exec.go).
 //
 // Whether a driver implements Writer is therefore settled when the driver
 // is built, never at the moment of the call (KEY-004). A caller
@@ -135,4 +137,23 @@ func optionalStringConfig(config map[string]any, field string) (string, bool, er
 		return "", false, err
 	}
 	return s, true, nil
+}
+
+// optionalBoolConfig reads a boolean field a driver treats as optional,
+// defaulting an absent field to false. A field that is present but not a
+// bool is an error rather than a silent false: config.store is what
+// decides an exec driver's store capability (tech-spec "Keystore driver
+// config"), so reading a quoted "true" or a stray 1 as "resolve-only"
+// would turn a manifest typo into a confusing "this keystore cannot store
+// key material" from init, far from its cause.
+func optionalBoolConfig(config map[string]any, field string) (bool, error) {
+	raw, present := config[field]
+	if !present {
+		return false, nil
+	}
+	b, ok := raw.(bool)
+	if !ok {
+		return false, fmt.Errorf("config.%s must be a boolean", field)
+	}
+	return b, nil
 }

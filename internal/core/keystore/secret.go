@@ -1,8 +1,34 @@
 package keystore
 
+import "strings"
+
 // redacted is what every Secret formatting path prints in place of the
 // underlying value.
 const redacted = "[redacted]"
+
+// redactAll removes each of values from text, replacing every occurrence
+// with the same placeholder Secret's own formatting uses. Drivers call it
+// on text they did not author — the stderr of an operator-supplied command
+// or driver executable — before putting it in an error that reaches the
+// event stream, so surfacing that text for diagnosis cannot leak the very
+// value being stored (KEY-003).
+//
+// A driver passes every encoding the secret travelled in, not just the raw
+// bytes: an exec driver receives it base64-encoded, and a tool that echoes
+// back what it was handed echoes back that form.
+//
+// The match is a plain substring one, which can over-redact a trivially
+// short value — the safe direction, and not a case that arises for the
+// high-entropy material init generates.
+func redactAll(text string, values ...string) string {
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, value, redacted)
+	}
+	return text
+}
 
 // Secret holds key material resolved by a Driver (KEY-003). The zero
 // value is a valid, empty Secret. A string, not []byte, since Go strings
