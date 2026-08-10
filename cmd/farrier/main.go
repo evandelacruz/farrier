@@ -14,21 +14,37 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
 
-// commands maps a subcommand name to its runner. Each runner owns its own
-// flag parsing and returns the process exit code.
-var commands = map[string]func(args []string) int{
-	"init":    runInit,
-	"up":      runUp,
-	"attach":  runAttach,
-	"status":  runStatus,
-	"import":  runImport,
-	"publish": runPublish,
-	"backup":  runBackup,
-	"restore": runRestore,
-	"promote": runPromote,
-	"upgrade": runUpgrade,
-	"drill":   runDrill,
-	"ui":      runUI,
+// command is one subcommand: its runner, and the one line describing it in
+// the command list. Each runner owns its own flag parsing and returns the
+// process exit code.
+type command struct {
+	run     func(args []string) int
+	summary string
+}
+
+// commands is keyed by subcommand name. The order the list prints in comes
+// from commandOrder, not from ranging this map — map iteration is randomized,
+// so ranging it printed the commands in a different order on every run.
+var commands = map[string]command{
+	"init":    {runInit, "make a project folder into a forge definition"},
+	"up":      {runUp, "deploy a bundle onto a host"},
+	"publish": {runPublish, "create the repository on the instance and point origin at it"},
+	"import":  {runImport, "bring repositories in from GitHub or GitLab"},
+	"attach":  {runAttach, "give a nameless instance a domain, in place"},
+	"status":  {runStatus, "instance health, certificate expiry, and last-backup age"},
+	"backup":  {runBackup, "produce a verified, encrypted snapshot"},
+	"restore": {runRestore, "rebuild an instance from a snapshot onto a fresh host"},
+	"promote": {runPromote, "fail over: restore, verify, start, reconcile CI, flip DNS"},
+	"upgrade": {runUpgrade, "back up, bump the pinned version, migrate, verify"},
+	"drill":   {runDrill, "rehearse a restore on a scratch target and report"},
+	"ui":      {runUI, "serve the dashboard on loopback and open a browser"},
+}
+
+// commandOrder is lifecycle order — the sequence an operator meets these in —
+// rather than alphabetical, so the list doubles as a table of contents.
+var commandOrder = []string{
+	"init", "up", "publish", "import", "attach",
+	"status", "backup", "restore", "promote", "upgrade", "drill", "ui",
 }
 
 func main() {
@@ -37,25 +53,72 @@ func main() {
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: farrier <command> [flags]")
-		printCommands()
+		printUsage(os.Stderr)
 		return 2
+	}
+
+	// Asking for help is not a usage error, so it prints to stdout and exits
+	// 0 — otherwise `farrier --help | less` shows nothing and any wrapper
+	// script treats a successful help request as a failure.
+	switch args[0] {
+	case "help", "-h", "--help":
+		if len(args) > 1 {
+			return helpFor(args[1])
+		}
+		printUsage(os.Stdout)
+		return 0
 	}
 
 	cmd, ok := commands[args[0]]
 	if !ok {
 		fmt.Fprintf(os.Stderr, "farrier: unknown command %q\n", args[0])
-		printCommands()
+		printUsage(os.Stderr)
 		return 2
 	}
-	return cmd(args[1:])
+	return cmd.run(args[1:])
 }
 
-func printCommands() {
-	fmt.Fprintln(os.Stderr, "commands:")
-	for name := range commands {
-		fmt.Fprintf(os.Stderr, "  %s\n", name)
+// helpFor prints one command's flags by handing it -h, which every runner's
+// flag set already understands. The runner returns 2 for that, since it
+// cannot tell a help request from a parse error — but this call site can, so
+// the exit code is 0.
+//
+// The runner writes that usage to os.Stderr — no flag set in this package
+// calls SetOutput, and flag.FlagSet.Output() falls back to os.Stderr when it
+// has none. Sending it there would reproduce the bug this function exists to
+// fix, one level down: `farrier help up | less` would show nothing while
+// exiting 0. So os.Stderr is pointed at stdout for the duration of the call.
+//
+// It reads as a blunt instrument and it is, but the alternative is calling
+// SetOutput in all twelve runners and keeping every future one in line — a
+// rule that holds only as long as everyone remembers it. flag.FlagSet.Output()
+// resolves os.Stderr on each call rather than capturing it, which is what
+// makes the swap work at all.
+func helpFor(name string) int {
+	cmd, ok := commands[name]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "farrier: unknown command %q\n", name)
+		printUsage(os.Stderr)
+		return 2
 	}
+
+	saved := os.Stderr
+	os.Stderr = os.Stdout
+	defer func() { os.Stderr = saved }()
+
+	cmd.run([]string{"-h"})
+	return 0
+}
+
+func printUsage(w *os.File) {
+	fmt.Fprintln(w, "usage: farrier <command> [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "commands:")
+	for _, name := range commandOrder {
+		fmt.Fprintf(w, "  %-8s %s\n", name, commands[name].summary)
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "run `farrier help <command>` for a command's flags")
 }
 
 // runUp implements the `up` command (UP-001): it connects to the target

@@ -7,7 +7,7 @@ import (
 // TestDrillIsARegisteredCommand pins `drill` into the CLI's command table
 // (spec.md "CLI commands" lists it as one of the ten).
 func TestDrillIsARegisteredCommand(t *testing.T) {
-	if commands["drill"] == nil {
+	if _, ok := commands["drill"]; !ok {
 		t.Fatal("commands has no drill entry")
 	}
 }
