@@ -154,7 +154,12 @@ Whatever you choose, pass the same `-remote-dir` to every later command against 
 
 ### 5. Push your project to it
 
-Create an access token in the forge's web UI, then:
+Create an access token in the forge's web UI, under **Settings → Applications → Access Tokens** (`/user/settings/applications` on the instance). Give it two permissions, both **Read and Write**:
+
+- **repository** — `publish` creates the project's repository on the instance.
+- **user** — it reads which account the token belongs to, and registers your SSH key on that account.
+
+Then:
 
 ```bash
 export FARRIER_TARGET_TOKEN=...        # never passed as a flag
@@ -167,6 +172,8 @@ farrier publish -target http://192.168.1.5:8222
 ```
 
 That creates the repository, pushes your existing history, and points `origin` at the instance. `git push` works normally from here on.
+
+**It registers an SSH public key on your forge account** when that account has none — which a brand new instance never does, and a push to an account with no key is rejected. It takes your own key, `~/.ssh/id_ed25519.pub` or failing that `~/.ssh/id_rsa.pub`, and names the file it registered in its output. `-ssh-key /path/to/some_key.pub` names a different one. An account that already has a key registered is left alone.
 
 ### 6. Back it up
 

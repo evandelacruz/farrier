@@ -28,6 +28,12 @@ import (
 // `-target`, which makes `farrier publish -target http://192.168.1.5:8222`
 // work as typed.
 //
+// The account the token belongs to must have an SSH public key registered
+// before it can be pushed to, and a fresh instance has none. So when it has
+// none and the operator named no -ssh-key, publish registers the operator's
+// own public key and says which file it took — that is what makes the
+// README's `farrier publish` with no flags work on a new instance.
+//
 // The instance API token is read from FARRIER_TARGET_TOKEN in the process
 // environment, never from a flag, for the reason `import` reads its tokens
 // there: argv is visible to any local user via ps and lands in shell
@@ -42,7 +48,7 @@ func runPublish(args []string) int {
 	name := fs.String("name", "", "repository name on the instance (default: the project folder's name)")
 	private := fs.Bool("private", true, "create the repository private")
 	remote := fs.String("remote", publish.DefaultRemoteName, "git remote to point at the instance")
-	sshKey := fs.String("ssh-key", "", "path to the SSH public key to register with the instance account, so pushes from this machine are authorized")
+	sshKey := fs.String("ssh-key", "", "path to the SSH public key to register with the instance account, so pushes from this machine are authorized (default: ~/.ssh/id_ed25519.pub, then ~/.ssh/id_rsa.pub, registered only when the account has no key yet)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

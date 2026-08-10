@@ -201,6 +201,30 @@ func legacyManifest(t *testing.T, port int) *bundle.Manifest {
 	}
 }
 
+// homeWithKeys builds a home directory holding the named public key files,
+// for Options.homeDir. The default-key search then runs against a home this
+// test owns: a suite that read the real ~/.ssh would pass on a laptop with
+// a key and fail in CI without one, which is worse than no test at all.
+func homeWithKeys(t *testing.T, names ...string) string {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatalf("make .ssh: %v", err)
+	}
+	for _, name := range names {
+		stem := strings.TrimSuffix(name, ".pub")
+		keyType := "ssh-ed25519"
+		if strings.Contains(stem, "rsa") {
+			keyType = "ssh-rsa"
+		}
+		line := fmt.Sprintf("%s AAAA%s evan@laptop\n", keyType, stem)
+		if err := os.WriteFile(filepath.Join(home, ".ssh", name), []byte(line), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return home
+}
+
 func detailFor(job *events.Job, step string, state events.State) string {
 	for _, ev := range job.Events() {
 		if ev.Step == step && ev.State == state {
@@ -413,10 +437,15 @@ func TestRunRefusesARepositoryThatAlreadyExists(t *testing.T) {
 	}
 }
 
-func TestRunRefusesAnAccountWithNoSSHKey(t *testing.T) {
+// An account with no key and a machine with no key is the one case that
+// still fails, and the operator has to be able to act on it: the message
+// names every path that was tried, the override, and the command that
+// makes a key.
+func TestRunRefusesWhenNeitherTheAccountNorTheMachineHasAKey(t *testing.T) {
 	forge := &fakeForge{user: "admin"}
 	srv := forge.server(t)
 	git := &fakeGit{root: "/src/thing", branch: "main"}
+	home := t.TempDir() // no ~/.ssh at all
 
 	_, err := Run(context.Background(), events.NewJob(), Options{
 		Dir:           "/src/thing",
@@ -424,15 +453,179 @@ func TestRunRefusesAnAccountWithNoSSHKey(t *testing.T) {
 		TargetBaseURL: srv.URL,
 		TargetToken:   keystore.NewSecret("token"),
 		Git:           git,
+		homeDir:       home,
 	})
 	if err == nil {
 		t.Fatal("Run succeeded, want an error")
 	}
-	if !strings.Contains(err.Error(), "no ssh public key") {
-		t.Errorf("error = %v, want it to say the account has no ssh key", err)
+	for _, want := range []string{
+		"no ssh public key",
+		filepath.Join(home, ".ssh", "id_ed25519.pub"),
+		filepath.Join(home, ".ssh", "id_rsa.pub"),
+		"-ssh-key",
+		"ssh-keygen",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to mention %q", err, want)
+		}
 	}
 	if len(forge.created) != 0 {
 		t.Errorf("created %v before failing authorize", forge.created)
+	}
+}
+
+// The documented happy path: a fresh instance, an operator who typed no
+// flags. The account has no key, so publish registers the operator's own —
+// and says which file it took, because that is a change to their account.
+func TestRunRegistersTheOperatorsOwnKeyWhenTheAccountHasNone(t *testing.T) {
+	home := homeWithKeys(t, "id_ed25519.pub")
+	forge := &fakeForge{user: "admin"}
+	srv := forge.server(t)
+	git := &fakeGit{root: "/src/thing", branch: "main"}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, Options{
+		Dir:           "/src/thing",
+		Manifest:      testManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		Git:           git,
+		homeDir:       home,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(forge.addedKeys) != 1 {
+		t.Fatalf("registered %d keys, want the operator's own", len(forge.addedKeys))
+	}
+	if got, want := forge.addedKeys[0]["key"], "ssh-ed25519 AAAAid_ed25519"; got != want {
+		t.Errorf("registered key = %q, want %q", got, want)
+	}
+	detail := detailFor(job, StepAuthorize, events.StateSucceeded)
+	if !strings.Contains(detail, filepath.Join(home, ".ssh", "id_ed25519.pub")) {
+		t.Errorf("authorize detail = %q, want it to name the file that was registered", detail)
+	}
+}
+
+// ed25519 before RSA: it is what the README's own ssh-keygen line produces
+// and what a modern host prefers.
+func TestRunPrefersEd25519OverRSA(t *testing.T) {
+	home := homeWithKeys(t, "id_rsa.pub", "id_ed25519.pub")
+	forge := &fakeForge{user: "admin"}
+	srv := forge.server(t)
+
+	if _, err := Run(context.Background(), events.NewJob(), Options{
+		Dir:           "/src/thing",
+		Manifest:      testManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		Git:           &fakeGit{root: "/src/thing", branch: "main"},
+		homeDir:       home,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(forge.addedKeys) != 1 || forge.addedKeys[0]["key"] != "ssh-ed25519 AAAAid_ed25519" {
+		t.Errorf("registered %v, want the ed25519 key", forge.addedKeys)
+	}
+}
+
+// An RSA-only machine is still publishable — the fallback is a list, not
+// one path.
+func TestRunFallsBackToRSA(t *testing.T) {
+	home := homeWithKeys(t, "id_rsa.pub")
+	forge := &fakeForge{user: "admin"}
+	srv := forge.server(t)
+
+	if _, err := Run(context.Background(), events.NewJob(), Options{
+		Dir:           "/src/thing",
+		Manifest:      testManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		Git:           &fakeGit{root: "/src/thing", branch: "main"},
+		homeDir:       home,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(forge.addedKeys) != 1 || forge.addedKeys[0]["key"] != "ssh-rsa AAAAid_rsa" {
+		t.Errorf("registered %v, want the rsa key", forge.addedKeys)
+	}
+}
+
+// The flag is an override, so a named key beats the default even when the
+// default file is sitting right there.
+func TestRunPrefersTheNamedKeyOverTheDefault(t *testing.T) {
+	home := homeWithKeys(t, "id_ed25519.pub")
+	named := filepath.Join(t.TempDir(), "work.pub")
+	if err := os.WriteFile(named, []byte("ssh-ed25519 AAAAworkblob evan@work\n"), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	forge := &fakeForge{user: "admin"}
+	srv := forge.server(t)
+
+	if _, err := Run(context.Background(), events.NewJob(), Options{
+		Dir:           "/src/thing",
+		Manifest:      testManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		PublicKeyPath: named,
+		Git:           &fakeGit{root: "/src/thing", branch: "main"},
+		homeDir:       home,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(forge.addedKeys) != 1 || forge.addedKeys[0]["key"] != "ssh-ed25519 AAAAworkblob" {
+		t.Errorf("registered %v, want the key named with -ssh-key", forge.addedKeys)
+	}
+}
+
+// A path from a flag is never shell-expanded, so publish expands the
+// leading ~ itself rather than reading a directory named "~".
+func TestRunExpandsATildeInTheNamedKeyPath(t *testing.T) {
+	home := homeWithKeys(t, "id_ed25519.pub")
+	forge := &fakeForge{user: "admin"}
+	srv := forge.server(t)
+
+	if _, err := Run(context.Background(), events.NewJob(), Options{
+		Dir:           "/src/thing",
+		Manifest:      testManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		PublicKeyPath: "~/.ssh/id_ed25519.pub",
+		Git:           &fakeGit{root: "/src/thing", branch: "main"},
+		homeDir:       home,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(forge.addedKeys) != 1 || forge.addedKeys[0]["key"] != "ssh-ed25519 AAAAid_ed25519" {
+		t.Errorf("registered %v, want the key under the expanded home directory", forge.addedKeys)
+	}
+}
+
+// An account that already has a key is already publishable. A file on disk
+// is not a reason to upload a second one — unchanged behavior, and the
+// reason the fallback is safe to have at all.
+func TestRunRegistersNothingWhenTheAccountAlreadyHasAKey(t *testing.T) {
+	home := homeWithKeys(t, "id_ed25519.pub")
+	forge := &fakeForge{user: "admin", keys: []string{"ssh-ed25519 AAAAsomeotherkey evan@desktop"}}
+	srv := forge.server(t)
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, Options{
+		Dir:           "/src/thing",
+		Manifest:      testManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		Git:           &fakeGit{root: "/src/thing", branch: "main"},
+		homeDir:       home,
+	}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(forge.addedKeys) != 0 {
+		t.Errorf("registered %v, want nothing added to an account that can already be pushed to", forge.addedKeys)
+	}
+	if detail := detailFor(job, StepAuthorize, events.StateSucceeded); !strings.Contains(detail, "already registered") {
+		t.Errorf("authorize detail = %q, want it to report the key the account already has", detail)
 	}
 }
 
