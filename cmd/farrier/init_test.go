@@ -3,6 +3,9 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/evandelacruz/farrier/internal/core/bundle"
+	"github.com/evandelacruz/farrier/internal/core/initialize"
 )
 
 func TestKeyValueFlagSetRejectsMissingEquals(t *testing.T) {
@@ -85,6 +88,48 @@ func TestRunInitRequiresACMEDNSProvider(t *testing.T) {
 	})
 	if code != 2 {
 		t.Errorf("runInit without -acme-dns-provider: exit code = %d, want 2", code)
+	}
+}
+
+func TestRunInitRejectsAnEmptyProject(t *testing.T) {
+	code := withSilencedStderr(t, func() int {
+		return runInit([]string{"-domain", "example.com", "-project", "", "-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"})
+	})
+	if code != 2 {
+		t.Errorf("runInit with an empty -project: exit code = %d, want 2", code)
+	}
+}
+
+// INIT-001: `cd my-project && farrier init` targets the working directory
+// and lands the bundle in .farrier/ inside it, with no -dir to supply.
+func TestParseInitFlagsDefaultsToTheWorkingDirectoryProject(t *testing.T) {
+	params, code := parseInitFlags([]string{"-domain", "example.com", "-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"})
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.Project != "." {
+		t.Errorf("Project = %q, want \".\"", params.Project)
+	}
+	if params.Dir != "" {
+		t.Errorf("Dir = %q, want it left empty so the core picks the default", params.Dir)
+	}
+	if got := initialize.BundleDir(params); got != bundle.DirName {
+		t.Errorf("resolved bundle dir = %q, want %q", got, bundle.DirName)
+	}
+}
+
+// INIT-001: -dir moves the bundle out of the project, for an instance that
+// serves several of them.
+func TestParseInitFlagsHonorsAnExplicitDir(t *testing.T) {
+	params, code := parseInitFlags([]string{"-domain", "example.com", "-project", "/srv/my-project", "-dir", "/srv/forge", "-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"})
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.Project != "/srv/my-project" {
+		t.Errorf("Project = %q", params.Project)
+	}
+	if got := initialize.BundleDir(params); got != "/srv/forge" {
+		t.Errorf("resolved bundle dir = %q, want /srv/forge", got)
 	}
 }
 

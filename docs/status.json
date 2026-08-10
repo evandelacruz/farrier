@@ -38,10 +38,7 @@
     "STATE-002": "landed",
     "STATE-003": "landed",
     "STATE-004": "landed",
-    "INIT-001": {
-      "state": "partial",
-      "remaining": "Takes a DNS name and keystore target but not a project folder: the bundle is written where the operator points, with no `.farrier/` default and no notion of the folder it serves."
-    },
+    "INIT-001": "landed",
     "INIT-002": {
       "state": "partial",
       "remaining": "Proof is unconditional: a nameless bundle (INIT-005) must skip DNS-01 and certificate issuance rather than failing."

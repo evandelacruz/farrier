@@ -15,6 +15,22 @@ const ManifestFile = "farrier.yaml"
 // ComposeDir is the directory within a bundle holding rendered Compose files.
 const ComposeDir = "compose"
 
+// DirName is the bundle directory's name inside the project folder it
+// serves (spec.md "The unit: one forge per project"). Sitting in the
+// project rather than in a machine-wide config directory is what versions
+// the forge definition with the code it serves and lets any teammate who
+// can clone the project operate the instance.
+const DirName = ".farrier"
+
+// DirFor returns the default bundle directory for a project folder:
+// DirName inside it. `init` uses this when the operator gives no explicit
+// location (INIT-001), and the result is joined, not resolved — a relative
+// project folder yields a relative bundle path, so a caller that wants an
+// absolute one makes it absolute before calling.
+func DirFor(project string) string {
+	return filepath.Join(project, DirName)
+}
+
 // Bundle is a bundle directory's contents in memory: the manifest and the
 // rendered Compose files. It carries no reference to the directory it came
 // from, so loading it from one path and saving it to another is exactly the
