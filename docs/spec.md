@@ -101,7 +101,7 @@ The thing Farrier hands you is a forge for one project, and the project folder i
 - **An FQDN belongs to an instance, not a repository.** Apex or subdomain is immaterial — what matters is a name the operator controls in DNS, unique to that instance, since the name is the identity. Every repository on that instance shares the endpoint. Subdomains are simply the cheap way to run many instances: one owned zone, a name per project, nothing new to register.
 - **Shared or not is usage, not a mode.** An instance hosts as many repositories as the operator puts on it. One project per instance is the default shape and the reason the design carries no org, team, or tenancy modeling — but nothing forbids several, and no code path differs.
 
-The first push is part of standing it up: Farrier creates the repository on the instance from the folder, pushes its existing history, and sets `origin` to the instance's SSH URL. `import` (below) remains the on-ramp for a project that already lives on GitHub or GitLab.
+The first push is part of standing it up: `publish` creates the repository on the instance from the folder, pushes its existing history, and sets `origin` to the instance's SSH URL. It refuses rather than overwrites — a folder with no commits, a folder that already has that remote, and a repository already on the instance each fail with nothing changed. `import` (below) remains the on-ramp for a project that already lives on GitHub or GitLab.
 
 ### Instances without a name
 
@@ -228,11 +228,12 @@ All logic lives in a single core engine; the CLI and the web dashboard are thin 
 
 ## CLI commands
 
-The full lifecycle — create, deploy, import, protect, relocate, verify, upgrade — in ten commands.
+The full lifecycle — create, deploy, publish, import, protect, relocate, verify, upgrade — in eleven commands.
 
 | Command | Function |
 |---|---|
 | `init` | Make a project folder into a forge definition: domain, zone-control proof, key material, manifest, written to `.farrier/`. |
+| `publish` | Put the project folder on its instance: create the repository, push the folder's existing history, set `origin` to the instance's SSH URL. |
 | `import` | Bring existing repositories in from GitHub or GitLab, with history, LFS, and optional mirror sync. |
 | `up` | Deploy the stateless layer against bundle state on a target host. Ends with the forge live in a browser: configuration fully rendered from the manifest, install wizard pre-answered, first admin account provisioned with credentials handed to the operator. |
 | `backup` | Produce a complete, verified, encrypted snapshot to an S3 URI or directory. |

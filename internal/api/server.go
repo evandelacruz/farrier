@@ -24,6 +24,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 	"github.com/evandelacruz/farrier/internal/core/promote"
+	"github.com/evandelacruz/farrier/internal/core/publish"
 	"github.com/evandelacruz/farrier/internal/core/restore"
 	"github.com/evandelacruz/farrier/internal/core/status"
 	"github.com/evandelacruz/farrier/internal/core/upgrade"
@@ -57,6 +58,7 @@ type Server struct {
 	deployUp       func(ctx context.Context, job *events.Job, host deploy.Host, b *bundle.Bundle, opts deploy.Options) error
 	importRun      func(ctx context.Context, job *events.Job, opts importer.Options) (importer.Result, error)
 	importRunBatch func(ctx context.Context, job *events.Job, opts importer.BatchOptions) (importer.BatchResult, error)
+	publishRun     func(ctx context.Context, job *events.Job, opts publish.Options) (publish.Result, error)
 	statusCheck    func(ctx context.Context, opts status.Options) (status.Report, error)
 	newKeystore    func(driverName string, config map[string]any) (keystore.Driver, error)
 	newBlob        func(driverName string, config map[string]any) (blob.Adapter, error)
@@ -78,7 +80,7 @@ type Server struct {
 
 // New returns a Server wired to the real core implementations: the same
 // initialize.Run, bundle.Load, orchestrate.Connect, deploy.Up,
-// importer.Run/RunBatch, status.Check, and keystore.New the CLI calls
+// importer.Run/RunBatch, publish.Run, status.Check, and keystore.New the CLI calls
 // directly.
 func New() *Server {
 	return &Server{
@@ -91,6 +93,7 @@ func New() *Server {
 		deployUp:       deploy.Up,
 		importRun:      importer.Run,
 		importRunBatch: importer.RunBatch,
+		publishRun:     publish.Run,
 		statusCheck:    status.Check,
 		newKeystore:    keystore.New,
 		newBlob:        blob.New,
@@ -121,14 +124,16 @@ func New() *Server {
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
-// POST /import, POST /backup, POST /restore, POST /promote, POST /upgrade,
-// POST /drill, GET /status, GET /snapshots, and GET /jobs/{id}/events — an
+// POST /import, POST /publish, POST /backup, POST /restore, POST /promote,
+// POST /upgrade, POST /drill, GET /status, GET /snapshots, and
+// GET /jobs/{id}/events — an
 // RPC verb for every core operation (API-001, tech-spec.md "API").
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
 	mux.HandleFunc("POST /up", s.handleUp)
 	mux.HandleFunc("POST /import", s.handleImport)
+	mux.HandleFunc("POST /publish", s.handlePublish)
 	mux.HandleFunc("POST /backup", s.handleBackup)
 	mux.HandleFunc("POST /restore", s.handleRestore)
 	mux.HandleFunc("POST /promote", s.handlePromote)

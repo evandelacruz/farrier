@@ -144,6 +144,38 @@ func (m *Manifest) GitSSHPortOrDefault() int {
 	return m.GitSSHPort
 }
 
+// GitSSHCloneURL is the git-over-SSH clone URL for owner/repo on this
+// bundle's instance, spelled the way Forgejo displays it (spec.md
+// "Reaching the forge"): port 22 renders scp-style
+// `git@domain:owner/repo.git`, and any other port carries the port in an
+// `ssh://` URL.
+//
+// It lives here, on the manifest, because the URL is bundle identity —
+// domain plus GitSSHPortOrDefault, nothing host-specific — and because
+// more than one caller needs the same spelling: `up` reports it as the
+// clone URL the operator can use, and `publish` writes it into a project's
+// `origin` (IMPT-004). One function means the URL Farrier prints and the
+// URL Farrier configures cannot drift apart.
+func (m *Manifest) GitSSHCloneURL(owner, repo string) string {
+	port := m.GitSSHPortOrDefault()
+	if port == 22 {
+		return fmt.Sprintf("git@%s:%s/%s.git", m.Domain, owner, repo)
+	}
+	return fmt.Sprintf("ssh://git@%s:%d/%s/%s.git", m.Domain, port, owner, repo)
+}
+
+// GitSSHKnownHostsHost is how this bundle's git-over-SSH endpoint is
+// spelled on the left-hand side of an OpenSSH known_hosts line: a bare
+// hostname on port 22, and `[domain]:port` on any other port, matching how
+// OpenSSH itself keys non-default ports.
+func (m *Manifest) GitSSHKnownHostsHost() string {
+	port := m.GitSSHPortOrDefault()
+	if port == 22 {
+		return m.Domain
+	}
+	return fmt.Sprintf("[%s]:%d", m.Domain, port)
+}
+
 // ValidateGitSSHPort checks that port is one a manifest may carry: zero,
 // meaning unset (GitSSHPortOrDefault), or a real TCP port. Exported so a
 // frontend collecting the operator's choice can reject an impossible one

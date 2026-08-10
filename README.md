@@ -16,9 +16,13 @@ cd my-project && farrier init myproject.example.com
 # ...or with no name at all — nothing to own, plain HTTP, name it later
 cd my-project && farrier init
 
-# Deploy onto a host — forge live at your domain, origin ready to push to.
+# Deploy onto a host — forge live at your domain.
 # The host can be anywhere, including this machine: ssh://user@localhost
 farrier up ssh://user@host
+
+# Put this project on it — creates the repository, pushes your history,
+# points origin at the instance. `git push` works from here on.
+farrier publish
 
 # Encrypted, verified snapshot (directory or S3-compatible URI)
 farrier backup --to ./backups

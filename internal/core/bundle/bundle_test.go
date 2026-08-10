@@ -424,3 +424,28 @@ func writeTestFile(t *testing.T, path, content string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+// TestGitSSHCloneURL pins the spelling every caller shares: the URL `up`
+// reports and the URL `publish` writes into a project's origin (IMPT-004)
+// come from this one function, so they cannot drift apart. Port 22 renders
+// scp-style and anything else carries the port, matching what Forgejo
+// itself displays (spec.md "Reaching the forge").
+func TestGitSSHCloneURL(t *testing.T) {
+	m := validManifest()
+	m.Domain = "git.example.com"
+
+	if got, want := m.GitSSHCloneURL("acme", "widgets"), "ssh://git@git.example.com:2222/acme/widgets.git"; got != want {
+		t.Errorf("GitSSHCloneURL() = %q, want %q", got, want)
+	}
+	if got, want := m.GitSSHKnownHostsHost(), "[git.example.com]:2222"; got != want {
+		t.Errorf("GitSSHKnownHostsHost() = %q, want %q", got, want)
+	}
+
+	m.GitSSHPort = 22
+	if got, want := m.GitSSHCloneURL("acme", "widgets"), "git@git.example.com:acme/widgets.git"; got != want {
+		t.Errorf("GitSSHCloneURL() on 22 = %q, want %q", got, want)
+	}
+	if got, want := m.GitSSHKnownHostsHost(), "git.example.com"; got != want {
+		t.Errorf("GitSSHKnownHostsHost() on 22 = %q, want %q", got, want)
+	}
+}

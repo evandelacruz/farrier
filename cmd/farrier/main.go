@@ -21,6 +21,7 @@ var commands = map[string]func(args []string) int{
 	"up":      runUp,
 	"status":  runStatus,
 	"import":  runImport,
+	"publish": runPublish,
 	"backup":  runBackup,
 	"restore": runRestore,
 	"promote": runPromote,
