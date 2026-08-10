@@ -136,6 +136,20 @@ farrier up -bundle .farrier -target ssh://you@host
 farrier up -bundle .farrier -target ssh://you@localhost -address 192.168.1.5
 ```
 
+**Deploying to your own machine? Add `-remote-dir`.** `up` writes configuration and forge state into `/opt/farrier` by default — fine on a dedicated host you reach as root, and not writable by an ordinary user:
+
+```bash
+farrier up -bundle .farrier -target ssh://you@localhost -address 127.0.0.1 \
+  -remote-dir /Users/you/farrier          # Linux: /home/you/farrier
+```
+
+Two things about that path:
+
+- **Give it absolutely, never as `~/farrier`.** It is quoted into a command on the host, so a tilde is taken literally and you get a directory actually named `~`.
+- **On macOS, keep it under `/Users`.** `up` bind-mounts forge state from this directory into the containers, and Docker Desktop shares only a fixed set of host paths with its VM. `/Users` is shared by default; `/opt` is not, so `/opt/farrier` would fail at mount time even with the permissions fixed.
+
+Whatever you choose, pass the same `-remote-dir` to every later command against that host — `backup`, `status`, `drill`, `upgrade` all default to `/opt/farrier` too.
+
 `up` prints the first admin account's credentials exactly once, through the event stream. Save them.
 
 ### 5. Push your project to it
@@ -210,4 +224,10 @@ Apache 2.0 — use it, fork it, ship it commercially. It requires attribution: k
 
 ## Status
 
-The forge and the whole portability layer — `up`, `backup`, `restore`, `promote`, `upgrade`, `drill`, `status`, `ui` — are landed. `up` serves git over SSH on the port the bundle declares, so clone and push work against a fresh deployment. The project-folder on-ramp is not landed: `init` does not yet write to `.farrier/` or run without a domain, and there is no path from a local folder to a working `origin`. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).
+**Feature-complete against the spec; early in real use.**
+
+Every requirement is implemented, reviewed, and tested — the twelve commands, the project-folder on-ramp, the nameless tier, and the whole portability layer. Delivery state, one line per requirement: [docs/status.json](docs/status.json).
+
+What that does not mean is battle-tested. The first end-to-end runs against real hosts are happening now, and they are turning up the things unit tests structurally cannot: a default directory an ordinary user cannot write, an image tag that did not exist, a `chown` that is mandatory on Linux and impossible on macOS. Expect to hit rough edges on a first deployment, and expect them in the seams between components rather than inside them.
+
+Nothing here is abandoned or speculative — it is young. Design reference: [docs/spec.md](docs/spec.md).

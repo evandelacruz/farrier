@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -42,12 +43,12 @@ func serveAddress(m *bundle.Manifest, address string) (string, error) {
 	address = strings.TrimSpace(address)
 	if m.Named() {
 		if address != "" {
-			return "", fmt.Errorf("deploy: this bundle is named %s and up serves it over HTTPS at that domain (UP-002); an address is for a nameless bundle only (UP-006)", strings.TrimSpace(m.Domain))
+			return "", fmt.Errorf("deploy: this bundle is named %s and up serves it over HTTPS at that domain; an address is for a nameless bundle only", strings.TrimSpace(m.Domain))
 		}
 		return "", nil
 	}
 	if address == "" {
-		return "", fmt.Errorf("deploy: this bundle is nameless (INIT-005), so up needs the address — an IP or a hostname — to serve its web UI at (UP-006)")
+		return "", errors.New("deploy: this bundle is nameless, so up serves its web UI over plain HTTP at an address you supply — give one, an IP or a hostname")
 	}
 	return NormalizeAddress(address)
 }
@@ -78,7 +79,7 @@ func serveAddress(m *bundle.Manifest, address string) (string, error) {
 func NormalizeAddress(address string) (string, error) {
 	switch {
 	case strings.Contains(address, "://"):
-		return "", fmt.Errorf("deploy: address %q carries a scheme; give the bare IP or hostname — up serves a nameless instance over plain HTTP (UP-006)", address)
+		return "", fmt.Errorf("deploy: address %q carries a scheme; give the bare IP or hostname — up serves a nameless instance over plain HTTP", address)
 	case strings.ContainsAny(address, "/?#"):
 		return "", fmt.Errorf("deploy: address %q carries a path; give the bare IP or hostname", address)
 	case strings.Contains(address, "@"):
@@ -124,7 +125,7 @@ func validHostname(address string) error {
 		return fmt.Errorf("deploy: address %q is longer than %d characters", address, maxHostnameLength)
 	}
 	if strings.Contains(address, ":") {
-		return fmt.Errorf("deploy: address %q carries a port; up publishes a nameless instance's web UI on port %s (UP-006)", address, plainHTTPPort)
+		return fmt.Errorf("deploy: address %q carries a port; up publishes a nameless instance's web UI on port %s, so there is no port to choose", address, plainHTTPPort)
 	}
 	for _, label := range strings.Split(address, ".") {
 		if label == "" {

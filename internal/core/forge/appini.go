@@ -4,6 +4,7 @@
 package forge
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -276,9 +277,9 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 	address := strings.TrimSpace(opts.Address)
 	switch {
 	case m.Named() && address != "":
-		return nil, fmt.Errorf("forge: app.ini takes an address only for a nameless bundle; this bundle is named %s and is served over HTTPS at that domain (UP-002)", strings.TrimSpace(m.Domain))
+		return nil, fmt.Errorf("forge: app.ini takes an address only for a nameless bundle; this bundle is named %s and is served over HTTPS at that domain", strings.TrimSpace(m.Domain))
 	case !m.Named() && address == "":
-		return nil, fmt.Errorf("forge: app.ini requires a domain, or for a nameless bundle the address the operator serves it at (UP-006)")
+		return nil, errors.New("forge: app.ini requires a domain, or for a nameless bundle the address the operator serves it at")
 	}
 
 	// host is what every URL below is addressed at, and scheme is how
