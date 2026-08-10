@@ -309,6 +309,18 @@ export function dependenciesSatisfied(id: string, landed: Set<string>): boolean 
   if (id === "INIT-002" && !landed.has("ACME-001")) {
     return false;
   }
+  // Nothing can push to an `origin` the instance does not serve.
+  if (id === "IMPT-004" && !landed.has("UP-005")) {
+    return false;
+  }
+  // A nameless instance must exist before it can be served...
+  if (id === "UP-006" && !landed.has("INIT-005")) {
+    return false;
+  }
+  // ...and be served before it can be given a name.
+  if (id === "UP-007" && !landed.has("UP-006")) {
+    return false;
+  }
   // A driver-applied flip needs a driver; the print fallback (DNS-003) does not.
   if (id === "FAIL-004" && !landed.has("DNS-001")) {
     return false;
