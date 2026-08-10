@@ -31,7 +31,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **KEY-001** · The `file` driver must resolve key material from a local path.
 - **KEY-002** · The `command` driver must resolve key material from the stdout of any operator-specified command, and must store it through a second operator-specified command that receives the secret on stdin — so `init` mints straight into the operator's own secret manager, with no plaintext copy written anywhere along the way.
 - **KEY-003** · Key material must never appear in logs, event streams, command output, or the bundle directory.
-- **KEY-004** · The exec keystore protocol must carry a `store` method alongside `resolve`, so an out-of-tree driver can receive minted key material rather than only serving it back.
+- **KEY-004** · The exec keystore protocol must carry a `store` method alongside `resolve`, so an out-of-tree driver can receive minted key material rather than only serving it back. Whether a driver can store must be decided from its config before the driver is built, so `init` rejects a resolve-only keystore at validate rather than after proving zone control and generating key material.
 
 ## BLOB — blob adapters
 
