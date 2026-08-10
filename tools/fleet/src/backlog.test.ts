@@ -177,6 +177,28 @@ test("dependenciesSatisfied blocks import until the forge is deployable", () => 
   assert.equal(dependenciesSatisfied("IMPT-001", new Set([...base, "UP-001"])), true);
 });
 
+test("dependenciesSatisfied blocks publishing a local folder until an origin exists", () => {
+  // IMPT-004 sets `origin` to the instance's SSH URL, which UP-005 is what
+  // publishes. Without that gate the planner offers it to an agent who cannot
+  // push to the remote it just configured.
+  const base = new Set([...CORE_FOUNDATION, ...ORCH_CORE, "FORGE-001", "UP-001"]);
+  assert.equal(dependenciesSatisfied("IMPT-004", base), false);
+  assert.equal(dependenciesSatisfied("IMPT-004", new Set([...base, "UP-005"])), true);
+  // The GitHub/GitLab on-ramp is unaffected — it never touches an SSH remote.
+  assert.equal(dependenciesSatisfied("IMPT-001", base), true);
+});
+
+test("dependenciesSatisfied orders the nameless-instance chain", () => {
+  const base = new Set([...CORE_FOUNDATION, ...ORCH_CORE, "FORGE-001"]);
+  // A nameless instance must exist before it can be served...
+  assert.equal(dependenciesSatisfied("UP-006", base), false);
+  const withInit = new Set([...base, "INIT-005"]);
+  assert.equal(dependenciesSatisfied("UP-006", withInit), true);
+  // ...and be served before it can be given a name.
+  assert.equal(dependenciesSatisfied("UP-007", withInit), false);
+  assert.equal(dependenciesSatisfied("UP-007", new Set([...withInit, "UP-006"])), true);
+});
+
 test("dependenciesSatisfied blocks the driver-applied flip but not the print fallback", () => {
   const base = new Set([
     ...CORE_FOUNDATION,
