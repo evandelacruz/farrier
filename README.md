@@ -33,7 +33,9 @@ You bring a host with **Docker and SSH** and a place to keep keys. Farrier insta
 ssh localhost docker info      # both prerequisites, in one check
 ```
 
-If that succeeds, target `ssh://you@localhost` below and skip the rest of this step. If it fails, the fix depends on which half failed.
+This is the check that matters, not whether `docker` works in your terminal. Farrier runs `docker` over exactly this kind of session, so whatever this command sees is what `up` will see.
+
+If it succeeds, target `ssh://you@localhost` below and skip the rest of this step. If it fails, the fix depends on how.
 
 **No SSH server.** Farrier connects over SSH even when the host is the machine you are sitting at (ORCH-003 — locality is an argument, not a mode).
 
@@ -63,7 +65,17 @@ ssh localhost true                                     # accept the host key onc
 
 That last line matters: an unrecorded host key fails the connection rather than prompting, because Farrier's jobs run unattended.
 
-**No Docker.** Install it from [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) (Linux) or [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) (macOS/Windows), then let your user reach it without `sudo`:
+**`command not found: docker`, but `docker` works in your terminal.** Common on macOS with Docker Desktop. An SSH command session is a non-interactive, non-login shell, so zsh reads only `~/.zshenv` — not `.zshrc` or `.zprofile`. Docker Desktop installs to `~/.docker/bin` and adds it to your PATH from `.zshrc`, which that session never reads.
+
+```bash
+# Make it visible to non-interactive shells
+echo 'export PATH="$HOME/.docker/bin:$PATH"' >> ~/.zshenv
+
+# ...or symlink it onto the default PATH
+sudo ln -s ~/.docker/bin/docker /usr/local/bin/docker
+```
+
+**No Docker at all.** Install it from [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) (Linux) or [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) (macOS/Windows), then let your user reach it without `sudo`:
 
 ```bash
 sudo usermod -aG docker "$USER"    # Linux; log out and back in for it to apply
