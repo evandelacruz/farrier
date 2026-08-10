@@ -650,8 +650,8 @@ func TestUpRejectsNamelessBundleWithoutAnAddress(t *testing.T) {
 	if err == nil {
 		t.Fatal("Up: want error for a nameless bundle, got nil")
 	}
-	if !strings.Contains(err.Error(), "UP-006") {
-		t.Errorf("error = %v, want it to point at UP-006", err)
+	if !strings.Contains(err.Error(), "address") {
+		t.Errorf("error = %v, want it to name the address it is missing", err)
 	}
 
 	// Ahead of CheckHost: a refused deployment leaves the host exactly as
@@ -671,8 +671,8 @@ func TestUpRejectsNamelessBundleWithoutAnAddress(t *testing.T) {
 	if last.State != events.StateFailed || last.Step != "" {
 		t.Errorf("last event = %+v, want a job-terminal failure", last)
 	}
-	if !strings.Contains(last.Detail, "UP-006") {
-		t.Errorf("terminal event detail = %q, want it to point at UP-006", last.Detail)
+	if !strings.Contains(last.Detail, "address") {
+		t.Errorf("terminal event detail = %q, want it to name the address it is missing", last.Detail)
 	}
 }
 

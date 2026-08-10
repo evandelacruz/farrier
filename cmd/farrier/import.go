@@ -32,12 +32,12 @@ func runImport(args []string) int {
 	fs := flag.NewFlagSet("import", flag.ContinueOnError)
 	targetURL := fs.String("target", "", "base URL of the Farrier instance, e.g. https://git.example.com (required)")
 	sourceURL := fs.String("source", "", "clone URL of the repository to import (required unless -file is set)")
-	file := fs.String("file", "", "path to a YAML manifest listing repositories to import as a batch (IMPT-003); mutually exclusive with -source")
+	file := fs.String("file", "", "path to a YAML manifest listing repositories to import as a batch; mutually exclusive with -source")
 	service := fs.String("service", "", "source service: github or gitlab (default: autodetected from -source's host); with -file, the default for entries that don't set their own")
 	owner := fs.String("owner", "", "owner (user or organization) the repository lands under on the target instance (required unless every -file entry sets its own owner)")
 	name := fs.String("name", "", "repository name on the target instance (default: derived from -source); ignored with -file")
 	private := fs.Bool("private", true, "mark the imported repository private on the target instance; with -file, the default for entries that don't set their own")
-	mirror := fs.Bool("mirror", false, "keep the repository continuously synced from the source (IMPT-002); with -file, the default for entries that don't set their own")
+	mirror := fs.Bool("mirror", false, "keep the repository continuously synced from the source; with -file, the default for entries that don't set their own")
 	mirrorInterval := fs.Duration("mirror-interval", 8*time.Hour, "how often to re-sync from the source; only used with -mirror")
 	if err := fs.Parse(args); err != nil {
 		return 2

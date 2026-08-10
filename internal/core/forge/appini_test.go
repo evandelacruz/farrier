@@ -278,8 +278,8 @@ func TestRenderAppINIRejectsANamelessBundleWithoutAnAddress(t *testing.T) {
 	if err == nil {
 		t.Fatal("RenderAppINI: want error for a nameless bundle with no address, got nil")
 	}
-	if !strings.Contains(err.Error(), "UP-006") {
-		t.Errorf("error = %v, want it to point at UP-006", err)
+	if !strings.Contains(err.Error(), "address") {
+		t.Errorf("error = %v, want it to name the address it is missing", err)
 	}
 }
 

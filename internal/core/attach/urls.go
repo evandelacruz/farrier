@@ -72,4 +72,4 @@ func reportCloneURLs(job *events.Job, m *bundle.Manifest, oldAddress string) {
 // never the loud host-key-mismatch warning that means an instance was
 // rebuilt. The distinction is worth one line, because those two prompts
 // look nothing alike to the person receiving them.
-const hostKeyDetail = "the SSH host key is unchanged (RSTR-004), so a client that already trusted this instance sees an ordinary unknown-host prompt for the new name — never a host-key mismatch"
+const hostKeyDetail = "the SSH host key is unchanged, so a client that already trusted this instance sees an ordinary unknown-host prompt for the new name — never a host-key mismatch"

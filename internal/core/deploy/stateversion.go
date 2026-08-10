@@ -98,7 +98,7 @@ func checkStateVersion(ctx context.Context, host Host, pinned, remoteDir string,
 	default:
 		return "", fmt.Errorf(
 			"forge state on this host was last started under forgejo %s, but the bundle pins %s: "+
-				"starting a different version against an existing database runs schema migrations, which only `farrier upgrade` may do (UPGR-003). "+
+				"starting a different version against an existing database runs schema migrations, which only `farrier upgrade` may do. "+
 				"Run `farrier upgrade -image %s`, which backs the instance up first and leaves a path back, or restore the bundle's forgejo pin to %s",
 			recorded, pinned, pinned, recorded)
 	}

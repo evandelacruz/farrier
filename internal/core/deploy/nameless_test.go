@@ -192,7 +192,7 @@ func TestUpStatesTheWebUIIsUnencryptedThroughTheEventStream(t *testing.T) {
 	evs := drain(job)
 
 	detail := stepDetail(t, evs, StepConfigureHTTP)
-	for _, want := range []string{"unencrypted", "trusted network", "UP-006"} {
+	for _, want := range []string{"unencrypted", "trusted network", "docs/security.md"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("configure-http detail = %q, want it to mention %q", detail, want)
 		}
@@ -265,7 +265,7 @@ func TestUpRejectsAnAddressForANamedBundle(t *testing.T) {
 	if err == nil {
 		t.Fatal("Up: want error for an address on a named bundle, got nil")
 	}
-	if !strings.Contains(err.Error(), "UP-002") {
+	if !strings.Contains(err.Error(), "HTTPS") {
 		t.Errorf("error = %v, want it to name the HTTPS guarantee it conflicts with", err)
 	}
 	if len(host.files) != 0 || len(host.commands) != 0 {
@@ -287,8 +287,10 @@ func TestUpRejectsAQuarantinedNamelessDeployment(t *testing.T) {
 	if err == nil {
 		t.Fatal("Up: want error for a quarantined nameless deployment, got nil")
 	}
-	if !strings.Contains(err.Error(), "DRIL-002") {
-		t.Errorf("error = %v, want it to name DRIL-002", err)
+	for _, want := range []string{"quarantined", "attach a name"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to mention %q", err, want)
+		}
 	}
 	if len(host.files) != 0 || len(host.commands) != 0 {
 		t.Error("Up touched the host before refusing")
