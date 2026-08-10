@@ -43,14 +43,16 @@ You bring a host with **Docker and SSH** and a place to keep keys. Farrier insta
 **Running it on your own machine counts**, and is the fastest way to try it. That means Docker running locally, plus an SSH server you can reach as yourself:
 
 ```bash
-ssh localhost docker info      # both prerequisites, in one check
+ssh localhost 'command -v docker >/dev/null || PATH="$PATH:$HOME/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/snap/bin"; docker info' >/dev/null && echo ok
 ```
 
-This is the check that matters, not whether `docker` works in your terminal. Farrier runs `docker` over exactly this kind of session, so whatever this command sees is what `up` will see.
+That is deliberately the same thing Farrier does: reach the host over SSH, and if `docker` is not on that session's PATH, look in the handful of places installers actually put it. A plain `ssh localhost docker info` is **not** the right check — it fails on a stock macOS Docker Desktop install that Farrier handles fine, because an SSH command session reads none of the startup files that put `~/.docker/bin` on your PATH.
 
-If it succeeds, target `ssh://you@localhost` below and skip the rest of this step. If it fails, the fix depends on how.
+What this check tells you, and your interactive terminal cannot: whether SSH lets Farrier in, and whether Docker is reachable once it is.
 
-**No SSH server.** Farrier connects over SSH even when the host is the machine you are sitting at (ORCH-003 — locality is an argument, not a mode).
+If it prints `ok`, target `ssh://you@localhost` below and skip the rest of this step. If not, the fix depends on how it failed.
+
+**No SSH server.** Farrier connects over SSH even when the host is the machine you are sitting at — locality is an argument, not a mode, so there is no local shortcut that skips it.
 
 ```bash
 # macOS: no install needed, just enable it
@@ -84,14 +86,10 @@ Both of those last two lines matter, and each fails in its own confusing way.
 
 **Accept the host key once.** An unrecorded host key fails the connection rather than prompting, because Farrier's jobs run unattended.
 
-**`command not found: docker`, but `docker` works in your terminal.** Common on macOS with Docker Desktop. An SSH command session is a non-interactive, non-login shell, so zsh reads only `~/.zshenv` — not `.zshrc` or `.zprofile`. Docker Desktop installs to `~/.docker/bin` and adds it to your PATH from `.zshrc`, which that session never reads.
+**`command not found: docker`.** Farrier already searches `~/.docker/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, and `/snap/bin` when a session's PATH has no `docker`, so this means yours is somewhere else. Put it on the PATH that non-interactive shells see — for zsh that is `~/.zshenv`, not `.zshrc` or `.zprofile`, which such a session never reads:
 
 ```bash
-# Make it visible to non-interactive shells
-echo 'export PATH="$HOME/.docker/bin:$PATH"' >> ~/.zshenv
-
-# ...or symlink it onto the default PATH
-sudo ln -s ~/.docker/bin/docker /usr/local/bin/docker
+echo 'export PATH="/where/docker/lives:$PATH"' >> ~/.zshenv
 ```
 
 **No Docker at all.** Install it from [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) (Linux) or [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) (macOS/Windows), then let your user reach it without `sudo`:
