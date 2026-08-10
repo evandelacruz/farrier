@@ -424,7 +424,11 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 
 	job.Started(StepWaitCaddy, "waiting for caddy to accept commands")
-	if err := waitReady(ctx, runner, readyTimeout, probe{
+	// forge.Secrets{} rather than the deployment's: caddy is never handed
+	// Forgejo's key material, so there is nothing here to scrub out of what
+	// its probe says. Redact on a zero value leaves the text alone — it
+	// replaces each field's value only when that field is set.
+	if err := waitReady(ctx, runner, readyTimeout, forge.Secrets{}, probe{
 		command:    execProbe(caddy.Service),
 		waitingFor: "caddy did not become ready",
 	}); err != nil {
@@ -514,7 +518,15 @@ func execProbe(service string) string {
 // The budget covers the probes together rather than each in turn: they are
 // phases of one wait for one service, and an operator who was told a
 // deployment gets three minutes means three minutes in total.
-func waitReady(ctx context.Context, runner forge.Runner, budget time.Duration, probes ...probe) error {
+//
+// secrets is what a failed probe's output is scrubbed of before it reaches
+// the caller. A probe runs software the deployment handed key material to —
+// forge.ReadyCommand runs the same Forgejo binary against the same app.ini —
+// and what that software echoes back on a config failure is its business,
+// not something this has to be right about (KEY-003, forge.Secrets.Redact).
+// A caller whose service was handed none passes the zero value, which
+// redacts nothing.
+func waitReady(ctx context.Context, runner forge.Runner, budget time.Duration, secrets forge.Secrets, probes ...probe) error {
 	deadline := time.Now().Add(budget)
 	for _, p := range probes {
 		for {
@@ -524,7 +536,7 @@ func waitReady(ctx context.Context, runner forge.Runner, budget time.Duration, p
 				break
 			}
 			if !time.Now().Before(deadline) {
-				return fmt.Errorf("%s within %s: %s", p.waitingFor, budget, probeFailure(err, &stdout, &stderr))
+				return fmt.Errorf("%s within %s: %s", p.waitingFor, budget, secrets.Redact(probeFailure(err, &stdout, &stderr)))
 			}
 			select {
 			case <-ctx.Done():
@@ -542,6 +554,9 @@ func waitReady(ctx context.Context, runner forge.Runner, budget time.Duration, p
 // one of them reports a failure with no message — and the transport's own
 // error stands in when the command produced no output at all, which is what
 // a dropped session or a container that is not there looks like.
+//
+// What it returns is unscrubbed by construction — it is someone else's
+// output — so every caller redacts it before reporting it (KEY-003).
 func probeFailure(err error, stdout, stderr *bytes.Buffer) string {
 	if strings.TrimSpace(stdout.String()) == "" && strings.TrimSpace(stderr.String()) == "" {
 		return err.Error()
@@ -564,12 +579,13 @@ func probeFailure(err error, stdout, stderr *bytes.Buffer) string {
 // A Forgejo that never comes up — an unwritable state directory, a bad
 // image, a config it refuses — also ends here, and the reason is in its
 // container log rather than in the probe's own output, so the failure
-// carries the tail of that log. secrets is what the log is scrubbed of
-// before it goes anywhere: Forgejo was handed key material in app.ini and
-// what it echoes back on a config failure is its business, not something
-// this should have to be right about (KEY-003, forge.Secrets.Redact).
+// carries the tail of that log. secrets is what both the log and the
+// probes' own output are scrubbed of before either goes anywhere: Forgejo
+// was handed key material in app.ini and what it echoes back on a config
+// failure is its business, not something this should have to be right about
+// (KEY-003, forge.Secrets.Redact).
 func waitForge(ctx context.Context, runner forge.Runner, secrets forge.Secrets) error {
-	err := waitReady(ctx, runner, forgeReadyTimeout,
+	err := waitReady(ctx, runner, forgeReadyTimeout, secrets,
 		probe{
 			command:    execProbe(forge.Service),
 			waitingFor: "the forgejo container did not start",

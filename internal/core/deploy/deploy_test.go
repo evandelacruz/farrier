@@ -666,6 +666,64 @@ func TestUpKeepsKeyMaterialOutOfTheReportedForgejoLog(t *testing.T) {
 	}
 }
 
+// KEY-003 again, for the other half of what a stalled wait reports. The
+// readiness probe runs the same Forgejo binary against the same app.ini the
+// container log is scrubbed for, so its own output is Forgejo's output too:
+// a config failure it answers with the value it objected to must not reach
+// the error or the event either. All three secrets, because app.ini carries
+// all three and any of them can be the one Forgejo echoes.
+func TestUpKeepsKeyMaterialOutOfTheReportedReadinessProbe(t *testing.T) {
+	shortenForgeReadyTimeout(t)
+
+	secrets := []string{
+		"test-secret-key-value",
+		"test-internal-token-value",
+		"test-lfs-jwt-secret-value",
+	}
+
+	host := newFakeHost()
+	host.forgeReadyFailures = 1 << 30
+	host.forgeReadyStderr = "Command error: invalid config: SECRET_KEY=" + secrets[0] +
+		" INTERNAL_TOKEN=" + secrets[1] + " JWT_SECRET=" + secrets[2]
+	// No container log, so the probe's own output is the only thing the
+	// failure can be carrying — otherwise a pass here would prove nothing
+	// the log-tail test does not already prove.
+	host.forgeLog = ""
+	job := events.NewJob()
+
+	err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier"))
+	if err == nil {
+		t.Fatal("Up: want error when forgejo never finishes setting up its database, got nil")
+	}
+
+	var detail string
+	for _, ev := range drain(job) {
+		if ev.Step == StepWaitForge && ev.State == events.StateFailed {
+			detail = ev.Detail
+		}
+	}
+	if detail == "" {
+		t.Fatalf("no failed %s event to check", StepWaitForge)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error = %q, want %q redacted out of the probe's output", err, secret)
+		}
+		if strings.Contains(detail, secret) {
+			t.Errorf("%s detail = %q, want %q redacted out of the probe's output", StepWaitForge, detail, secret)
+		}
+	}
+	if !strings.Contains(detail, "[redacted]") {
+		t.Errorf("%s detail = %q, want the redacted stand-in in place of the secrets", StepWaitForge, detail)
+	}
+	// The probe's non-secret text is the whole reason the operator is shown
+	// it at all, and redaction may not cost them that.
+	if !strings.Contains(detail, "invalid config") {
+		t.Errorf("%s detail = %q, want it to still carry what forgejo said", StepWaitForge, detail)
+	}
+}
+
 // shortenForgeReadyTimeout drops the forge wait's budget to something a test
 // can afford, restoring it afterwards. The real budget is three minutes.
 func shortenForgeReadyTimeout(t *testing.T) {
