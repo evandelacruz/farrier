@@ -120,10 +120,18 @@ const (
 // of them under it, unconditionally, so this one mount keeps every kind of
 // state Forgejo itself writes durable, not just the database.
 //
-// Creating the directories, chowning them, and probing them are all
-// idempotent — mkdir -p and chown leave existing contents untouched, and
-// the probe removes what it wrote — so a re-run against a host that
-// already has this layout changes nothing (UP-003).
+// It also creates the empty file the rendered app.ini bind-mounts onto
+// (appINIMountpointScript). That mount's target sits *inside* this one, and
+// a container runtime that has to create a missing target under a
+// host-side mount cannot always do it; creating it here first is what makes
+// `up` reach a running forgejo container on every host rather than most of
+// them.
+//
+// Creating the directories, creating that file, chowning them, and probing
+// them are all idempotent — mkdir -p and chown leave existing contents
+// untouched, the mountpoint is only created when absent, and the probe
+// removes what it wrote — so a re-run against a host that already has this
+// layout changes nothing (UP-003).
 //
 // When the bundle's blob driver is "local", configureState also creates
 // <RemoteDir>/state/blobs, the host directory tech-spec.md "Host state
@@ -141,6 +149,9 @@ func configureState(ctx context.Context, host Host, b *bundle.Bundle, remoteDir 
 
 	if err := ensureDirs(ctx, host, gitPath, giteaPath); err != nil {
 		return nil, false, fmt.Errorf("create state directories: %w", err)
+	}
+	if _, err := host.Output(ctx, appINIMountpointScript(giteaPath)); err != nil {
+		return nil, false, fmt.Errorf("create the file app.ini mounts onto: %w", err)
 	}
 	owned := chownBestEffort(ctx, host, false, gitPath, giteaPath)
 	if err := verifyForgeCanUseState(ctx, host, b.Manifest.Images[forge.Service], remoteDir); err != nil {
@@ -163,6 +174,49 @@ func configureState(ctx context.Context, host Host, b *bundle.Bundle, remoteDir 
 		return nil, owned, fmt.Errorf("mount gitea state: %w", err)
 	}
 	return compose, owned, nil
+}
+
+// appINIRelPath is forge.AppINIPath's location relative to forge.DataPath
+// — "conf/app.ini" today — derived rather than hardcoded a second time,
+// the same reason sshHostKeyRelPath derives from forge.SSHHostKeyPath.
+func appINIRelPath() string {
+	return strings.TrimPrefix(forge.AppINIPath, forge.DataPath+"/")
+}
+
+// appINIMountpointScript builds the /bin/sh program that creates the file
+// the rendered app.ini bind-mounts onto, inside the gitea state directory
+// at giteaPath.
+//
+// Two of the forgejo service's bind mounts overlap by design: this
+// directory mounts at forge.DataPath, and the app.ini Up ships under
+// <RemoteDir>/forge mounts at forge.AppINIPath, which is inside it. So the
+// second mount's target — the host file at <giteaPath>/conf/app.ini —
+// falls under the first mount, and a container runtime that finds it
+// missing has to create it there. On Docker Desktop it will not: that path
+// reaches the host through virtiofs, and runc refuses to create a
+// mountpoint outside the container rootfs, failing the whole converge with
+// every image pulled and every container created. On Linux, where the
+// runtime creates it without ceremony, this has simply already been done.
+//
+// Which is the point: this is one command for every host, not a branch on
+// which host it is. Creating a mountpoint the runtime would have created
+// anyway costs nothing on the hosts that can, and detecting the target's
+// operating system — or whether it is local at all — is exactly the
+// locality-dependent behavior ORCH-003 exists to rule out (access.go says
+// the same about ownership).
+//
+// The file is created only when it is absent, and never truncated. A live
+// instance can have a real app.ini here — restored state, or a converge
+// that ran before this mount existed — and emptying it during a routine
+// `up` would be a worse failure than the one this fixes. `touch` rather
+// than a redirection for the same reason, and guarded by the existence test
+// so a re-run does not even move an existing file's mtime.
+func appINIMountpointScript(giteaPath string) string {
+	mountpoint := path.Join(giteaPath, appINIRelPath())
+	return fmt.Sprintf(
+		"mkdir -p %s && { [ -e %s ] || touch %s; }",
+		stateShQuote(path.Dir(mountpoint)), stateShQuote(mountpoint), stateShQuote(mountpoint),
+	)
 }
 
 // ensureDirs creates every directory in dirs on host, in a single command

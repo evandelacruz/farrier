@@ -3,6 +3,8 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -91,6 +93,107 @@ func TestConfigureStateMountsGitAndGiteaOwnedByForgeUser(t *testing.T) {
 	}
 	if !sawOwnership {
 		t.Errorf("no command chowned both state directories, commands: %v", host.commands)
+	}
+}
+
+// The app.ini mountpoint script is run here by a real /bin/sh against a
+// real directory, rather than asserted against as a string, for the same
+// reason the access probes are (access_test.go): what it promises — that
+// the file appears when it is absent, and that a file already there comes
+// out byte-for-byte what it went in as — is a property of what the shell
+// does with it, and a substring match would keep passing through a rewrite
+// that broke it.
+func TestAppINIMountpointScriptCreatesTheFileWhenAbsent(t *testing.T) {
+	gitea := t.TempDir()
+
+	if stderr, err := runProbeScript(t, appINIMountpointScript(gitea)); err != nil {
+		t.Fatalf("app.ini mountpoint script failed: %v (stderr: %s)", err, stderr)
+	}
+
+	mountpoint := filepath.Join(gitea, "conf", "app.ini")
+	content, err := os.ReadFile(mountpoint)
+	if err != nil {
+		t.Fatalf("read %s: %v", mountpoint, err)
+	}
+	if len(content) != 0 {
+		t.Errorf("mountpoint created with content %q, want an empty file", content)
+	}
+}
+
+// TestAppINIMountpointScriptLeavesAnExistingFileAlone is the one that
+// matters: a live instance can have a real app.ini at this path, and
+// truncating it during a routine `up` would be far worse than the mount
+// failure the script exists to prevent.
+func TestAppINIMountpointScriptLeavesAnExistingFileAlone(t *testing.T) {
+	gitea := t.TempDir()
+	mountpoint := filepath.Join(gitea, "conf", "app.ini")
+	if err := os.MkdirAll(filepath.Dir(mountpoint), 0o755); err != nil {
+		t.Fatalf("create conf directory: %v", err)
+	}
+	existing := "[server]\nDOMAIN = forge.example.com\n"
+	if err := os.WriteFile(mountpoint, []byte(existing), 0o600); err != nil {
+		t.Fatalf("write existing app.ini: %v", err)
+	}
+
+	// Twice, because idempotence is the claim: the second run sees exactly
+	// what the first left.
+	for i := range 2 {
+		if stderr, err := runProbeScript(t, appINIMountpointScript(gitea)); err != nil {
+			t.Fatalf("run %d: app.ini mountpoint script failed: %v (stderr: %s)", i+1, err, stderr)
+		}
+		content, err := os.ReadFile(mountpoint)
+		if err != nil {
+			t.Fatalf("run %d: read %s: %v", i+1, mountpoint, err)
+		}
+		if string(content) != existing {
+			t.Errorf("run %d: existing app.ini changed to %q, want %q left alone", i+1, content, existing)
+		}
+	}
+}
+
+// TestAppINIMountpointPathComesFromTheStateLayout holds the path to the two
+// spellings it is derived from — deploy.GiteaStatePath for the host side
+// and forge.AppINIPath for where it sits under forge.DataPath — rather than
+// to a third copy of the layout that would go stale if either moved.
+func TestAppINIMountpointPathComesFromTheStateLayout(t *testing.T) {
+	giteaPath := GiteaStatePath("/opt/farrier")
+	want := giteaPath + strings.TrimPrefix(forge.AppINIPath, forge.DataPath)
+
+	script := appINIMountpointScript(giteaPath)
+	if !strings.Contains(script, want) {
+		t.Errorf("app.ini mountpoint script does not name %s: %s", want, script)
+	}
+	if !strings.Contains(script, "mkdir -p '"+filepath.Dir(want)+"'") {
+		t.Errorf("app.ini mountpoint script does not create %s: %s", filepath.Dir(want), script)
+	}
+}
+
+func TestConfigureStateCreatesAppINIMountpointBeforeConverge(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	mountpoint := GiteaStatePath("/opt/farrier") + strings.TrimPrefix(forge.AppINIPath, forge.DataPath)
+	mountpointIdx, composeUpIdx := -1, -1
+	for i, cmd := range host.commands {
+		if strings.Contains(cmd, "touch") && strings.Contains(cmd, mountpoint) && mountpointIdx == -1 {
+			mountpointIdx = i
+		}
+		if strings.Contains(cmd, "docker compose up -d") && composeUpIdx == -1 {
+			composeUpIdx = i
+		}
+	}
+	if mountpointIdx == -1 {
+		t.Fatalf("the app.ini mountpoint %s was never created, commands: %v", mountpoint, host.commands)
+	}
+	if composeUpIdx == -1 {
+		t.Fatalf("docker compose up never ran, commands: %v", host.commands)
+	}
+	if mountpointIdx > composeUpIdx {
+		t.Errorf("app.ini mountpoint created (index %d) after docker compose up (index %d)", mountpointIdx, composeUpIdx)
 	}
 }
 
