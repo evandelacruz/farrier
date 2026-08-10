@@ -148,8 +148,10 @@ This is stated plainly because "isolated at the container level" reads stronger 
 
 Every backup embeds the exact Forgejo version that wrote it, and restore always runs that exact version — the manifest pins the images, and restore uses the pinned images. Schema migrations run during upgrades, never during restores.
 
+- **Init:** resolves whatever image reference it is given — a tag, or a digest — to a digest, and writes that digest into the manifest. From that moment the bundle is frozen there.
+- **Up:** deploys the digest the manifest holds. It never re-resolves, so a bundle deployed today and the same bundle deployed in six months are the same software. A tag in the default image set therefore governs exactly one thing: what a **fresh** `init` picks up. It does not mean a deployed instance drifts forward onto patches.
 - **Restore:** boots the version recorded in the snapshot, every time.
-- **Upgrade:** a deliberate command on a healthy instance — backup, bump the pinned version, run migrations, verify.
+- **Upgrade:** the only command that moves a bundle to a different version, and a deliberate one on a healthy instance — backup, bump the pinned version, run migrations, verify.
 
 ## What the operator owns
 
