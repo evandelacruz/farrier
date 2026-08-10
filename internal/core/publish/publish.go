@@ -25,6 +25,16 @@
 //   - remote    — set the project's `origin` to the instance's SSH URL.
 //   - push      — push every branch and every tag.
 //
+// # Where the instance is
+//
+// Every URL publish writes — the remote it sets and the known_hosts entry
+// it pins the push with — names one host, and a named bundle answers what
+// that host is with its domain. A nameless bundle (INIT-005) has no domain,
+// so the operator's address answers it instead (UP-006, Options.Address),
+// defaulting to the host of the API base URL they already named. resolveHost
+// is the single place that choice is made; both URLs are built from its one
+// answer so they cannot name different hosts.
+//
 // The two failure modes worth designing against both land in `inspect` and
 // `create`, before anything is written: a folder that is not a repository
 // or carries no commits fails with an explicit message rather than an
@@ -96,14 +106,32 @@ type Options struct {
 
 	// Manifest is the project's bundle manifest — the instance's identity.
 	// The SSH URL written into the remote comes from it
-	// (bundle.Manifest.GitSSHCloneURL), as does the host key publish pins
+	// (bundle.Manifest.GitSSHCloneURLAt), as does the host key publish pins
 	// the push against, via the manifest's keystore driver. Required.
 	Manifest *bundle.Manifest
+
+	// Address is the address a nameless instance is reached at — the one
+	// the operator deployed it to with `up` (UP-006). A nameless bundle
+	// carries no domain, so this is where the git remote's host and the
+	// pinned known_hosts entry come from.
+	//
+	// Empty falls back to the host of TargetBaseURL, which is the address
+	// in the ordinary case: the operator names the instance's API and the
+	// forge answers git over SSH at the same host. The override exists
+	// because those two can genuinely differ — the API may be reached
+	// through a tunnel or a proxy on a host that is not where SSH answers,
+	// the same split the manifest keeps between the port Caddy is published
+	// on and the port clients connect to.
+	//
+	// It is rejected for a named bundle, whose domain already answers the
+	// question, exactly as deploy and forge.RenderAppINI reject one.
+	Address string
 
 	// TargetBaseURL is the instance's API base URL. Empty derives the
 	// bundle's own public URL (bundle.Manifest.PublicURL) — its domain,
 	// over HTTPS, at the port clients connect to; it exists as an override
-	// for reaching an instance by some other address.
+	// for reaching an instance by some other address. A nameless bundle has
+	// no public URL of its own, so it is required unless Address is given.
 	TargetBaseURL string
 	// TargetToken authenticates to the instance's API. Required.
 	TargetToken keystore.Secret
@@ -221,7 +249,7 @@ func run(ctx context.Context, job *events.Job, opts Options) (Result, error) {
 
 	// create — refuse to touch a repository that already exists, then
 	// create an empty one with the local branch as its default.
-	job.Started(StepCreate, fmt.Sprintf("creating %s/%s on %s", owner, name, settings.manifest.Domain))
+	job.Started(StepCreate, fmt.Sprintf("creating %s/%s on %s", owner, name, settings.host))
 	exists, err := client.repoExists(ctx, owner, name)
 	if err != nil {
 		job.Emit(StepCreate, events.StateFailed, err.Error())
@@ -229,7 +257,7 @@ func run(ctx context.Context, job *events.Job, opts Options) (Result, error) {
 	}
 	if exists {
 		err := fmt.Errorf("repository %s/%s already exists on %s: publish will not overwrite it — publish under a different name with -name, or push to it by hand",
-			owner, name, settings.manifest.Domain)
+			owner, name, settings.host)
 		job.Emit(StepCreate, events.StateFailed, err.Error())
 		return Result{}, fmt.Errorf("publish: %w", err)
 	}
@@ -253,7 +281,7 @@ func run(ctx context.Context, job *events.Job, opts Options) (Result, error) {
 		Root:       local.Root,
 		FullName:   fullName,
 		RemoteName: settings.remoteName,
-		RemoteURL:  settings.manifest.GitSSHCloneURL(owner, name),
+		RemoteURL:  settings.manifest.GitSSHCloneURLAt(settings.host, owner, name),
 		Branch:     local.Branch,
 	}
 
@@ -300,8 +328,13 @@ func rollback(s *settings, client *client, owner, name string, result Result, ca
 // settings is Options resolved: defaults filled in, nothing validated
 // against the network or the disk yet.
 type settings struct {
-	dir           string
-	manifest      *bundle.Manifest
+	dir      string
+	manifest *bundle.Manifest
+	// host is the instance's endpoint: the bundle domain for a named
+	// bundle, the operator's address for a nameless one (resolveHost). Both
+	// the git remote URL and the pinned known_hosts entry are built from it,
+	// so they cannot name different hosts.
+	host          string
 	owner         string
 	name          string
 	private       bool
@@ -319,11 +352,12 @@ func resolve(opts Options) (*settings, error) {
 	if opts.Manifest == nil {
 		return nil, fmt.Errorf("bundle manifest is required")
 	}
-	if strings.TrimSpace(opts.Manifest.Domain) == "" {
-		return nil, fmt.Errorf("bundle manifest has no domain: publish needs the instance's address to build the remote URL")
-	}
 	if opts.TargetToken.Reveal() == "" {
 		return nil, fmt.Errorf("target token is required")
+	}
+	host, err := resolveHost(opts)
+	if err != nil {
+		return nil, err
 	}
 
 	dir := strings.TrimSpace(opts.Dir)
@@ -335,13 +369,15 @@ func resolve(opts Options) (*settings, error) {
 		dir = wd
 	}
 
-	// The instance's own public URL when the operator names no target:
-	// the bundle's domain at the port clients connect to, which is not
-	// necessarily 443 (bundle.Manifest.PublicURL). Trailing slash trimmed
+	// The instance's own public URL when the operator names no target: the
+	// endpoint it is reached at, at the port clients connect to, which is
+	// not necessarily 443 (bundle.Manifest.PublicURLAt). For a named bundle
+	// that is its domain over HTTPS; for a nameless one it is the address
+	// over plain HTTP, the same URL `up` reports. Trailing slash trimmed
 	// because every path this client requests carries its own leading one.
 	baseURL := strings.TrimRight(strings.TrimSpace(opts.TargetBaseURL), "/")
 	if baseURL == "" {
-		baseURL = strings.TrimRight(opts.Manifest.PublicURL(), "/")
+		baseURL = strings.TrimRight(opts.Manifest.PublicURLAt(host), "/")
 	}
 
 	remoteName := strings.TrimSpace(opts.RemoteName)
@@ -357,6 +393,7 @@ func resolve(opts Options) (*settings, error) {
 	return &settings{
 		dir:           dir,
 		manifest:      opts.Manifest,
+		host:          host,
 		owner:         strings.TrimSpace(opts.Owner),
 		name:          strings.TrimSpace(opts.Name),
 		private:       opts.Private,

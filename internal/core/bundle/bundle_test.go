@@ -476,6 +476,39 @@ func TestSSHKnownHostsLineFor(t *testing.T) {
 	}
 }
 
+// UP-006: a nameless instance is pinned at the address it is reached at,
+// through the same renderer, so the entry and the clone URL name one host.
+func TestSSHKnownHostsLineAt(t *testing.T) {
+	cases := []struct {
+		name string
+		port int
+		host string
+		want string
+	}{
+		{"an address on the default port", 0, "192.168.1.5", "[192.168.1.5]:2222"},
+		{"an address on port 22", 22, "192.168.1.5", "192.168.1.5"},
+		// A URL authority brackets an IPv6 literal; a known_hosts entry's
+		// brackets belong to the port, so they are not nested.
+		{"an IPv6 literal on the default port", 0, "[fd00::1]", "[fd00::1]:2222"},
+		{"an IPv6 literal on port 22", 22, "[fd00::1]", "fd00::1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &Manifest{GitSSHPort: tc.port}
+			if got := m.GitSSHKnownHostsHostAt(tc.host); got != tc.want {
+				t.Errorf("GitSSHKnownHostsHostAt(%q) = %q, want %q", tc.host, got, tc.want)
+			}
+			line, err := m.SSHKnownHostsLineAt(tc.host, testHostPublicKey)
+			if err != nil {
+				t.Fatalf("SSHKnownHostsLineAt: %v", err)
+			}
+			if !strings.HasPrefix(line, tc.want+" ssh-ed25519 ") {
+				t.Errorf("line = %q, want it keyed at %q", line, tc.want)
+			}
+		})
+	}
+}
+
 // INIT-004: Exists is what stands between a re-run of `init` and a live
 // instance's identity, so it has to answer for every shape a bundle
 // directory turns up in — including the torn ones.

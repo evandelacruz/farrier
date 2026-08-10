@@ -97,7 +97,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **IMPT-001** · `import` must migrate repositories from GitHub or GitLab given a source URL and token: code, full history, LFS objects, default branch.
 - **IMPT-002** · `import` must support optional continuous mirror sync from the source.
 - **IMPT-003** · `import` must report per-repository success or failure and must leave no partially-registered repository behind on failure.
-- **IMPT-004** · Farrier must publish the local project folder to its instance: create the repository, push the folder's existing history, and set `origin` to the instance's SSH URL — so a project with no forge behind it reaches a working remote without going through GitHub or GitLab first.
+- **IMPT-004** · Farrier must publish the local project folder to its instance: create the repository, push the folder's existing history, and set `origin` to the instance's SSH URL — so a project with no forge behind it reaches a working remote without going through GitHub or GitLab first. A named instance is reached at its domain; a nameless one (INIT-005, UP-006) at the address it was deployed to, which the operator may state and which otherwise follows from the address they gave for the instance's API.
 
 ## BKUP — backup
 

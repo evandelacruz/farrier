@@ -11,7 +11,10 @@ import (
 )
 
 // knownHostsLine renders the instance's SSH host public key as a
-// known_hosts entry for the endpoint UP-005 publishes.
+// known_hosts entry for the endpoint UP-005 publishes, keyed at host — the
+// bundle's domain, or a nameless instance's address (UP-006). It is keyed
+// at the same host the git remote URL names (settings.host), because a pin
+// on one host and a remote on another fail the push with a host-key error.
 //
 // The key comes from the manifest, which `init` fills in from the same
 // keystore entry deploy.Up installs on the host — so the key publish pins
@@ -21,12 +24,12 @@ import (
 // instance they do not hold the secrets for: a public host key is not a
 // secret, and requiring keystore access to read one meant requiring access
 // to SECRET_KEY and the age backup key alongside it.
-func knownHostsLine(ctx context.Context, m *bundle.Manifest) (string, error) {
+func knownHostsLine(ctx context.Context, m *bundle.Manifest, host string) (string, error) {
 	public, source, err := hostPublicKey(ctx, m)
 	if err != nil {
 		return "", err
 	}
-	line, err := m.SSHKnownHostsLineFor(public)
+	line, err := m.SSHKnownHostsLineAt(host, public)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", source, err)
 	}

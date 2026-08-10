@@ -18,6 +18,10 @@ import (
 // already points at that folder's own bundle and instance, mirroring the
 // `publish` CLI command's flags.
 //
+// Address is the address a nameless instance is reached at (UP-006),
+// defaulting to the host of Target, and is rejected for a named bundle,
+// whose domain already answers it.
+//
 // The instance token is deliberately not a request field: like the CLI, it
 // comes from FARRIER_TARGET_TOKEN in the server process's own environment,
 // never the wire.
@@ -25,6 +29,7 @@ type publishRequest struct {
 	Dir       string `json:"dir"`
 	Bundle    string `json:"bundle,omitempty"`
 	Target    string `json:"target,omitempty"`
+	Address   string `json:"address,omitempty"`
 	Owner     string `json:"owner,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Private   *bool  `json:"private,omitempty"`
@@ -75,6 +80,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	go s.publishRun(context.Background(), job, publish.Options{
 		Dir:           req.Dir,
 		Manifest:      &b.Manifest,
+		Address:       req.Address,
 		TargetBaseURL: req.Target,
 		TargetToken:   keystore.NewSecret(token),
 		Owner:         req.Owner,
