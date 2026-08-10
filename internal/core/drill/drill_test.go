@@ -446,7 +446,7 @@ func TestDrillEndToEnd(t *testing.T) {
 		restore.StepFetch, restore.StepDecrypt, restore.StepVerify,
 		restore.StepInstallKeys, restore.StepPlaceState, restore.StepRestoreBlobs,
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
-		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepConverge,
+		deploy.StepConfigureState, deploy.StepConfigureGitSSH, deploy.StepConverge,
 		deploy.StepWaitForge, deploy.StepWaitCaddy,
 		forge.StepSmokeCI,
 		StepTeardown,

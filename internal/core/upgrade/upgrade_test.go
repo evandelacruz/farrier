@@ -383,7 +383,7 @@ func TestUpgradeEndToEnd(t *testing.T) {
 		backup.StepResolveDestination, backup.StepVerifyEncrypted,
 		StepBumpVersion,
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
-		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepCheckVersion, deploy.StepConverge,
+		deploy.StepConfigureState, deploy.StepConfigureGitSSH, deploy.StepCheckVersion, deploy.StepConverge,
 		deploy.StepWaitForge, deploy.StepWaitCaddy,
 		StepVerify,
 	}

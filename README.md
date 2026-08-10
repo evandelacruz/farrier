@@ -68,4 +68,4 @@ Apache 2.0 — use it, fork it, ship it commercially. It requires attribution: k
 
 ## Status
 
-The forge and the whole portability layer — `up`, `backup`, `restore`, `promote`, `upgrade`, `drill`, `status`, `ui` — are landed. The project-folder on-ramp is not: `init` does not yet write to `.farrier/` or run without a domain, `up` does not yet publish git-over-SSH, and there is no path from a local folder to a working `origin`. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).
+The forge and the whole portability layer — `up`, `backup`, `restore`, `promote`, `upgrade`, `drill`, `status`, `ui` — are landed. `up` serves git over SSH on the port the bundle declares, so clone and push work against a fresh deployment. The project-folder on-ramp is not landed: `init` does not yet write to `.farrier/` or run without a domain, and there is no path from a local folder to a working `origin`. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).

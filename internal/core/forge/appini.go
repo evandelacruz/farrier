@@ -24,9 +24,23 @@ const (
 	dbPath   = dataPath + "/gitea.db"
 	lfsPath  = dataPath + "/lfs"
 	repoRoot = "/data/git/repositories"
-	sshPort  = 22
 	runUser  = "git"
 )
+
+// SSHListenPort is the container-side port Forgejo's builtin SSH server
+// binds (rendered as SSH_LISTEN_PORT). It is fixed, like HTTPPort: what the
+// operator chooses is the *host* port `up` publishes onto this one
+// (bundle.Manifest.GitSSHPort, UP-005), and the mapping between the two is
+// the Compose definition's job.
+//
+// It is deliberately not 22. Forgejo's builtin server runs inside the
+// container as RUN_USER rather than root, and a non-root process cannot
+// bind a privileged port — so a container-side 22 would fail to listen no
+// matter which host port were published onto it. The number matching
+// bundle.DefaultGitSSHPort is a coincidence of both wanting an
+// unprivileged port; the two are independent, and publishing 22 on the host
+// works unchanged.
+const SSHListenPort = 2222
 
 // DataPath is the container-side directory the official Forgejo image
 // stores its SQLite database, LFS objects, attachments, avatars, and CI
@@ -128,6 +142,17 @@ type AppINIOptions struct {
 // content: callers must ship it to the host directly and never write it into
 // the bundle directory (KEY-003).
 //
+// # Git over SSH
+//
+// The rendered [server] section starts Forgejo's builtin SSH server on
+// SSHListenPort inside the container, pins it to the bundle's own host key
+// (SSHHostKeyPath, RSTR-004), and advertises it at the bundle domain on the
+// host port the manifest declares (UP-005). The caller publishes that host
+// port onto SSHListenPort when it converges the host — this file only says
+// what the instance is, not how it is exposed — and the two halves read the
+// same manifest field, so the clone URL Forgejo displays is the one that
+// answers.
+//
 // # Quarantine
 //
 // With opts.Quarantine, the rendered file additionally shuts off every way
@@ -188,8 +213,15 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 	fmt.Fprintf(&b, "DOMAIN = %s\n", domain)
 	fmt.Fprintf(&b, "ROOT_URL = %s\n", rootURL)
 	fmt.Fprintf(&b, "HTTP_PORT = %d\n", HTTPPort)
+	// SSH_DOMAIN and SSH_PORT are what Forgejo renders into the SSH clone
+	// URL it displays, and SSH_LISTEN_PORT is where its builtin server
+	// actually binds inside the container. They differ on purpose: clients
+	// reach the host port the manifest declares (UP-005), and the Compose
+	// definition publishes that host port onto SSHListenPort. Advertising
+	// the container port instead would display a URL nothing answers on.
 	fmt.Fprintf(&b, "SSH_DOMAIN = %s\n", domain)
-	fmt.Fprintf(&b, "SSH_PORT = %d\n", sshPort)
+	fmt.Fprintf(&b, "SSH_PORT = %d\n", m.GitSSHPortOrDefault())
+	fmt.Fprintf(&b, "SSH_LISTEN_PORT = %d\n", SSHListenPort)
 	fmt.Fprintf(&b, "START_SSH_SERVER = true\n")
 	// Pinned to the bundle's own key rather than Forgejo's default
 	// filenames, so the host identity clients see is the one init

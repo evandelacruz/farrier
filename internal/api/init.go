@@ -35,6 +35,9 @@ type initRequest struct {
 	ACMEDNSProvider string            `json:"acmeDnsProvider"`
 	ACMEEmail       string            `json:"acmeEmail"`
 	Images          map[string]string `json:"images,omitempty"`
+	// GitSSHPort is the host port the instance serves git over SSH on
+	// (UP-005); omitted or zero takes bundle.DefaultGitSSHPort.
+	GitSSHPort int `json:"gitSshPort,omitempty"`
 }
 
 // handleInit implements POST /init (API-001, INIT-001..003): it starts a
@@ -68,6 +71,10 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("acmeDnsProvider is required"))
 		return
 	}
+	if err := bundle.ValidateGitSSHPort(req.GitSSHPort); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	params := initialize.Params{
 		Domain:          req.Domain,
 		Project:         req.Project,
@@ -77,6 +84,7 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		ACMEDNSProvider: req.ACMEDNSProvider,
 		ACMEEmail:       req.ACMEEmail,
 		Images:          req.Images,
+		GitSSHPort:      req.GitSSHPort,
 	}
 
 	job := s.jobs.New()

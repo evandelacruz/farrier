@@ -156,3 +156,13 @@ func TestHandleInitLeavesTheBundleLocationToTheCore(t *testing.T) {
 		t.Errorf("resolved bundle dir = %q, want %q", got, want)
 	}
 }
+
+// UP-005: the API takes the git-over-SSH host port the same way the CLI
+// flag does, and refuses one that could never be published.
+func TestHandleInitRejectsAnInvalidGitSSHPort(t *testing.T) {
+	s := newTestServer()
+	rec := doInit(t, s, `{"domain":"example.com","project":"/srv/p","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual","gitSshPort":70000}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}

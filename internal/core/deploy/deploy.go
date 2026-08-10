@@ -7,7 +7,9 @@
 // bundle definition, rather than requiring a fresh host every time; and
 // UP-004: forge state — git repositories and the database — lives on the
 // host under RemoteDir/state, bind-mounted into the container that serves
-// it, so recreating that container never destroys it.
+// it, so recreating that container never destroys it; and UP-005: git over
+// SSH is served at the bundle domain on the host port the manifest
+// declares, using the bundle's own SSH host key.
 //
 // It is the sequencing layer over packages that already do the real work:
 // orchestrate (SSH transport, Compose rendering and convergence, ORCH-001
@@ -44,7 +46,7 @@ const (
 	StepConfigureForge  = "configure-forge"
 	StepConfigureTLS    = "configure-tls"
 	StepConfigureState  = "configure-state"
-	StepConfigureSSHKey = "configure-ssh-host-key"
+	StepConfigureGitSSH = "configure-git-ssh"
 	StepConfigureRunner = "configure-runner"
 	StepCheckVersion    = "check-state-version"
 	StepConverge        = "converge"
@@ -132,7 +134,9 @@ type Options struct {
 // renders and ships Caddy's config (UP-002), gives forge state a durable
 // home on the host and bind-mounts it into the forgejo service (UP-004),
 // installs the bundle's persisted ed25519 SSH host key where that app.ini
-// points Forgejo's git-over-SSH server at (RSTR-004), wires up the colocated
+// points Forgejo's git-over-SSH server at (RSTR-004) and publishes that
+// server on the host port the manifest declares so `git clone` and `git
+// push` over SSH work against a fresh deployment (UP-005), wires up the colocated
 // Actions runner unless the bundle turns it off (FORGE-005), converges the
 // host to the bundle's Compose definition plus that config, waits for
 // Forgejo to accept commands, provisions the first admin account, registers
@@ -147,7 +151,8 @@ type Options struct {
 // (configureTLS's doc comment), configureState's directory creation and
 // chown are both idempotent (configureState's doc comment),
 // configureSSHHostKey always writes the same persisted key back (its own
-// doc comment), orchestrate.Converge is idempotent by construction (its
+// doc comment), publishGitSSH derives its port mapping from the manifest
+// alone, orchestrate.Converge is idempotent by construction (its
 // own doc comment), forge.Bootstrap treats an admin account that already
 // exists as done rather than a failure, configureRunner writes the same
 // non-rotating secret back and derives its mounts from the manifest alone
@@ -220,12 +225,17 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	job.Emit(StepConfigureState, events.StateSucceeded, "state directories ready and mounted")
 
-	job.Started(StepConfigureSSHKey, "installing ssh host key")
+	job.Started(StepConfigureGitSSH, "installing ssh host key and publishing git over ssh")
 	if err := configureSSHHostKey(ctx, host, b, opts.RemoteDir); err != nil {
-		job.Emit(StepConfigureSSHKey, events.StateFailed, err.Error())
+		job.Emit(StepConfigureGitSSH, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure ssh host key: %w", err)
 	}
-	job.Emit(StepConfigureSSHKey, events.StateSucceeded, "ssh host key installed")
+	compose, err = publishGitSSH(compose, &b.Manifest, opts.Quarantine)
+	if err != nil {
+		job.Emit(StepConfigureGitSSH, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: configure git over ssh: %w", err)
+	}
+	job.Emit(StepConfigureGitSSH, events.StateSucceeded, gitSSHDetail(&b.Manifest, opts.Quarantine))
 
 	job.Started(StepConfigureRunner, "configuring the colocated actions runner")
 	compose, runnerDeployed, err := configureRunner(ctx, host, b, opts.RemoteDir, compose)
