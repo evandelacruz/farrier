@@ -39,7 +39,11 @@ func TestManifestValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", func(m *Manifest) {}, false},
-		{"missing domain", func(m *Manifest) { m.Domain = "" }, true},
+		// INIT-005: no domain is a nameless bundle, valid so long as the
+		// ACME section it has no use for goes with it.
+		{"nameless", func(m *Manifest) { m.Domain = ""; m.ACME = ACMEConfig{} }, false},
+		{"nameless with an acme provider", func(m *Manifest) { m.Domain = "" }, true},
+		{"nameless with an acme email", func(m *Manifest) { m.Domain = ""; m.ACME = ACMEConfig{Email: "ops@example.com"} }, true},
 		{"no images", func(m *Manifest) { m.Images = nil }, true},
 		{"tag-pinned image", func(m *Manifest) { m.Images["forgejo"] = "forgejo/forgejo:11" }, true},
 		{"missing keystore driver", func(m *Manifest) { m.Drivers.Keystore.Driver = "" }, true},
@@ -84,7 +88,7 @@ func TestNewManifestDeclaresAllFourStateKinds(t *testing.T) {
 
 func TestSaveRejectsInvalidManifest(t *testing.T) {
 	b := validBundle()
-	b.Manifest.Domain = ""
+	b.Manifest.Images = nil
 	if err := b.Save(t.TempDir()); err == nil {
 		t.Fatal("Save() = nil, want error for invalid manifest")
 	}
@@ -267,6 +271,52 @@ func TestColocatedRunnerSurvivesSaveAndLoad(t *testing.T) {
 	}
 	if loaded.Manifest.ColocatedRunnerEnabled() {
 		t.Error("a bundle saved with the colocated runner off loaded with it on")
+	}
+}
+
+// INIT-005: a nameless bundle survives Save and Load like any other, and the
+// manifest it writes omits the domain key rather than writing an empty one.
+func TestNamelessBundleSurvivesSaveAndLoad(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	b.Manifest.Domain = ""
+	b.Manifest.ACME = ACMEConfig{}
+
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Manifest.Named() {
+		t.Errorf("loaded domain = %q, want a nameless bundle", loaded.Manifest.Domain)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var keys map[string]any
+	if err := yaml.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	if _, ok := keys["domain"]; ok {
+		t.Errorf("manifest carries a domain key:\n%s", raw)
+	}
+	if _, ok := keys["acme"]; ok {
+		t.Errorf("nameless manifest carries an acme section:\n%s", raw)
+	}
+}
+
+func TestManifestNamed(t *testing.T) {
+	m := validManifest()
+	if !m.Named() {
+		t.Error("Named() = false for a manifest with a domain")
+	}
+	m.Domain = "  "
+	if m.Named() {
+		t.Error("Named() = true for a whitespace-only domain")
 	}
 }
 
