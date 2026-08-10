@@ -32,7 +32,14 @@ go build -o farrier ./cmd/farrier
 Optionally put it on your `PATH` so the commands below work from any project folder:
 
 ```bash
+# Symlink it — every rebuild is picked up with no re-copying.
+# Use an absolute target; a relative one resolves against the link's own
+# directory and points at itself. Keep the clone where it is.
+sudo ln -s "$PWD/farrier" /usr/local/bin/farrier
+
+# ...or just move it, if you want the tool and not the source tree.
 sudo mv farrier /usr/local/bin/          # or: mv farrier ~/.local/bin/
+
 farrier --help
 ```
 
