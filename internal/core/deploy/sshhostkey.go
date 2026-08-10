@@ -48,7 +48,11 @@ func sshHostKeyRelPath() string {
 // Ownership matters here the same way it does for restore's own
 // ChownState: the SSH session writing these files is generally not the
 // uid:gid the forgejo container runs as, and a 0600 private key file left
-// owned by that session would be unreadable to the container.
+// owned by that session would be unreadable to the container. So the chown
+// is attempted, and — because it is one mechanism for that rather than the
+// thing itself, and is refused outright on a host whose container runtime
+// maps ownership instead (access.go) — what this fails on is the forge
+// being unable to read the key, not the chown being unable to run.
 func configureSSHHostKey(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string) error {
 	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
@@ -74,9 +78,6 @@ func configureSSHHostKey(ctx context.Context, host Host, b *bundle.Bundle, remot
 		return fmt.Errorf("ship ssh host key public half: %w", err)
 	}
 
-	dir := path.Dir(keyPath)
-	if _, err := host.Output(ctx, fmt.Sprintf("chown -R %d:%d %s", forgeUID, forgeGID, stateShQuote(dir))); err != nil {
-		return fmt.Errorf("chown ssh host key directory: %w", err)
-	}
-	return nil
+	chownBestEffort(ctx, host, true, path.Dir(keyPath))
+	return verifyForgeCanReadSSHHostKey(ctx, host, b.Manifest.Images[forge.Service], remoteDir)
 }

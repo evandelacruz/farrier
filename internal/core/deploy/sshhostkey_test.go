@@ -71,6 +71,53 @@ func TestConfigureSSHHostKeyChownsToForgeUser(t *testing.T) {
 	}
 }
 
+// TestConfigureSSHHostKeySucceedsWhenOwnershipCannotBeSet is the state
+// directories' case applied to the key: the chown is refused, the forge can
+// read the key anyway, and `up` continues. Without this the deployment
+// would pass state verification and then die two steps later on the host
+// key, on exactly the hosts this change exists for.
+func TestConfigureSSHHostKeySucceedsWhenOwnershipCannotBeSet(t *testing.T) {
+	host := newFakeHost()
+	host.failOutputOn = "chown"
+	b := testBundle(t)
+
+	if err := configureSSHHostKey(context.Background(), host, b, "/opt/farrier"); err != nil {
+		t.Fatalf("configureSSHHostKey: %v", err)
+	}
+
+	var probed bool
+	for _, cmd := range host.commands {
+		if strings.Contains(cmd, "docker run") && strings.Contains(cmd, forge.SSHHostKeyPath) {
+			probed = true
+		}
+	}
+	if !probed {
+		t.Errorf("no read probe ran against the ssh host key, commands: %v", host.commands)
+	}
+}
+
+// TestConfigureSSHHostKeyFailsWhenForgeCannotReadIt keeps the real
+// breakage loud: a key the container cannot read means Forgejo generates an
+// unmanaged one and every client that knew this instance sees a changed
+// host identity, so it fails here instead, naming the file and the fix.
+func TestConfigureSSHHostKeyFailsWhenForgeCannotReadIt(t *testing.T) {
+	host := newFakeHost()
+	host.failOutputOn = "docker run"
+	b := testBundle(t)
+
+	err := configureSSHHostKey(context.Background(), host, b, "/opt/farrier")
+	if err == nil {
+		t.Fatal("configureSSHHostKey: want error when the forge cannot read the key, got nil")
+	}
+	wantPath := "/opt/farrier/state/gitea/" + sshHostKeyRelPath()
+	if !strings.Contains(err.Error(), wantPath) {
+		t.Errorf("error does not name the key at %s: %v", wantPath, err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d:%d", forgeUID, forgeGID)) {
+		t.Errorf("error does not say which ownership would fix it: %v", err)
+	}
+}
+
 // TestConfigureSSHHostKeyFailsWhenKeystoreMissingKey guards against
 // silently deploying without the bundle's identity: a keystore that can't
 // resolve the SSH host key must fail configureSSHHostKey rather than let

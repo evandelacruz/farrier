@@ -148,6 +148,107 @@ func TestPlaceOneRepoAppliesObjectsBeforeRefs(t *testing.T) {
 	}
 }
 
+// placeStateFixture writes the archives a one-repository snapshot's
+// manifest points at into a fresh directory, and returns the directory and
+// the manifest. placeState streams these to the host, so they have to
+// exist on disk even when what the test cares about is what happens after.
+func placeStateFixture(t *testing.T) (string, *backup.Manifest) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"widgets.tar":      "objects-content",
+		"widgets.refs.tar": "refs-content",
+		"db.sqlite":        "database-content",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write fixture %s: %v", name, err)
+		}
+	}
+	return dir, &backup.Manifest{
+		ForgejoVersion: "codeberg.org/forgejo/forgejo@sha256:pinned",
+		Components: []backup.Component{
+			{Kind: bundle.StateKindGit, Name: "acme/widgets", Path: "widgets.tar"},
+			{Kind: bundle.StateKindGit, Name: "acme/widgets", Path: "widgets.refs.tar"},
+			{Kind: bundle.StateKindDatabase, Name: "db.sqlite", Path: "db.sqlite"},
+		},
+	}
+}
+
+// TestPlaceStateFailsWhenTheForgeCannotUseWhatItRestored is the case this
+// check exists for. The target's state directories already exist and are
+// already forge-owned from an earlier `up` — a restore re-run, an
+// unfinished drill teardown, disaster recovery onto a provisioned host —
+// so the top-level probe deploy.Up runs later would sail through, while
+// the repository directory just extracted under them stays owned by the
+// SSH session's user. The recursive chown that used to fail loudly here is
+// best-effort now, so this is the only thing left between that host and a
+// restore reporting success it cannot back up.
+func TestPlaceStateFailsWhenTheForgeCannotUseWhatItRestored(t *testing.T) {
+	dir, manifest := placeStateFixture(t)
+	host := newFakeHost()
+	host.failOutputOn = "docker run"
+	host.stderrOnFailure = "/opt/farrier/state/git/acme/widgets.git"
+
+	err := placeState(context.Background(), events.NewJob(), dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host})
+	if err == nil {
+		t.Fatal("placeState: want error when the forge cannot use the restored repository, got nil")
+	}
+	if !strings.Contains(err.Error(), "/opt/farrier/state/git/acme/widgets.git") {
+		t.Errorf("error does not name the restored repository directory: %v", err)
+	}
+	if !strings.Contains(err.Error(), "/opt/farrier/state/gitea/gitea.db") {
+		t.Errorf("error does not name the restored database: %v", err)
+	}
+	for _, cmd := range host.commands {
+		if strings.Contains(cmd, "forgejo-version") {
+			t.Errorf("kept going past the failed check: %q", cmd)
+		}
+	}
+}
+
+// TestPlaceStateSucceedsWhenOwnershipCannotBeSet is the macOS case, and
+// the reason the chown is best-effort at all: the host refuses to hand
+// files to another uid, the forge can use them anyway because the
+// container runtime maps ownership at the mount, and the restore proceeds.
+func TestPlaceStateSucceedsWhenOwnershipCannotBeSet(t *testing.T) {
+	dir, manifest := placeStateFixture(t)
+	host := newFakeHost()
+	host.failOutputOn = "chown"
+
+	if err := placeState(context.Background(), events.NewJob(), dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host}); err != nil {
+		t.Fatalf("placeState: %v", err)
+	}
+}
+
+// TestPlaceStateVerifiesTheRepositoryAndDatabaseItPlaced pins what the
+// check covers, since re-probing the top of the state directories would
+// pass every test above while catching nothing: the probe names the
+// restored repository directory and the database file, at the container
+// paths the deployment's own mounts put them at, and runs the Forgejo
+// image the snapshot pinned rather than whatever the target bundle names.
+func TestPlaceStateVerifiesTheRepositoryAndDatabaseItPlaced(t *testing.T) {
+	dir, manifest := placeStateFixture(t)
+	host := newFakeHost()
+
+	if err := placeState(context.Background(), events.NewJob(), dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host}); err != nil {
+		t.Fatalf("placeState: %v", err)
+	}
+
+	probes := host.commandsContaining("docker run")
+	if len(probes) != 1 {
+		t.Fatalf("got %d access probes, want 1: %v", len(probes), host.commands)
+	}
+	for _, want := range []string{
+		forge.RepoRoot + "/acme/widgets.git",
+		forge.DataPath + "/gitea.db",
+		manifest.ForgejoVersion,
+	} {
+		if !strings.Contains(probes[0], want) {
+			t.Errorf("access probe missing %q: %s", want, probes[0])
+		}
+	}
+}
+
 func TestPlaceStateFailsLoudlyOnTornGitSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	manifest := &backup.Manifest{Components: []backup.Component{

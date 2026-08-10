@@ -58,9 +58,12 @@ func TestConfigureStateMountsGitAndGiteaOwnedByForgeUser(t *testing.T) {
 	host := newFakeHost()
 	b := testBundle(t)
 
-	compose, err := configureState(context.Background(), host, b, "/opt/farrier", b.Compose)
+	compose, owned, err := configureState(context.Background(), host, b, "/opt/farrier", b.Compose)
 	if err != nil {
 		t.Fatalf("configureState: %v", err)
+	}
+	if !owned {
+		t.Error("configureState reported it could not set ownership, want it reporting the chown applied")
 	}
 
 	composed := composeText(compose)
@@ -71,16 +74,23 @@ func TestConfigureStateMountsGitAndGiteaOwnedByForgeUser(t *testing.T) {
 		t.Errorf("compose missing gitea state mount: %s", composed)
 	}
 
-	var sawOwnership bool
+	var sawCreate, sawOwnership bool
 	wantOwner := fmt.Sprintf("chown %d:%d", forgeUID, forgeGID)
 	for _, cmd := range host.commands {
 		if strings.Contains(cmd, "mkdir -p") && strings.Contains(cmd, "/opt/farrier/state/git") &&
-			strings.Contains(cmd, "/opt/farrier/state/gitea") && strings.Contains(cmd, wantOwner) {
+			strings.Contains(cmd, "/opt/farrier/state/gitea") {
+			sawCreate = true
+		}
+		if strings.Contains(cmd, wantOwner) && strings.Contains(cmd, "/opt/farrier/state/git") &&
+			strings.Contains(cmd, "/opt/farrier/state/gitea") {
 			sawOwnership = true
 		}
 	}
+	if !sawCreate {
+		t.Errorf("no command created both state directories, commands: %v", host.commands)
+	}
 	if !sawOwnership {
-		t.Errorf("no command created and chowned both state directories, commands: %v", host.commands)
+		t.Errorf("no command chowned both state directories, commands: %v", host.commands)
 	}
 }
 
@@ -89,7 +99,7 @@ func TestConfigureStateCreatesBlobsDirWhenBlobDriverIsLocal(t *testing.T) {
 	b := testBundle(t)
 	b.Manifest.Drivers.Blob = bundle.DriverRef{Driver: "local", Config: map[string]any{"path": "testdata/blobs"}}
 
-	if _, err := configureState(context.Background(), host, b, "/opt/farrier", b.Compose); err != nil {
+	if _, _, err := configureState(context.Background(), host, b, "/opt/farrier", b.Compose); err != nil {
 		t.Fatalf("configureState: %v", err)
 	}
 
@@ -117,7 +127,7 @@ func TestConfigureStateSkipsBlobsDirForNonLocalBlobDriver(t *testing.T) {
 		"bucket": "farrier", "endpoint": "s3.example.com",
 	}}
 
-	if _, err := configureState(context.Background(), host, b, "/opt/farrier", b.Compose); err != nil {
+	if _, _, err := configureState(context.Background(), host, b, "/opt/farrier", b.Compose); err != nil {
 		t.Fatalf("configureState: %v", err)
 	}
 
