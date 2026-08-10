@@ -16,6 +16,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - DNS-001 precedes FAIL-004; ACME-001 precedes INIT-002.
 - UP-005 precedes IMPT-004: nothing can push to an `origin` the instance does not serve.
 - INIT-005 precedes UP-006; UP-006 precedes UP-007: a nameless instance must exist before it can be served, and be served before it can be named.
+- INIT-005 also precedes INIT-002 and UP-002: what remains of both is the nameless case, which does not exist until INIT-005 creates it.
 - API-001 precedes all UI.
 
 ---
