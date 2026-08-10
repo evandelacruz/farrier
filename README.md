@@ -20,6 +20,10 @@ cd my-project && farrier init
 # The host can be anywhere, including this machine: ssh://user@localhost
 farrier up ssh://user@host
 
+# A nameless bundle has no domain, so tell `up` where it is reached.
+# Plain HTTP: keep it on a LAN, a VPN, or a tailnet.
+farrier up ssh://user@host -address 192.168.1.5
+
 # Put this project on it — creates the repository, pushes your history,
 # points origin at the instance. `git push` works from here on.
 farrier publish

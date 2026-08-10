@@ -185,11 +185,26 @@ func (m *Manifest) GitSSHPortOrDefault() int {
 // `origin` (IMPT-004). One function means the URL Farrier prints and the
 // URL Farrier configures cannot drift apart.
 func (m *Manifest) GitSSHCloneURL(owner, repo string) string {
+	return m.GitSSHCloneURLAt(m.Domain, owner, repo)
+}
+
+// GitSSHCloneURLAt is GitSSHCloneURL for an instance reached at host rather
+// than at the bundle domain — what a nameless bundle needs (UP-006), where
+// the bundle carries no name and the operator supplies the address at `up`.
+// The port and the spelling rules are the manifest's either way, so a
+// nameless instance's clone URL is built by the same code as a named one's
+// and cannot drift from it.
+//
+// host is spelled for a URL authority, so an IPv6 literal arrives already
+// bracketed. A bracketed host always takes the `ssh://` form: scp-style
+// `git@[::1]:owner/repo.git` is not a spelling git parses, and the colons
+// inside the literal are exactly what makes the scp-style form ambiguous.
+func (m *Manifest) GitSSHCloneURLAt(host, owner, repo string) string {
 	port := m.GitSSHPortOrDefault()
-	if port == 22 {
-		return fmt.Sprintf("git@%s:%s/%s.git", m.Domain, owner, repo)
+	if port == 22 && !strings.HasPrefix(host, "[") {
+		return fmt.Sprintf("git@%s:%s/%s.git", host, owner, repo)
 	}
-	return fmt.Sprintf("ssh://git@%s:%d/%s/%s.git", m.Domain, port, owner, repo)
+	return fmt.Sprintf("ssh://git@%s:%d/%s/%s.git", host, port, owner, repo)
 }
 
 // GitSSHKnownHostsHost is how this bundle's git-over-SSH endpoint is

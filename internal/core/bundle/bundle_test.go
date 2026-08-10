@@ -475,6 +475,29 @@ func writeTestFile(t *testing.T, path, content string) {
 	}
 }
 
+// TestGitSSHCloneURLAt is UP-006's half of the same spelling: a nameless
+// bundle has no domain, so `up` reports the clone URL at the address the
+// operator supplied — through the same function, with the same port and
+// the same rules.
+func TestGitSSHCloneURLAt(t *testing.T) {
+	m := validManifest()
+	m.Domain = ""
+
+	if got, want := m.GitSSHCloneURLAt("box.local", "acme", "widgets"), "ssh://git@box.local:2222/acme/widgets.git"; got != want {
+		t.Errorf("GitSSHCloneURLAt() = %q, want %q", got, want)
+	}
+
+	m.GitSSHPort = 22
+	if got, want := m.GitSSHCloneURLAt("192.168.1.5", "acme", "widgets"), "git@192.168.1.5:acme/widgets.git"; got != want {
+		t.Errorf("GitSSHCloneURLAt() on 22 = %q, want %q", got, want)
+	}
+	// A bracketed IPv6 literal always takes the ssh:// form: scp-style is
+	// ambiguous once the host itself carries colons.
+	if got, want := m.GitSSHCloneURLAt("[fd00::1]", "acme", "widgets"), "ssh://git@[fd00::1]:22/acme/widgets.git"; got != want {
+		t.Errorf("GitSSHCloneURLAt() on an IPv6 literal = %q, want %q", got, want)
+	}
+}
+
 // TestGitSSHCloneURL pins the spelling every caller shares: the URL `up`
 // reports and the URL `publish` writes into a project's origin (IMPT-004)
 // come from this one function, so they cannot drift apart. Port 22 renders

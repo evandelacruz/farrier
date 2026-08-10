@@ -12,20 +12,29 @@
 // SSH is served at the bundle domain on the host port the manifest
 // declares, using the bundle's own SSH host key.
 //
-// # Named bundles only
+// # Named and nameless
 //
-// Everything this package deploys is addressed by the bundle domain: the
-// certificate it issues, the Caddy site it renders, the ROOT_URL in
-// app.ini, the clone URLs Forgejo displays. A nameless bundle (INIT-005)
-// has none of that, and so has no HTTPS endpoint for Up to complete
-// against. Serving one — over plain HTTP at an address the operator
-// supplies, with git over SSH unchanged — is UP-006's job, and it is a
-// separate requirement rather than a fallback hidden inside this one.
+// Everything this package deploys is addressed by one host: the Caddy site
+// it renders, the ROOT_URL in app.ini, the clone URLs Forgejo displays. A
+// named bundle carries that host — its domain — and gets the certificate
+// Up issues and HTTPS at it (UP-002). A nameless bundle (INIT-005) carries
+// none, so `up` is where the instance learns how it is reached: the
+// operator supplies an IP or a hostname, Caddy terminates in plain HTTP at
+// it, and no certificate exists anywhere in the deployment (UP-006).
 //
-// So Up refuses a nameless bundle outright, before it touches the host,
-// naming UP-006. That refusal is deliberate: making UP-002's
-// HTTPS check conditional without it would leave `up` deploying a Forgejo
-// nothing can reach and reporting success.
+// The two differ in exactly two places — which host every URL is built
+// from, and whether Caddy is handed a certificate — and Up branches once,
+// at the step that configures the terminator. Everything else, git over
+// SSH above all, is identical: SSH encrypts on its own, so a nameless
+// instance is safe to push to across the internet even though its web UI
+// is not safe to log in to across one. That asymmetry is the whole of the
+// trade spec.md "Instances without a name" records, and Up states it
+// plainly through the event stream rather than leaving the operator to
+// notice a missing padlock (plainHTTPDetail).
+//
+// A bundle and an address that disagree — an address for a named bundle,
+// or none for a nameless one — is refused before Up touches the host
+// (serveAddress).
 //
 // It is the sequencing layer over packages that already do the real work:
 // orchestrate (SSH transport, Compose rendering and convergence, ORCH-001
@@ -57,10 +66,19 @@ import (
 // Step identifiers Up emits through the job's event stream (CORE-002), in
 // the order it runs them. forge.StepAdminBootstrap follows StepWaitForge,
 // and forge.StepRunnerRegister follows that.
+//
+// StepConfigureTLS and StepConfigureHTTP are alternatives, not a sequence:
+// a deployment runs exactly one of them, whichever the bundle calls for
+// (UP-002 for a named bundle, UP-006 for a nameless one). They are separate
+// identifiers rather than one step with two details so that a frontend
+// rendering the stream shows what actually happened — a step named
+// "configure-tls" on a deployment that configured no TLS would be a lie
+// told by a progress bar.
 const (
 	StepCheckHost       = "check-host"
 	StepConfigureForge  = "configure-forge"
 	StepConfigureTLS    = "configure-tls"
+	StepConfigureHTTP   = "configure-http"
 	StepConfigureState  = "configure-state"
 	StepConfigureGitSSH = "configure-git-ssh"
 	StepConfigureRunner = "configure-runner"
@@ -113,6 +131,21 @@ type Options struct {
 	// Required.
 	RemoteDir string
 
+	// Address is the address — an IP or a hostname — the operator serves a
+	// nameless bundle's web UI at (UP-006). Required for a nameless bundle
+	// and rejected for a named one, which already answers the same question
+	// with its domain; see serveAddress for why the two exclude each other.
+	//
+	// It is a deploy-time parameter rather than a manifest field on
+	// purpose. A nameless bundle is the one case spec.md "Instances without
+	// a name" lets opt out of identity-in-the-bundle, so the address is not
+	// bundle identity to carry through backup, restore, and promote — it is
+	// how *this* deployment is reached, and a restored or promoted instance
+	// on a different host is reached at a different one. Attaching a real
+	// name later is UP-007's in-place operation, and that one does write
+	// the manifest.
+	Address string
+
 	// CertIssuer resolves the TLS certificate Up hands to Caddy (UP-002),
 	// reusing the one init persisted unless it's due for renewal (UP-003).
 	// Nil uses the real ACME-backed issuer (acme.EnsureValid); tests
@@ -160,9 +193,13 @@ type Options struct {
 // so the forge is serving HTTPS and usable in a browser before Up returns
 // (UP-002).
 //
-// That last guarantee is what makes b's domain a precondition rather than
-// a detail: Up requires a named bundle and refuses a nameless one before
-// the first step, pointing at UP-006 (see the package doc).
+// A nameless bundle (INIT-005) takes the same path with one substitution:
+// opts.Address, the address the operator supplies at `up`, stands in for
+// the domain the bundle does not have, Caddy is configured to terminate in
+// plain HTTP at it rather than to serve a certificate, and Up completes
+// with the forge serving HTTP there instead of HTTPS (UP-006). Git over SSH
+// is byte-for-byte what a named bundle gets. See "Named and nameless" in
+// the package doc for what that trades and why the two are one path.
 //
 // Every step is safe to repeat against a host Up has already deployed to
 // (UP-003): CheckHost and waitReady are read-only, configureForge always
@@ -206,15 +243,26 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	if strings.TrimSpace(opts.RemoteDir) == "" {
 		return fmt.Errorf("deploy: remote directory is required")
 	}
-	// UP-002's completion guarantee is HTTPS at the bundle domain, and a
-	// nameless bundle (INIT-005) has no domain to serve at, no certificate
-	// to serve with, and no ROOT_URL to render. Refuse here, ahead of
-	// CheckHost, so a nameless bundle leaves the host exactly as it found
-	// it rather than failing partway through configureForge with the same
-	// news (forge.RenderAppINI takes this posture for the same reason).
-	// UP-006 is the requirement that lifts this.
-	if !b.Manifest.Named() {
-		return fmt.Errorf("deploy: up requires a bundle domain to serve HTTPS at (UP-002); this bundle is nameless, and serving one over plain HTTP at an operator-supplied address is not implemented yet (UP-006)")
+	// Which of the two endpoints this deployment serves is decided here,
+	// ahead of CheckHost, so a bundle and an address that disagree leave
+	// the host exactly as Up found it rather than failing partway through
+	// configureForge with the same news. address is empty for a named
+	// bundle and set for a nameless one, and every step below reads
+	// Manifest.Named() to tell which it is holding.
+	address, err := serveAddress(&b.Manifest, opts.Address)
+	if err != nil {
+		return err
+	}
+	// DRIL-002's containment is defined against a named instance: the
+	// drilled instance answers at the bundle domain on loopback, and Caddy
+	// carries that domain as a network alias so the drilled runner reaches
+	// the drilled instance rather than production. A nameless instance has
+	// no domain to alias and its address may be a bare IP, so what
+	// containment means for one is an open question rather than a detail
+	// — and a drill that got it wrong would point a second runner at
+	// production's job queue. Refuse the combination instead of guessing.
+	if opts.Quarantine && !b.Manifest.Named() {
+		return fmt.Errorf("deploy: quarantined deployment (DRIL-002) of a nameless bundle is not supported; drill a named bundle, or attach a name first (UP-007)")
 	}
 
 	job.Started(StepCheckHost, "checking Docker is reachable")
@@ -225,7 +273,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	job.Emit(StepCheckHost, events.StateSucceeded, "Docker reachable")
 
 	job.Started(StepConfigureForge, "resolving key material and rendering app.ini")
-	compose, err := configureForge(ctx, host, b, opts.RemoteDir, opts.Quarantine)
+	compose, err := configureForge(ctx, host, b, opts.RemoteDir, address, opts.Quarantine)
 	if err != nil {
 		job.Emit(StepConfigureForge, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure forge: %w", err)
@@ -236,16 +284,27 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped")
 	}
 
-	job.Started(StepConfigureTLS, "resolving persisted certificate and rendering caddy config")
-	compose, renewed, err := configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer), opts.Quarantine)
-	if err != nil {
-		job.Emit(StepConfigureTLS, events.StateFailed, err.Error())
-		return fmt.Errorf("deploy: configure tls: %w", err)
-	}
-	if renewed {
-		job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal; a fresh one was issued and persisted to the keystore (ACME-002)")
+	if b.Manifest.Named() {
+		job.Started(StepConfigureTLS, "resolving persisted certificate and rendering caddy config")
+		var renewed bool
+		compose, renewed, err = configureTLS(ctx, host, b, opts.RemoteDir, compose, issuerOrDefault(opts.CertIssuer), opts.Quarantine)
+		if err != nil {
+			job.Emit(StepConfigureTLS, events.StateFailed, err.Error())
+			return fmt.Errorf("deploy: configure tls: %w", err)
+		}
+		if renewed {
+			job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal; a fresh one was issued and persisted to the keystore (ACME-002)")
+		} else {
+			job.Emit(StepConfigureTLS, events.StateSucceeded, "persisted certificate reused and caddy configured")
+		}
 	} else {
-		job.Emit(StepConfigureTLS, events.StateSucceeded, "persisted certificate reused and caddy configured")
+		job.Started(StepConfigureHTTP, fmt.Sprintf("rendering plain-HTTP caddy config for %s", address))
+		compose, err = configurePlainHTTP(ctx, host, opts.RemoteDir, compose, address)
+		if err != nil {
+			job.Emit(StepConfigureHTTP, events.StateFailed, err.Error())
+			return fmt.Errorf("deploy: configure plain http: %w", err)
+		}
+		job.Emit(StepConfigureHTTP, events.StateSucceeded, plainHTTPDetail(address))
 	}
 
 	job.Started(StepConfigureState, "creating host state directories")
@@ -266,10 +325,10 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		job.Emit(StepConfigureGitSSH, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure git over ssh: %w", err)
 	}
-	job.Emit(StepConfigureGitSSH, events.StateSucceeded, gitSSHDetail(&b.Manifest, opts.Quarantine))
+	job.Emit(StepConfigureGitSSH, events.StateSucceeded, gitSSHDetail(&b.Manifest, address, opts.Quarantine))
 
 	job.Started(StepConfigureRunner, "configuring the colocated actions runner")
-	compose, runnerDeployed, err := configureRunner(ctx, host, b, opts.RemoteDir, compose)
+	compose, runnerDeployed, err := configureRunner(ctx, host, b, opts.RemoteDir, address, compose)
 	if err != nil {
 		job.Emit(StepConfigureRunner, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure runner: %w", err)
@@ -277,7 +336,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	if runnerDeployed {
 		job.Emit(StepConfigureRunner, events.StateSucceeded, "colocated runner configured with the host's docker socket (spec.md \"CI trust boundary\")")
 	} else {
-		job.Emit(StepConfigureRunner, events.StateSucceeded, "no colocated runner in this deployment; register a remote runner against the bundle domain to run CI")
+		job.Emit(StepConfigureRunner, events.StateSucceeded, fmt.Sprintf("no colocated runner in this deployment; register a remote runner against %s to run CI", forge.InstanceURL(&b.Manifest, address)))
 	}
 
 	job.Started(StepCheckVersion, "checking the pinned forgejo version against the host's state")
@@ -305,7 +364,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 	job.Emit(StepWaitForge, events.StateSucceeded, "forgejo ready")
 
-	account, err := forge.NewAdminAccount(b.Manifest.Domain)
+	account, err := forge.NewAdminAccount(forge.AdminEmailDomain(&b.Manifest))
 	if err != nil {
 		return fmt.Errorf("deploy: %w", err)
 	}
@@ -327,7 +386,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		job.Emit(StepWaitCaddy, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: wait for caddy: %w", err)
 	}
-	job.Emit(StepWaitCaddy, events.StateSucceeded, fmt.Sprintf("caddy ready — https://%s is live", b.Manifest.Domain))
+	job.Emit(StepWaitCaddy, events.StateSucceeded, caddyReadyDetail(&b.Manifest, address))
 	return nil
 }
 
@@ -335,13 +394,17 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 // ships it to host, and returns b's Compose files with a bind mount added
 // so the forgejo service loads the file that was just shipped.
 //
+// address is the operator-supplied address a nameless bundle is served at
+// (UP-006) and is empty for a named one, which addresses itself; app.ini's
+// ROOT_URL, DOMAIN, and SSH_DOMAIN all follow from whichever it is.
+//
 // quarantine renders the file with outbound webhooks, email, and mirrors
 // disabled (DRIL-002). It changes only what is rendered here — the app.ini
 // checksum below is derived from whatever was rendered, so a quarantined
 // deployment and an ordinary one are distinguishable to Converge and a
 // host converged one way is actually re-converged when converged the
 // other.
-func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, quarantine bool) (map[string][]byte, error) {
+func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir, address string, quarantine bool) (map[string][]byte, error) {
 	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
 		return nil, fmt.Errorf("keystore driver: %w", err)
@@ -350,7 +413,7 @@ func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir 
 	if err != nil {
 		return nil, fmt.Errorf("resolve key material: %w", err)
 	}
-	appINI, err := forge.RenderAppINI(&b.Manifest, secrets, forge.AppINIOptions{Quarantine: quarantine})
+	appINI, err := forge.RenderAppINI(&b.Manifest, secrets, forge.AppINIOptions{Quarantine: quarantine, Address: address})
 	if err != nil {
 		return nil, fmt.Errorf("render app.ini: %w", err)
 	}

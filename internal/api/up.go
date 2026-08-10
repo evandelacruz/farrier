@@ -20,17 +20,21 @@ import (
 const defaultRemoteDir = "/opt/farrier"
 
 // upRequest is the POST /up body, one field per the `up` CLI command's
-// flags.
+// flags. Address is the address a nameless bundle's web UI is served at
+// (UP-006): required for a nameless bundle, rejected for a named one, and
+// validated by deploy.Up rather than here — the pairing rule belongs to the
+// core, and both frontends get the same error from it.
 type upRequest struct {
 	BundleDir      string `json:"bundleDir"`
 	Target         string `json:"target"`
 	RemoteDir      string `json:"remoteDir,omitempty"`
+	Address        string `json:"address,omitempty"`
 	SSHKeyFile     string `json:"sshKeyFile,omitempty"`
 	KnownHostsFile string `json:"knownHostsFile,omitempty"`
 	SSHTimeout     string `json:"sshTimeout,omitempty"`
 }
 
-// handleUp implements POST /up (API-001, UP-001..002): it loads the
+// handleUp implements POST /up (API-001, UP-001..002, UP-006): it loads the
 // bundle, dials the target, and starts a job running deploy.Up — the same
 // function the `up` CLI command calls — returning the job ID immediately
 // (API-002).
@@ -71,7 +75,7 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := s.jobs.New()
-	go s.runUp(job, b, req.Target, remoteDir, orchestrate.Options{
+	go s.runUp(job, b, req.Target, remoteDir, req.Address, orchestrate.Options{
 		KeyFile:        req.SSHKeyFile,
 		KnownHostsFile: req.KnownHostsFile,
 		Timeout:        timeout,
@@ -82,7 +86,7 @@ func (s *Server) handleUp(w http.ResponseWriter, r *http.Request) {
 // runUp dials target and deploys b to it, reporting connection failures on
 // job directly since they happen before deploy.Up — which owns the job's
 // terminal event on every other path — is even called.
-func (s *Server) runUp(job *events.Job, b *bundle.Bundle, target, remoteDir string, dialOpts orchestrate.Options) {
+func (s *Server) runUp(job *events.Job, b *bundle.Bundle, target, remoteDir, address string, dialOpts orchestrate.Options) {
 	ctx := context.Background()
 	host, err := s.dial(ctx, target, dialOpts)
 	if err != nil {
@@ -90,5 +94,5 @@ func (s *Server) runUp(job *events.Job, b *bundle.Bundle, target, remoteDir stri
 		return
 	}
 	defer host.Close()
-	s.deployUp(ctx, job, host, b, deploy.Options{RemoteDir: remoteDir})
+	s.deployUp(ctx, job, host, b, deploy.Options{RemoteDir: remoteDir, Address: address})
 }

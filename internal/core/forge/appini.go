@@ -120,6 +120,56 @@ func (s Secrets) validate() error {
 	return nil
 }
 
+// InstanceURL is the external URL an instance is reached at, and the one
+// answer every other URL in the deployment is built on: `https://` at the
+// bundle domain for a named bundle (UP-002), and `http://` at the
+// operator-supplied address for a nameless one (UP-006).
+//
+// It is deliberately the external URL rather than the forgejo service's
+// name on the Compose network, and that matters most to the colocated
+// Actions runner: its job containers are started on the host's Docker
+// daemon, on per-job networks the runner creates, so a Compose service name
+// would not resolve inside them. spec.md "The domain" settles the general
+// case for a named bundle — clone URLs, webhooks, and runner registration
+// all derive from the domain, which is what survives the host changing
+// underneath it — and spec.md "Instances without a name" puts the
+// operator-supplied address in exactly that role for a nameless one.
+//
+// address is ignored for a named bundle and is required for a nameless
+// one; callers get that pairing checked, once, by deploy's serveAddress.
+// It is spelled for a URL authority, so an IPv6 literal arrives bracketed.
+func InstanceURL(m *bundle.Manifest, address string) string {
+	if m.Named() {
+		return fmt.Sprintf("https://%s/", strings.TrimSpace(m.Domain))
+	}
+	return fmt.Sprintf("http://%s/", strings.TrimSpace(address))
+}
+
+// namelessAdminEmailDomain is the domain a nameless bundle's admin account
+// email is built from. A nameless instance has no name to derive one from,
+// and its address is a poor substitute: an IP literal is not a valid email
+// domain at all, and a hostname the operator may re-point tomorrow would
+// bake a stale address into an account row that outlives it.
+//
+// `.invalid` is reserved by RFC 2606 precisely so it can never be a real
+// domain, and nothing is ever delivered to this address regardless —
+// Forgejo's mailer is off unless an operator configures one, and the admin
+// credentials reach the operator through the job event stream (FORGE-002),
+// never by email.
+const namelessAdminEmailDomain = "farrier.invalid"
+
+// AdminEmailDomain reports the domain NewAdminAccount should build the
+// first admin account's email from for m: the bundle domain when there is
+// one, and a reserved placeholder for a nameless bundle (UP-006). Keeping
+// the choice here rather than at the deploy call site keeps every fact
+// about what the admin account looks like in one package.
+func AdminEmailDomain(m *bundle.Manifest) string {
+	if m.Named() {
+		return strings.TrimSpace(m.Domain)
+	}
+	return namelessAdminEmailDomain
+}
+
 // AppINIOptions carries the deploy-time choices that change what app.ini
 // says, as distinct from the manifest and key material, which say what the
 // instance *is*. The zero value renders an ordinary production deployment.
@@ -130,6 +180,13 @@ type AppINIOptions struct {
 	// internal/core/drill's deploy path sets it, which is why `up` has no
 	// flag for it. See RenderAppINI's "Quarantine" section.
 	Quarantine bool
+
+	// Address is the address the operator serves a nameless bundle's web
+	// UI at (UP-006) — an IP or a hostname, spelled for a URL authority.
+	// Required for a nameless manifest and rejected for a named one, since
+	// a named bundle already answers the same question with its domain.
+	// See RenderAppINI's "Nameless bundles" section.
+	Address string
 }
 
 // RenderAppINI renders a complete Forgejo app.ini from a bundle manifest and
@@ -141,6 +198,23 @@ type AppINIOptions struct {
 // The result is deploy-time configuration for the forge host, not bundle
 // content: callers must ship it to the host directly and never write it into
 // the bundle directory (KEY-003).
+//
+// # Nameless bundles
+//
+// Every URL in the rendered file — ROOT_URL, DOMAIN, and the SSH_DOMAIN
+// Forgejo builds its clone URLs from — is built from one host and one
+// scheme. A named bundle supplies both: its domain, over HTTPS, because
+// `up` completes with a certificate serving at it (UP-002). A nameless
+// bundle (INIT-005) supplies neither, so opts.Address does, over plain
+// HTTP (UP-006, spec.md "Instances without a name"). The two are mutually
+// exclusive and each is required in its own case; deploy checks the
+// pairing before it touches the host, and this function fails rather than
+// rendering a ROOT_URL of `https:///`.
+//
+// Only the scheme and the host change. The SSH section below is rendered
+// identically either way, which is UP-006's "git over SSH unchanged": SSH
+// encrypts on its own, so a nameless instance is safe to push to across the
+// internet even though its web UI is not safe to log in to across one.
 //
 // # Git over SSH
 //
@@ -197,17 +271,25 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 	if err := secrets.validate(); err != nil {
 		return nil, err
 	}
-	// Every URL below is built from the domain, so a nameless bundle
-	// (INIT-005) has nothing to render an app.ini from: its address is
-	// supplied to `up` rather than carried by the manifest, and serving one
-	// is UP-006's job. Until that lands this fails loudly, on `up`'s first
-	// step, rather than deploying a Forgejo whose ROOT_URL is "https:///".
-	if !m.Named() {
-		return nil, fmt.Errorf("forge: app.ini requires a domain; this bundle is nameless, and serving one over plain HTTP at an operator-supplied address is not implemented yet (UP-006)")
+	// Every URL below is built from one host, and the manifest carries one
+	// only when the bundle is named. See "Nameless bundles" above.
+	address := strings.TrimSpace(opts.Address)
+	switch {
+	case m.Named() && address != "":
+		return nil, fmt.Errorf("forge: app.ini takes an address only for a nameless bundle; this bundle is named %s and is served over HTTPS at that domain (UP-002)", strings.TrimSpace(m.Domain))
+	case !m.Named() && address == "":
+		return nil, fmt.Errorf("forge: app.ini requires a domain, or for a nameless bundle the address the operator serves it at (UP-006)")
 	}
 
-	domain := strings.TrimSpace(m.Domain)
-	rootURL := fmt.Sprintf("https://%s/", domain)
+	// host is what every URL below is addressed at, and scheme is how
+	// browsers reach it. Forgejo's own PROTOCOL key is unrelated and stays
+	// http in both cases: Caddy is what terminates, and it proxies to
+	// Forgejo in plaintext on the Compose network either way.
+	host, scheme := strings.TrimSpace(m.Domain), "https"
+	if !m.Named() {
+		host, scheme = address, "http"
+	}
+	rootURL := fmt.Sprintf("%s://%s/", scheme, host)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "APP_NAME = Farrier\n")
@@ -218,7 +300,7 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 	// http, not https: Caddy terminates TLS (spec.md "What it's built on") and
 	// proxies to Forgejo in plaintext. ROOT_URL below is the external https URL.
 	fmt.Fprintf(&b, "PROTOCOL = http\n")
-	fmt.Fprintf(&b, "DOMAIN = %s\n", domain)
+	fmt.Fprintf(&b, "DOMAIN = %s\n", host)
 	fmt.Fprintf(&b, "ROOT_URL = %s\n", rootURL)
 	fmt.Fprintf(&b, "HTTP_PORT = %d\n", HTTPPort)
 	// SSH_DOMAIN and SSH_PORT are what Forgejo renders into the SSH clone
@@ -227,7 +309,7 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 	// reach the host port the manifest declares (UP-005), and the Compose
 	// definition publishes that host port onto SSHListenPort. Advertising
 	// the container port instead would display a URL nothing answers on.
-	fmt.Fprintf(&b, "SSH_DOMAIN = %s\n", domain)
+	fmt.Fprintf(&b, "SSH_DOMAIN = %s\n", host)
 	fmt.Fprintf(&b, "SSH_PORT = %d\n", m.GitSSHPortOrDefault())
 	fmt.Fprintf(&b, "SSH_LISTEN_PORT = %d\n", SSHListenPort)
 	fmt.Fprintf(&b, "START_SSH_SERVER = true\n")
