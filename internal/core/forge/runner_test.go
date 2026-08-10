@@ -124,8 +124,8 @@ func TestRegisterRunnerRunsForgejoOfflineRegistration(t *testing.T) {
 	}
 
 	want := "docker compose exec -T -u git forgejo forgejo forgejo-cli actions register --secret-stdin --name 'farrier-colocated' < '/opt/farrier/runner/secret'"
-	if runner.gotCommand != want {
-		t.Errorf("command =\n%s\nwant\n%s", runner.gotCommand, want)
+	if runner.lastCmd() != want {
+		t.Errorf("command =\n%s\nwant\n%s", runner.lastCmd(), want)
 	}
 }
 
@@ -140,14 +140,14 @@ func TestRegisterRunnerFeedsTheSecretOnStdinNotAsAnArgument(t *testing.T) {
 		t.Fatalf("RegisterRunner: %v", err)
 	}
 
-	if !strings.Contains(runner.gotCommand, "--secret-stdin") {
-		t.Errorf("command does not read the secret from stdin: %s", runner.gotCommand)
+	if !strings.Contains(runner.lastCmd(), "--secret-stdin") {
+		t.Errorf("command does not read the secret from stdin: %s", runner.lastCmd())
 	}
-	if strings.Contains(runner.gotCommand, "|") {
-		t.Errorf("command pipes into docker compose, which would drop the Compose project environment: %s", runner.gotCommand)
+	if strings.Contains(runner.lastCmd(), "|") {
+		t.Errorf("command pipes into docker compose, which would drop the Compose project environment: %s", runner.lastCmd())
 	}
-	if !strings.HasSuffix(runner.gotCommand, "< '/opt/farrier/runner/secret'") {
-		t.Errorf("command does not redirect the secret file into stdin: %s", runner.gotCommand)
+	if !strings.HasSuffix(runner.lastCmd(), "< '/opt/farrier/runner/secret'") {
+		t.Errorf("command does not redirect the secret file into stdin: %s", runner.lastCmd())
 	}
 }
 
@@ -237,7 +237,7 @@ func TestRegisterRunnerRequiresASecretPath(t *testing.T) {
 	if err := RegisterRunner(context.Background(), runner, job, "  "); err == nil {
 		t.Fatal("RegisterRunner with no secret path succeeded, want error")
 	}
-	if runner.gotCommand != "" {
-		t.Errorf("ran a command anyway: %s", runner.gotCommand)
+	if runner.lastCmd() != "" {
+		t.Errorf("ran a command anyway: %s", runner.lastCmd())
 	}
 }

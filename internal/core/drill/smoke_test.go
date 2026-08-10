@@ -9,6 +9,12 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/forge"
 )
 
+// smokeMintMarker fails the token the smoke script mints, and only that
+// one. The drill's admin bootstrap mints a token of its own now, so
+// matching the CLI subcommand alone would fail both and stop saying which
+// step the test is about.
+const smokeMintMarker = "farrier-drill-smoke"
+
 // smokeCommands returns every command the drill ran that is the smoke CI
 // job — the one `docker compose exec` that hands a script to the forgejo
 // container.
@@ -112,7 +118,7 @@ func TestDrillRunsTheSmokeJobOnlyOnceTheStackIsUp(t *testing.T) {
 // is a failed drill that says so.
 func TestDrillReportsAFailingSmokeJob(t *testing.T) {
 	f := newFixture(t)
-	f.host().failOn = "generate-access-token"
+	f.host().failOn = smokeMintMarker
 
 	job := events.NewJob()
 	report, err := Drill(context.Background(), job, f.opts)

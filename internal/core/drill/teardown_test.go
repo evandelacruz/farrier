@@ -115,7 +115,7 @@ func TestDrillTearsDownAfterAFailedStep(t *testing.T) {
 func TestDrillTearsDownAfterAFailedSmokeJob(t *testing.T) {
 	f := newFixture(t)
 	host := f.host()
-	host.failOn = "generate-access-token"
+	host.failOn = smokeMintMarker
 
 	job := events.NewJob()
 	report, err := Drill(context.Background(), job, f.opts)

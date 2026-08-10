@@ -173,7 +173,7 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 ## Forge configuration
 
 - Forgejo `app.ini` is fully rendered from the manifest — the install wizard is pre-answered by configuration.
-- Admin bootstrap runs `forgejo admin user create` post-start; credentials are emitted once through the event stream.
+- Admin bootstrap runs `forgejo admin user create` post-start, then `forgejo admin user generate-access-token --raw` for that account, named `farrier-publish` and scoped `write:repository,write:user` — the exact scope set `publish` needs. Both commands exec into the forgejo container as the `git` user. Credentials and token are emitted once, together, through the event stream. A re-run finding the account already present mints nothing, so tokens do not accumulate one per deployment.
 - Rendered `app.ini` enables Actions. Forgejo's fork-PR approval gate is unconditional once Actions is on — it exposes no key to loosen it — so enabling Actions is the whole of that requirement.
 - Drill mode adds four overrides to the rendered `app.ini` — webhooks off, webhook host allow-list empty, mailer off, mirrors off — publishes the forge's HTTPS port on the deploy host's loopback interface rather than every interface, and gives Caddy the bundle domain as a Compose network alias so the drilled host resolves that domain to the drilled instance rather than to production. Quarantine is a render- and deploy-time override; the restored state itself is never edited, and no DNS record is touched.
 - CI reconciliation at promote: a direct SQLite update resetting `running` → `queued` in the actions tables, before services start.
@@ -203,5 +203,6 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 
 - API binds loopback; any wider exposure is operator topology.
 - Secret key material is held in memory only during operations; never written to logs, event streams, command output, or the bundle directory. Public key material, such as the SSH host key's public half, may live in the manifest: it is the string an operator pastes into `known_hosts`, and requiring keystore access to obtain it would mean handing out the store that holds `SECRET_KEY` and the age backup key just to let someone publish a repository.
+- The first admin account's password and its publish token are account credentials, not key material: they are generated on the host, belong to a forge account rather than to the bundle, are not in the [spec.md](spec.md) key-material set, and never enter the keystore, a backup, or the bundle. They are handed to the operator once through the event stream and are redacted everywhere else — a leak of one costs an account that can be reset, not the identity or the archive.
 - Snapshots are age-encrypted before leaving the forge host; the operator holds the sole key.
 - CI executes in containers; the trust boundary and fork-PR policy are recorded in [spec.md](spec.md).

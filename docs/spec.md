@@ -247,7 +247,7 @@ The full lifecycle — create, deploy, publish, import, name, protect, relocate,
 | `init` | Make a project folder into a forge definition: domain, zone-control proof, key material, manifest, written to `.farrier/`. |
 | `publish` | Put the project folder on its instance: create the repository, push the folder's existing history, set `origin` to the instance's SSH URL. |
 | `import` | Bring existing repositories in from GitHub or GitLab, with history, LFS, and optional mirror sync. |
-| `up` | Deploy the stateless layer against bundle state on a target host. Ends with the forge live in a browser: configuration fully rendered from the manifest, install wizard pre-answered, first admin account provisioned with credentials handed to the operator. |
+| `up` | Deploy the stateless layer against bundle state on a target host. Ends with the forge live in a browser: configuration fully rendered from the manifest, install wizard pre-answered, first admin account provisioned, with its credentials and an access token scoped for `publish` handed to the operator. |
 | `backup` | Produce a complete, verified, encrypted snapshot to an S3 URI or directory. |
 | `restore` | Rebuild a full instance from a snapshot onto a fresh host, verified, running the snapshot's pinned version. |
 | `promote` | Fail over: restore the latest snapshot onto a fresh host, verify, start, reconcile CI, flip DNS. |
