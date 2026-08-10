@@ -8,6 +8,13 @@ import "context"
 //
 // Converge takes this rather than *Client so the sequence of commands and
 // writes it drives can be asserted without an SSH server.
+//
+// It also carries no address, which is how ORCH-003 stays true as this
+// package grows: a Transport is a way to reach a host that has already been
+// reached, so code holding one has nothing to branch on. Anything that
+// needs to know where the host is asks *Client.Target for it, and that
+// answer is data — an ssh:// URL to hand out, a line in a recovery note —
+// never a condition.
 type Transport interface {
 	// Output executes command in a shell on the host and returns its
 	// stdout. A nonzero exit status is an error that includes stderr.
