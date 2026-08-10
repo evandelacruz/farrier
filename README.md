@@ -33,7 +33,41 @@ You bring a host with **Docker and SSH** and a place to keep keys. Farrier insta
 ssh localhost docker info      # both prerequisites, in one check
 ```
 
-If that fails, you need `sshd` running and your own key in `~/.ssh/authorized_keys`, and your user in the `docker` group. Then target `ssh://you@localhost` below.
+If that succeeds, target `ssh://you@localhost` below and skip the rest of this step. If it fails, the fix depends on which half failed.
+
+**No SSH server.** Farrier connects over SSH even when the host is the machine you are sitting at (ORCH-003 — locality is an argument, not a mode).
+
+```bash
+# macOS: no install needed, just enable it
+sudo systemsetup -setremotelogin on
+# ...or System Settings → General → Sharing → Remote Login
+
+# Debian/Ubuntu
+sudo apt install openssh-server && sudo systemctl enable --now ssh
+
+# Fedora/RHEL
+sudo dnf install openssh-server && sudo systemctl enable --now sshd
+
+# Arch
+sudo pacman -S openssh && sudo systemctl enable --now sshd
+```
+
+Then authorize your own key, since Farrier uses your SSH agent or a key file and never a password:
+
+```bash
+[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519      # if you have no key
+cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+ssh localhost true                                     # accept the host key once
+```
+
+That last line matters: an unrecorded host key fails the connection rather than prompting, because Farrier's jobs run unattended.
+
+**No Docker.** Install it from [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) (Linux) or [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) (macOS/Windows), then let your user reach it without `sudo`:
+
+```bash
+sudo usermod -aG docker "$USER"    # Linux; log out and back in for it to apply
+```
 
 A DNS name is optional: with one, the forge gets HTTPS and relocates by DNS flip; without one, it comes up in a minute on plain HTTP and you can attach a name later.
 
