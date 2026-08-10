@@ -6,12 +6,15 @@ Point Farrier at a project folder and it stands up a self-hosted forge for it �
 
 ## Quick start
 
-You bring a Linux host with Docker and SSH, a DNS name you control, and a place to keep keys. Farrier owns the rest:
+You bring a host with Docker and SSH — your own machine counts — and a place to keep keys. A DNS name is optional: with one, the forge gets HTTPS and relocates by DNS flip; without one, it comes up in a minute on plain HTTP and you can attach a name later. Farrier owns the rest:
 
 ```bash
-# Make this project a forge — proves zone control, generates key material,
-# writes the bundle to .farrier/ beside your code
+# Make this project a forge — generates key material, writes the bundle to
+# .farrier/ beside your code. With a name: proves zone control, issues TLS.
 cd my-project && farrier init myproject.example.com
+
+# ...or with no name at all — nothing to own, plain HTTP, name it later
+cd my-project && farrier init
 
 # Deploy onto a host — forge live at your domain, origin ready to push to.
 # The host can be anywhere, including this machine: ssh://user@localhost
@@ -65,4 +68,4 @@ Apache 2.0 — use it, fork it, ship it commercially. It requires attribution: k
 
 ## Status
 
-The forge and the whole portability layer — `up`, `backup`, `restore`, `promote`, `upgrade`, `drill`, `status`, `ui` — are landed. The project-folder on-ramp is not: `init` does not yet write to `.farrier/`, `up` does not yet publish git-over-SSH, and there is no path from a local folder to a working `origin`. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).
+The forge and the whole portability layer — `up`, `backup`, `restore`, `promote`, `upgrade`, `drill`, `status`, `ui` — are landed. The project-folder on-ramp is not: `init` does not yet write to `.farrier/` or run without a domain, `up` does not yet publish git-over-SSH, and there is no path from a local folder to a working `origin`. Delivery state: [docs/status.json](docs/status.json). Design reference: [docs/spec.md](docs/spec.md).

@@ -102,6 +102,21 @@ The thing Farrier hands you is a forge for one project, and the project folder i
 
 The first push is part of standing it up: Farrier creates the repository on the instance from the folder, pushes its existing history, and sets `origin` to the instance's SSH URL. `import` (below) remains the on-ramp for a project that already lives on GitHub or GitLab.
 
+### Instances without a name
+
+Requiring a domain before anything works puts the cost first: own a name, hold a DNS API token or paste a TXT record and wait for it to propagate, and only then get a forge. For someone trying the thing for the first time, that is where they stop.
+
+So a name is optional. `init` with no domain produces a **nameless bundle** — no DNS-01 proof, no certificate, nothing for the operator to own — and `up` serves it over plain HTTP at whatever address the operator gives, on their own machine or on a remote host. Every other piece of key material is generated as usual: a nameless instance is a complete instance in all respects but its name.
+
+What that costs, stated plainly:
+
+- **The web UI is unencrypted.** Git over SSH is encrypted regardless — pushing to a nameless instance across the internet is safe — but pull requests, review, and login travel in the clear, so a nameless instance belongs on a LAN, a VPN, or a tailnet.
+- **The address is the identity, so moving breaks remotes.** A named instance relocates by DNS flip and no remote ever changes; that is what identity-in-the-bundle buys, and a nameless instance is the one case that opts out. Attaching a domain later is supported and in-place — repositories, history, pull requests, review comments, CI history, secrets, and the SSH host key all survive, because they are bundle and host state rather than identity. Consumers re-point their remote once.
+
+A tailnet name is the best of the nameless options: stable, private, reachable from anywhere the operator is logged in, and it does not drift the way an IP does.
+
+Named from the start remains the recommendation for anything that will outlive the experiment. The nameless tier exists so the first minute costs nothing, not so the domain can be avoided forever.
+
 ## Who this is for: private repositories
 
 The target is a team's private work — internal services, client projects, proprietary code — where the operator wants control over where the code lives and the ability to relocate it. Public open-source projects are better served by GitHub or Codeberg, whose value is the network: discovery, drive-by contributors, forks, and an identity contributors already have. Farrier replaces the parts of a forge a private team depends on, not the parts a public project depends on.

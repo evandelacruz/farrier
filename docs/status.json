@@ -42,14 +42,23 @@
       "state": "partial",
       "remaining": "Takes a DNS name and keystore target but not a project folder: the bundle is written where the operator points rather than to `.farrier/` inside the project it serves."
     },
-    "INIT-002": "landed",
+    "INIT-002": {
+      "state": "partial",
+      "remaining": "Proof is unconditional: a nameless bundle (INIT-005) must skip DNS-01 and certificate issuance rather than failing."
+    },
     "INIT-003": "landed",
     "INIT-004": "open",
+    "INIT-005": "open",
     "UP-001": "landed",
-    "UP-002": "landed",
+    "UP-002": {
+      "state": "partial",
+      "remaining": "Assumes a bundle domain: a nameless bundle (INIT-005) has no HTTPS endpoint to complete against, and UP-006 governs that case."
+    },
     "UP-003": "landed",
     "UP-004": "landed",
     "UP-005": "open",
+    "UP-006": "open",
+    "UP-007": "open",
     "IMPT-001": "landed",
     "IMPT-002": "landed",
     "IMPT-003": "landed",

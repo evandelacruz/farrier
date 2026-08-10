@@ -15,6 +15,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - ORCH and FORGE precede UP.
 - DNS-001 precedes FAIL-004; ACME-001 precedes INIT-002.
 - UP-005 precedes IMPT-004: nothing can push to an `origin` the instance does not serve.
+- INIT-005 precedes UP-006; UP-006 precedes UP-007: a nameless instance must exist before it can be served, and be served before it can be named.
 - API-001 precedes all UI.
 
 ---
@@ -72,17 +73,21 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 ## INIT — bundle creation
 
 - **INIT-001** · `init` must create a bundle from a project folder, a DNS name, and a keystore target, writing it to `.farrier/` inside that folder so the forge definition is versioned with the code it serves.
-- **INIT-002** · `init` must prove control of the DNS zone via an ACME DNS-01 challenge and fail, with the reason, when proof fails.
+- **INIT-002** · Given a domain, `init` must prove control of the DNS zone via an ACME DNS-01 challenge and fail, with the reason, when proof fails.
 - **INIT-003** · `init` must generate all key material: Forgejo `SECRET_KEY` and `INTERNAL_TOKEN`, LFS JWT secret, TLS certificates, SSH host keys, and the age backup key.
 - **INIT-004** · `init` must refuse to overwrite an existing `.farrier/` bundle, naming the folder, so re-running it against an initialized project cannot clobber a live instance's identity.
+- **INIT-005** · `init` must accept a project folder with no domain, producing a nameless bundle that skips DNS-01 proof and certificate issuance entirely and requires the operator to own nothing. Every other piece of key material is generated as usual, so a nameless instance is a complete instance in all respects but its name.
 
 ## UP — deployment
 
 - **UP-001** · `up` must deploy the full stateless layer given only `ssh://user@host` and a bundle.
-- **UP-002** · `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately.
+- **UP-002** · Given a named bundle, `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately.
 - **UP-003** · Re-running `up` against a live host must be safe and must converge that host to the bundle definition.
 - **UP-004** · `up` must place every stateful kind the forge itself serves — git repositories, the database, and LFS objects — on a host directory bind-mounted into the container that serves it, so recreating or replacing a container never destroys forge state. A `local` blob adapter's directory is created on the host but not mounted; no container reads it.
 - **UP-005** · `up` must serve git over SSH at the bundle domain, published on a host port the manifest declares and defaulting to 2222, using the bundle's SSH host key — so `git clone` and `git push` over SSH work against a fresh deployment, and the SSH clone URL Forgejo displays is the one that works. A restored or promoted instance must answer on the same port with the same key (RSTR-004).
+
+- **UP-006** · `up` on a nameless bundle must serve the forge over plain HTTP at an address the operator supplies — an IP or a hostname — with git over SSH unchanged, and must state through the event stream that the web UI is unencrypted and belongs on a trusted network.
+- **UP-007** · Farrier must attach an FQDN to a nameless instance in place: prove the zone, issue the certificate, re-render configuration, and report the clone URLs that changed — without rebuilding the instance or losing repositories, history, pull requests, review comments, CI history, secrets, or the SSH host key.
 
 ## IMPT — repository import
 
