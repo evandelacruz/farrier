@@ -72,7 +72,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 ## INIT — bundle creation
 
-- **INIT-001** · `init` must create a bundle from a project folder, a DNS name, and a keystore target, writing it to `.farrier/` inside that folder so the forge definition is versioned with the code it serves.
+- **INIT-001** · `init` must create a bundle from a project folder and a keystore target, writing it to `.farrier/` inside that folder by default so the forge definition is versioned with the code it serves. The location must be overridable, so a bundle whose instance serves several projects can live in a folder of its own rather than inside one of them.
 - **INIT-002** · Given a domain, `init` must prove control of the DNS zone via an ACME DNS-01 challenge and fail, with the reason, when proof fails.
 - **INIT-003** · `init` must generate all key material: Forgejo `SECRET_KEY` and `INTERNAL_TOKEN`, LFS JWT secret, TLS certificates, SSH host keys, and the age backup key.
 - **INIT-004** · `init` must refuse to overwrite an existing `.farrier/` bundle, naming the folder, so re-running it against an initialized project cannot clobber a live instance's identity.
