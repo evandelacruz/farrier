@@ -209,6 +209,27 @@ func TestRegisterRunnerFailureEmitsFailedStepAndReturnsError(t *testing.T) {
 	}
 }
 
+// A registration that fails with its explanation on stdout is reported the
+// same as one that fails on stderr — being blind on one stream is what made
+// the admin-bootstrap abort look like a command with no output at all.
+func TestRegisterRunnerReportsAFailureArrivingOnStdout(t *testing.T) {
+	runner := &fakeRunner{stdout: "Forgejo is not supposed to be run as root. Sorry.", err: errors.New("exit status 1")}
+	job := events.NewJob()
+
+	err := RegisterRunner(context.Background(), runner, job, "/opt/farrier/runner/secret")
+	if err == nil {
+		t.Fatal("RegisterRunner succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "not supposed to be run as root") {
+		t.Errorf("error %q does not carry what the command printed", err)
+	}
+
+	last := job.Events()[len(job.Events())-1]
+	if !strings.Contains(last.Detail, "not supposed to be run as root") {
+		t.Errorf("event detail %q does not carry what the command printed", last.Detail)
+	}
+}
+
 func TestRegisterRunnerRequiresASecretPath(t *testing.T) {
 	runner := &fakeRunner{}
 	job := events.NewJob()

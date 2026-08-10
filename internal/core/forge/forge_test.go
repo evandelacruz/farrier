@@ -62,15 +62,21 @@ func TestNewAdminAccountRequiresDomain(t *testing.T) {
 }
 
 // fakeRunner records the command it was asked to run and plays back a
-// canned result, standing in for orchestrate.Client in tests.
+// canned result, standing in for orchestrate.Client in tests. It writes to
+// both streams because the real command does: Forgejo's CLI puts some fatal
+// errors on stdout.
 type fakeRunner struct {
 	gotCommand string
+	stdout     string
 	stderr     string
 	err        error
 }
 
 func (f *fakeRunner) Run(ctx context.Context, command string, stdout, stderr io.Writer) error {
 	f.gotCommand = command
+	if f.stdout != "" && stdout != nil {
+		stdout.Write([]byte(f.stdout))
+	}
 	if f.stderr != "" && stderr != nil {
 		stderr.Write([]byte(f.stderr))
 	}
@@ -86,9 +92,128 @@ func TestBootstrapRunsAdminUserCreate(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 
-	want := "docker compose exec -T forgejo forgejo admin user create --username 'admin' --email 'admin@forge.example.com' --password 's3cret-pw' --admin --must-change-password=false"
+	want := "docker compose exec -T -u git forgejo forgejo admin user create --username 'admin' --email 'admin@forge.example.com' --password 's3cret-pw' --admin --must-change-password=false"
 	if runner.gotCommand != want {
 		t.Errorf("command =\n%s\nwant\n%s", runner.gotCommand, want)
+	}
+}
+
+// TestBootstrapRunsAsTheGitUser pins the one flag the whole deployment flow
+// depends on: `docker compose exec` defaults to root, and Forgejo aborts
+// outright when its CLI runs as root, so an exec without `-u git` fails on
+// every host.
+func TestBootstrapRunsAsTheGitUser(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{}
+
+	if err := Bootstrap(context.Background(), runner, events.NewJob(), account); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if want := "-u " + runUser + " "; !strings.Contains(runner.gotCommand, want) {
+		t.Errorf("command %q does not run as the %s user (want %q)", runner.gotCommand, runUser, want)
+	}
+}
+
+// TestBootstrapReportsAFailureArrivingOnStdout is the case that made the
+// root abort invisible: Forgejo's CLI wrote "Forgejo is not supposed to be
+// run as root" to stdout, Bootstrap discarded stdout, and the operator got
+// "command failed with no output" for a failure the container had explained
+// in full.
+func TestBootstrapReportsAFailureArrivingOnStdout(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	const fatal = "2026/08/10 17:34:24 ...setting.go:187:loadRunModeFrom() [F] Forgejo is not supposed to be run as root. Sorry."
+	runner := &fakeRunner{stdout: fatal, err: errors.New("exit status 1")}
+	job := events.NewJob()
+
+	err := Bootstrap(context.Background(), runner, job, account)
+	if err == nil {
+		t.Fatal("Bootstrap succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "not supposed to be run as root") {
+		t.Errorf("returned error %q does not carry the message the command printed", err)
+	}
+
+	last := job.Events()[len(job.Events())-1]
+	if last.State != events.StateFailed {
+		t.Errorf("event state = %v, want failed", last.State)
+	}
+	if !strings.Contains(last.Detail, "not supposed to be run as root") {
+		t.Errorf("failed detail %q does not carry the message the command printed", last.Detail)
+	}
+	if strings.Contains(last.Detail, "no output") {
+		t.Errorf("failed detail %q reports no output for a command that printed some", last.Detail)
+	}
+}
+
+// TestBootstrapReportsBothStreams: a command that writes to both has both
+// read, since neither stream is reliably the one carrying the explanation.
+func TestBootstrapReportsBothStreams(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{stdout: "on stdout", stderr: "on stderr", err: errors.New("exit status 1")}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err == nil {
+		t.Fatal("Bootstrap succeeded, want error")
+	}
+	last := job.Events()[len(job.Events())-1]
+	for _, want := range []string{"on stdout", "on stderr"} {
+		if !strings.Contains(last.Detail, want) {
+			t.Errorf("failed detail %q missing %q", last.Detail, want)
+		}
+	}
+}
+
+// TestBootstrapRedactsThePasswordFromReportedOutput: the password is on the
+// command line, so a CLI that echoes its arguments back on failure would put
+// it straight into the event stream. Reporting the command's own output means
+// redacting it rather than reasoning about what Forgejo prints.
+func TestBootstrapRedactsThePasswordFromReportedOutput(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{
+		stdout: "usage: forgejo admin user create --password s3cret-pw",
+		stderr: "Command error: invalid argument near --password 's3cret-pw'",
+		err:    errors.New("exit status 1"),
+	}
+	job := events.NewJob()
+
+	err := Bootstrap(context.Background(), runner, job, account)
+	if err == nil {
+		t.Fatal("Bootstrap succeeded, want error")
+	}
+	if strings.Contains(err.Error(), account.Password.Reveal()) {
+		t.Errorf("returned error leaked the password: %v", err)
+	}
+	for _, ev := range job.Events() {
+		if strings.Contains(ev.Detail, account.Password.Reveal()) {
+			t.Errorf("event %+v leaked the password", ev)
+		}
+	}
+	last := job.Events()[len(job.Events())-1]
+	if !strings.Contains(last.Detail, redactedPassword) {
+		t.Errorf("failed detail %q does not mark where the password was removed", last.Detail)
+	}
+	if !strings.Contains(last.Detail, "invalid argument") {
+		t.Errorf("failed detail %q lost the rest of the message to redaction", last.Detail)
+	}
+}
+
+// TestBootstrapSkipsWhenAlreadyExistsArrivesOnStdout: UP-003's
+// already-bootstrapped detection reads the same combined output as the
+// failure path, so it holds wherever the CLI writes the message.
+func TestBootstrapSkipsWhenAlreadyExistsArrivesOnStdout(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{stdout: "Command error: user already exists [name: admin]", err: errors.New("exit status 1")}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil (already-bootstrapped host is not a failure)", err)
+	}
+	last := job.Events()[len(job.Events())-1]
+	if last.State != events.StateSucceeded {
+		t.Errorf("event state = %v, want succeeded", last.State)
+	}
+	if strings.Contains(last.Detail, account.Password.Reveal()) {
+		t.Error("skip-path event leaked a password the account doesn't have")
 	}
 }
 
