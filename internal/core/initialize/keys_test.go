@@ -127,25 +127,28 @@ func TestRunReportsDestinationsWithoutRevealingKeyMaterial(t *testing.T) {
 }
 
 // The report runs the moment key material is safely stored, so a later
-// failure — an unreachable registry, an unwritable bundle directory — is
-// never the reason an operator does not learn where the age key went.
-func TestRunReportsKeyMaterialBeforeResolvingImages(t *testing.T) {
+// failure — an unwritable bundle directory — is never the reason an
+// operator does not learn where the age key went. Image resolution used to
+// be the "later failure" this guarded against; it now runs before any key
+// material exists, which is a stronger version of the same guarantee, and
+// the bundle write is what is left after the report.
+func TestRunReportsKeyMaterialBeforeWritingTheBundle(t *testing.T) {
 	job, _ := runWithFileKeystore(t)
 
-	report, images := -1, -1
+	report, write := -1, -1
 	for i, ev := range job.Events() {
 		if ev.Step == StepReportKeys && ev.State == events.StateStarted {
 			report = i
 		}
-		if ev.Step == StepResolveImages && ev.State == events.StateStarted && images == -1 {
-			images = i
+		if ev.Step == StepWrite && ev.State == events.StateStarted && write == -1 {
+			write = i
 		}
 	}
-	if report == -1 || images == -1 {
-		t.Fatalf("did not see both steps: report=%d images=%d", report, images)
+	if report == -1 || write == -1 {
+		t.Fatalf("did not see both steps: report=%d write=%d", report, write)
 	}
-	if report >= images {
-		t.Errorf("report started at event %d, resolve-images at %d, want the report first", report, images)
+	if report >= write {
+		t.Errorf("report started at event %d, write at %d, want the report first", report, write)
 	}
 }
 
@@ -237,7 +240,7 @@ func TestReportKeyMaterialCoversEveryKeyForAnUndescribableDriver(t *testing.T) {
 		material[name] = keystore.NewSecret("value-of-" + name)
 	}
 
-	reportKeyMaterial(job, "vault", stubKeystore{}, material)
+	reportKeyMaterial(job, "vault", stubKeystore{}, material, nil)
 
 	details := reportDetails(job)
 	if len(details) != len(allKeyNames)+1 {

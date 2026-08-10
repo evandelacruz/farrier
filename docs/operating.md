@@ -37,6 +37,16 @@ What you do not get back: pull requests, review comments, and CI history. Those 
 
 The part that survives regardless is your forge's identity. Key material lives in your keystore, not on the host and not in the database, so a dead server with no backup still cannot cost you it.
 
+## `init` stopped before it finished
+
+Run it again. That is the whole recovery.
+
+`init` does everything that can fail — validating your inputs, resolving image digests, rendering Compose, proving zone control — before it writes a single piece of key material, so most failures leave your keystore untouched and the retry is an ordinary first run.
+
+If it did get as far as writing key material, it leaves an `init-incomplete.json` in the bundle directory naming what it wrote. The next `init` reads it, keeps that key material as this instance's identity, and finishes the job. Nothing to delete, no flag to pass. The file disappears once the bundle is written.
+
+Two things this deliberately will not do. It never removes key material — key material is non-rotating, and a tool that deletes it is a tool that can delete a live instance's identity. And if it finds key material in your keystore that no `init-incomplete.json` accounts for, it refuses by name rather than guessing: that material may belong to an instance whose bundle lives somewhere else. Point the new bundle at a keystore target of its own, or, once you are certain nothing depends on it, clear it yourself.
+
 ## Backups
 
 ### What a snapshot contains

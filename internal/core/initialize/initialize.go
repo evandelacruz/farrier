@@ -40,6 +40,13 @@
 // Namelessness changes nothing about INIT-004: a nameless init refuses an
 // already-initialized folder exactly as a named one does. The two compose —
 // having no name is not a reason to be allowed to overwrite an identity.
+//
+// # A failed init can be re-run
+//
+// Storing key material is the one step init cannot undo, so the run is
+// ordered and instrumented around it: everything fallible that persists
+// nothing happens first, and a run that gets past the first store leaves a
+// resume record the next init reads. See Run and resume.go.
 package initialize
 
 import (
@@ -49,6 +56,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/acme"
@@ -67,6 +75,7 @@ const (
 	StepGenerateKeys     = "generate-keys"
 	StepReportKeys       = "report-key-material"
 	StepResolveImages    = "resolve-images"
+	StepRenderCompose    = "render-compose"
 	StepWrite            = "write"
 )
 
@@ -235,7 +244,40 @@ type Params struct {
 // with job carrying a StateFailed event either way, so a caller only needs
 // to check the returned error, not separately inspect the event stream, to
 // know whether init succeeded.
-func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, error) {
+//
+// # A failed init can always be re-run
+//
+// Storing key material is the one thing init does that it cannot take
+// back: key material is non-rotating by design (spec.md "Key material"),
+// so a run that stores some of it and then fails cannot clean up after
+// itself without acquiring the ability to delete a live instance's
+// identity. Run is ordered and instrumented so that never leaves the
+// operator stuck.
+//
+// Everything fallible that persists nothing runs first — validation, image
+// resolution, manifest assembly and Compose rendering, then zone-control
+// proof — so the ordinary failures (a typo'd image, an unreachable
+// registry, a DNS provider that will not answer) all happen while the
+// keystore is still untouched and a retry is simply a retry. That ordering
+// is what the defect this fixes needed: image resolution failed after
+// seven pieces of key material had already been stored.
+//
+// What ordering cannot fix is a failure after the first Store: the
+// keystore driver refusing halfway through, the bundle write failing, the
+// operator pressing Ctrl-C, a panic. For those, Run writes a resume record
+// into the bundle directory immediately before the first Store
+// (resume.go). The next init reads it, finds the key material it names,
+// and keeps that material as the instance's identity instead of colliding
+// with it — so the recovery is `farrier init` again, with no file to
+// delete by hand and no flag to remember. The record names only keys and a
+// keystore fingerprint, so key material stays out of it (KEY-003), and it
+// is removed the moment the bundle is on disk.
+//
+// The record is deliberately never removed on failure, cancellation, or
+// panic. It is not cleanup — it is the evidence the retry needs, and the
+// dangerous version of this fix is the one that deletes key material it
+// cannot prove it wrote.
+func Run(ctx context.Context, job *events.Job, params Params) (b *bundle.Bundle, err error) {
 	named := strings.TrimSpace(params.Domain) != ""
 
 	job.Started(StepValidate, "checking the project folder, domain, and driver targets")
@@ -265,11 +307,39 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	if !ok {
 		return fail(job, StepValidate, fmt.Errorf("initialize: keystore driver %q cannot store generated key material; give the command driver a storeCommand, declare store: true on an out-of-tree driver that implements it, use the file driver, or provision Forgejo's key material manually first", params.Keystore.Driver))
 	}
+	// Asking the keystore what it already holds belongs here, with the
+	// other refusals: a target that holds another instance's identity is
+	// refused before an ACME exchange is spent, and one holding this
+	// bundle's own unfinished work is claimed before anything is
+	// generated for it.
+	found, err := inspectKeystore(ctx, keystoreDriver, params.Keystore.Driver, dir, params.Keystore)
+	if err != nil {
+		return fail(job, StepValidate, err)
+	}
 	if named {
 		job.Emit(StepValidate, events.StateSucceeded, fmt.Sprintf("project folder %s is ready; domain and driver targets are valid", params.Project))
 	} else {
 		job.Emit(StepValidate, events.StateSucceeded, fmt.Sprintf("project folder %s is ready; driver targets are valid, and no domain was given", params.Project))
 	}
+	for _, note := range found.Notes {
+		job.Emit(StepValidate, events.StateSucceeded, note)
+	}
+
+	job.Started(StepResolveImages, "resolving image references to digests")
+	images, err := resolveImages(ctx, resolverOrDefault(params.Resolver), params.Images)
+	if err != nil {
+		return fail(job, StepResolveImages, err)
+	}
+	job.Emit(StepResolveImages, events.StateSucceeded, fmt.Sprintf("resolved %d image(s)", len(images)))
+
+	job.Started(StepRenderCompose, "assembling the manifest and rendering Compose")
+	manifest := buildManifest(params, images, named)
+	compose, err := orchestrate.Render(manifest)
+	if err != nil {
+		return fail(job, StepRenderCompose, fmt.Errorf("initialize: %w", err))
+	}
+	bundleToWrite := &bundle.Bundle{Manifest: *manifest, Compose: compose}
+	job.Emit(StepRenderCompose, events.StateSucceeded, fmt.Sprintf("rendered %d Compose file(s)", len(compose)))
 
 	// A nameless bundle has no zone to prove and no certificate to issue
 	// (INIT-005), so the step reports what it skipped and why instead of
@@ -292,30 +362,114 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	}
 
 	job.Started(StepGenerateKeys, "generating and storing bundle key material")
-	material, err := generateKeyMaterial(cert)
+	material, err := generateKeyMaterial(cert, found.Reuse)
 	if err != nil {
 		return fail(job, StepGenerateKeys, err)
 	}
-	if err := storeKeyMaterial(ctx, keystoreWriter, material); err != nil {
+	for name, secret := range found.Derived {
+		material[name] = secret
+	}
+
+	// From here on the run can leave key material behind, so from here on
+	// it is recoverable. The record goes down before the first Store, not
+	// after, because the failure it has to survive is a process that stops
+	// existing between two stores.
+	if err := writeIncompleteRecord(dir, incompleteRecord{
+		Schema:              incompleteSchema,
+		Note:                incompleteNote,
+		KeystoreDriver:      strings.TrimSpace(params.Keystore.Driver),
+		KeystoreFingerprint: found.Fingerprint,
+		Keys:                recordedKeys(material, found.Reuse),
+	}); err != nil {
 		return fail(job, StepGenerateKeys, err)
 	}
-	job.Emit(StepGenerateKeys, events.StateSucceeded, fmt.Sprintf("stored %d piece(s) of key material", len(material)))
+	// A deferred call, the same shape drill's teardown uses (DRIL-003), so
+	// the promise holds on every exit and not just the ones with a return
+	// statement: a returned error, a canceled context, and a panic
+	// unwinding from any depth all reach it.
+	defer func() { announceIncomplete(job, b, err, dir) }()
+
+	if err := storeKeyMaterial(ctx, keystoreWriter, material); err != nil {
+		return fail(job, StepGenerateKeys, withRecovery(err, dir))
+	}
+	job.Emit(StepGenerateKeys, events.StateSucceeded, storedSummary(len(material), len(found.Reuse)))
 
 	// INIT-006. It runs the moment the material is safely stored rather
 	// than at the end of Run: a later step failing must not be the reason
 	// an operator never learns where the age backup key went, since by
 	// this point it exists and is already the one thing they cannot
 	// re-derive.
-	reportKeyMaterial(job, params.Keystore.Driver, keystoreDriver, material)
+	reportKeyMaterial(job, params.Keystore.Driver, keystoreDriver, material, found.Reuse)
 
-	job.Started(StepResolveImages, "resolving image references to digests")
-	images, err := resolveImages(ctx, resolverOrDefault(params.Resolver), params.Images)
-	if err != nil {
-		return fail(job, StepResolveImages, err)
+	job.Started(StepWrite, "writing the bundle")
+	if err := bundleToWrite.Save(dir); err != nil {
+		return fail(job, StepWrite, withRecovery(fmt.Errorf("initialize: %w", err), dir))
 	}
-	job.Emit(StepResolveImages, events.StateSucceeded, fmt.Sprintf("resolved %d image(s)", len(images)))
+	// The bundle is on disk, so the run is no longer partial and the
+	// record has nothing left to describe. A record that will not delete
+	// is reported and not fatal: INIT-004 now refuses this folder anyway,
+	// so the stale file can mislead nobody into a second init.
+	if err := removeIncompleteRecord(dir); err != nil {
+		job.Emit(StepWrite, events.StateSucceeded, fmt.Sprintf("the bundle is written, but %v; the file is safe to delete", err))
+	}
+	b = bundleToWrite
+	job.Emit(StepWrite, events.StateSucceeded, fmt.Sprintf("bundle written to %s", dir))
 
-	job.Started(StepWrite, "rendering compose and writing the bundle")
+	if named {
+		job.Succeeded(fmt.Sprintf("bundle for %s created at %s, serving %s", strings.TrimSpace(params.Domain), dir, params.Project))
+	} else {
+		job.Succeeded(fmt.Sprintf("nameless bundle created at %s, serving %s; give `up` an address to serve it at, and attach a domain when the instance outlives the experiment", dir, params.Project))
+	}
+	return b, nil
+}
+
+// BundleDir reports where Run will write params' bundle: params.Dir when
+// the operator named one, otherwise bundle.DirFor(params.Project). Exported
+// so a frontend can tell the operator the path before the job runs, and so
+// there is exactly one place the default lives.
+func BundleDir(params Params) string {
+	if dir := strings.TrimSpace(params.Dir); dir != "" {
+		return dir
+	}
+	return bundle.DirFor(strings.TrimSpace(params.Project))
+}
+
+func fail(job *events.Job, step string, err error) (*bundle.Bundle, error) {
+	job.Emit(step, events.StateFailed, err.Error())
+	job.Failed(err.Error())
+	return nil, err
+}
+
+// withRecovery appends the retry instruction to a failure that happened
+// after key material was written. Callers use it for exactly those
+// failures: the operator's next move differs from a clean failure's, and
+// an error that does not say so is the defect this package is fixing.
+func withRecovery(err error, dir string) error {
+	return fmt.Errorf("%w. %s", err, recoveryHint(dir))
+}
+
+// announceIncomplete is what Run defers once key material can exist: it
+// makes sure a run that ends without a bundle has said so, and said what
+// to do about it.
+//
+// On success and on a returned error it does nothing — fail() has already
+// put the reason (with the recovery, via withRecovery) on the stream and
+// closed it, and events.Job panics on an emit after a terminal event. The
+// case it exists for is the one with no return value at all: a panic
+// unwinding through Run leaves the job with no terminal event and the
+// operator with key material in a keystore and no idea it is there.
+func announceIncomplete(job *events.Job, b *bundle.Bundle, err error, dir string) {
+	if (b != nil && err == nil) || job.Done() {
+		return
+	}
+	job.Failed(fmt.Sprintf("init did not finish: %s", recoveryHint(dir)))
+}
+
+// buildManifest assembles the bundle manifest from params and the
+// resolved image digests. Split out of Run so the manifest — the last
+// thing that can fail before key material is written — is assembled and
+// rendered while the keystore is still untouched.
+func buildManifest(params Params, images map[string]string, named bool) *bundle.Manifest {
 	// A nameless bundle's ACME section stays zero: nothing about it ever
 	// reaches ACME, and Manifest.Validate rejects a manifest whose domain
 	// and ACME section disagree.
@@ -342,39 +496,32 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	if manifest.GitSSHPort == 0 {
 		manifest.GitSSHPort = bundle.DefaultGitSSHPort
 	}
-	compose, err := orchestrate.Render(manifest)
-	if err != nil {
-		return fail(job, StepWrite, fmt.Errorf("initialize: %w", err))
-	}
-	b := &bundle.Bundle{Manifest: *manifest, Compose: compose}
-	if err := b.Save(dir); err != nil {
-		return fail(job, StepWrite, fmt.Errorf("initialize: %w", err))
-	}
-	job.Emit(StepWrite, events.StateSucceeded, fmt.Sprintf("bundle written to %s", dir))
-
-	if named {
-		job.Succeeded(fmt.Sprintf("bundle for %s created at %s, serving %s", strings.TrimSpace(params.Domain), dir, params.Project))
-	} else {
-		job.Succeeded(fmt.Sprintf("nameless bundle created at %s, serving %s; give `up` an address to serve it at, and attach a domain when the instance outlives the experiment", dir, params.Project))
-	}
-	return b, nil
+	return manifest
 }
 
-// BundleDir reports where Run will write params' bundle: params.Dir when
-// the operator named one, otherwise bundle.DirFor(params.Project). Exported
-// so a frontend can tell the operator the path before the job runs, and so
-// there is exactly one place the default lives.
-func BundleDir(params Params) string {
-	if dir := strings.TrimSpace(params.Dir); dir != "" {
-		return dir
+// recordedKeys lists the non-rotating key material this instance's
+// identity is made of: what this run is about to store plus what an
+// earlier run already stored. Rotating material (the TLS pair) is left
+// out — a retry reissues it and the keystore accepts the overwrite, so
+// recording it would claim a hold the record does not need.
+func recordedKeys(material map[string]keystore.Secret, reuse map[string]bool) []string {
+	names := make([]string, 0, len(material)+len(reuse))
+	for _, name := range identityKeys() {
+		if _, ok := material[name]; ok || reuse[name] {
+			names = append(names, name)
+		}
 	}
-	return bundle.DirFor(strings.TrimSpace(params.Project))
+	return names
 }
 
-func fail(job *events.Job, step string, err error) (*bundle.Bundle, error) {
-	job.Emit(step, events.StateFailed, err.Error())
-	job.Failed(err.Error())
-	return nil, err
+// storedSummary is the generate-keys step's closing line. It counts reused
+// material separately so a resumed init reads as a resumed init rather
+// than as one that mysteriously stored fewer keys than the last attempt.
+func storedSummary(stored, reused int) string {
+	if reused == 0 {
+		return fmt.Sprintf("stored %d piece(s) of key material", stored)
+	}
+	return fmt.Sprintf("stored %d piece(s) of key material and kept %d from an earlier unfinished init", stored, reused)
 }
 
 func resolverOrDefault(r Resolver) Resolver {
@@ -501,8 +648,18 @@ func refuseExistingBundle(dir string) error {
 	if err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
-	if exists {
-		return fmt.Errorf("initialize: %s already holds a bundle; refusing to overwrite it, because a second init would replace the instance's identity with newly generated key material. Remove that folder deliberately, or give init another location, to create a second bundle", dir)
+	if !exists {
+		return nil
 	}
-	return nil
+	// A resume record beside the bundle means a Save got part-way — the
+	// torn-bundle case bundle.Exists deliberately counts as existing. The
+	// refusal stands, but "remove that folder" is the wrong instruction
+	// there: the record is the only thing that lets a later init reuse
+	// the key material already in the keystore, so it has to outlive the
+	// manifest and compose/ the operator clears out.
+	if _, statErr := os.Stat(filepath.Join(dir, IncompleteFile)); statErr == nil {
+		return fmt.Errorf("initialize: %s holds part of a bundle from an init that did not finish, and refusing to write over a bundle directory is not something init will guess its way past. Remove %s and %s from that folder — but keep %s, which is what lets the next init reuse the key material already in your keystore instead of colliding with it — then re-run init",
+			dir, bundle.ManifestFile, bundle.ComposeDir, IncompleteFile)
+	}
+	return fmt.Errorf("initialize: %s already holds a bundle; refusing to overwrite it, because a second init would replace the instance's identity with newly generated key material. Remove that folder deliberately, or give init another location, to create a second bundle", dir)
 }
