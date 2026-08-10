@@ -447,6 +447,55 @@ One compact summary: what was fired (role, model, target), what was skipped and
 why, §3b backfills, and any slot that could not be filled. Link the PRs. Then
 stop — do not poll for the workers, they notify on completion.
 
+## When this moves to Forgejo
+
+"Farrier hosts Farrier" moves this fleet off GitHub's API onto Forgejo's, and
+these are the findings from checking that surface — recorded here so the port
+is an edit rather than a re-derivation. None of it is in effect yet.
+
+**The good news is what does not change.** The two things this skill leans on
+hardest already avoid the parts that differ. Verdict labels carry review state,
+and `reviewedShas` answers "has a review with a non-empty body landed at this
+head SHA." Forgejo has labels, and `PullReview.commit_id` is a documented field
+carrying the SHA a review was submitted against — so the routing table ports
+as-is.
+
+- **Everything is REST, at `/api/v1`. There is no GraphQL.** The whole
+  §1 budget discussion is GitHub-specific: the scarce bucket disappears, and
+  the rate limits are the operator's own. Reviews, review comments, labels,
+  requested reviewers, and merge are all REST verbs.
+- **Submit a review in one call.** `POST /repos/{o}/{r}/pulls/{n}/reviews`
+  takes `event` (`APPROVED` / `REQUEST_CHANGES` / `COMMENT` / `PENDING`) plus a
+  `comments` array in a single request. **Prefer it over the pending/submit
+  two-step**, which is the direct cause of the orphaned-pending-review stall
+  §3b exists to clear — a reviewer killed mid-sequence cannot strand a PR if
+  there is no intermediate state. `DELETE .../reviews/{id}` cleans up a pending
+  review over plain REST, where GitHub needs an MCP tool.
+- **CI status is reported the other way round.** GitHub Actions writes *check
+  runs*, which is why this skill says never to use `/commits/{sha}/status`.
+  Forgejo Actions writes *commit statuses*, so on Forgejo that endpoint is the
+  correct one and `check-runs` does not exist. The warning inverts; do not
+  carry it across unread.
+- **There are no review threads at all.** Not "resolution is unavailable" —
+  there is no thread object. Comments on the same path and line are a flat,
+  time-ordered list, and the grouping in the UI is inferred. A `reply_id` on
+  creation simulates a reply, and nothing carries resolution state. So the rule
+  that a decision must be recorded *on the thread* to clear a blocker has no
+  analogue: the label plus the head SHA becomes the whole state machine, and a
+  new review at a new head is what supersedes an old verdict.
+- **Draft is not a flag.** Forgejo marks work in progress by title prefix
+  (`WIP:`). The brief rule "never open as a draft, draft is create-time-only in
+  REST" is GitHub-specific and needs rewriting, not translating.
+- **PR conversation comments go through the issues API**, same as GitHub —
+  `/repos/{o}/{r}/issues/{n}/comments`. That part ports unchanged.
+- Use raw HTTP, as this skill already does. Upstream SDK support for
+  `reply_id` is reportedly incomplete, which costs nothing if no client library
+  is in the path.
+
+**Confirm before relying on it:** whether `commit_id` may be omitted when
+creating a review, or must be supplied. It is an input as well as an output,
+and at least one client passes it empty.
+
 ## Notes
 
 - The conductor holds no state, but it does not read everything from one place.
