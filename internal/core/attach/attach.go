@@ -324,11 +324,11 @@ func validate(ctx context.Context, opts Options) (checkedOptions, error) {
 	}
 	provider := strings.TrimSpace(opts.ACMEDNSProvider)
 	if provider == "" {
-		return checked, fmt.Errorf("attach: acme dns-01 provider is required to prove control of %s and to renew its certificate later (ACME-002)", domain)
+		return checked, fmt.Errorf("attach: acme dns-01 provider is required to prove control of %s and to renew its certificate later", domain)
 	}
 
 	if strings.TrimSpace(opts.Address) == "" {
-		return checked, errors.New("attach: the address this instance is currently served at is required, so the clone URLs it is changing from can be reported (UP-007)")
+		return checked, errors.New("attach: the address this instance is currently served at is required, so the clone URLs it is changing from can be reported")
 	}
 	address, err := deploy.NormalizeAddress(strings.TrimSpace(opts.Address))
 	if err != nil {

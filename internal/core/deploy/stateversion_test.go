@@ -93,7 +93,7 @@ func TestUpRefusesToStartADifferentForgejoVersion(t *testing.T) {
 
 	// The refusal has to be actionable: both versions, and the one command
 	// allowed to change them.
-	for _, want := range []string{otherForgeImage, pinnedForgeImage(t, b), "farrier upgrade", "UPGR-003"} {
+	for _, want := range []string{otherForgeImage, pinnedForgeImage(t, b), "farrier upgrade"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not mention %q: %v", want, err)
 		}

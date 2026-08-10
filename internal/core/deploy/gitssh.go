@@ -76,7 +76,7 @@ func gitSSHDetail(m *bundle.Manifest, address string, quarantine bool) string {
 	}
 	clone := m.GitSSHCloneURLAt(host, "<owner>", "<repo>")
 	if quarantine {
-		return fmt.Sprintf("ssh host key installed; git over SSH published on %s:%d only, reachable through an SSH tunnel (DRIL-002)", orchestrate.LoopbackAddress, port)
+		return fmt.Sprintf("ssh host key installed; git over SSH published on %s:%d only, so a quarantined instance is reachable through an SSH tunnel and not from the network", orchestrate.LoopbackAddress, port)
 	}
 	return fmt.Sprintf("ssh host key installed; git over SSH published on host port %d — clone with %s", port, clone)
 }

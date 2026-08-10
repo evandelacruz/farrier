@@ -77,7 +77,7 @@ func configurePlainHTTP(ctx context.Context, host Host, remoteDir string, compos
 // is not padding: the operator's next question after "unencrypted" is
 // whether pushing is safe, and the answer is yes.
 func plainHTTPDetail(address string) string {
-	return fmt.Sprintf("caddy configured to serve http://%s/ — the web UI is unencrypted, so pull requests, review, and login travel in the clear: keep this instance on a trusted network (a LAN, a VPN, or a tailnet). Git over SSH is encrypted regardless (UP-006)", address)
+	return fmt.Sprintf("caddy configured to serve http://%s/ — the web UI is unencrypted, so pull requests, review, and login travel in the clear: keep this instance on a trusted network (a LAN, a VPN, or a tailnet). Git over SSH is encrypted regardless — see docs/security.md", address)
 }
 
 // caddyReadyDetail is the event detail Up's final step reports: the URL the
@@ -90,5 +90,5 @@ func caddyReadyDetail(m *bundle.Manifest, address string) string {
 	if m.Named() {
 		return fmt.Sprintf("caddy ready — %s is live", url)
 	}
-	return fmt.Sprintf("caddy ready — %s is live, unencrypted: trusted networks only (UP-006)", url)
+	return fmt.Sprintf("caddy ready — %s is live, unencrypted: trusted networks only", url)
 }

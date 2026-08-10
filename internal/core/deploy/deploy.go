@@ -49,6 +49,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -262,7 +263,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	// — and a drill that got it wrong would point a second runner at
 	// production's job queue. Refuse the combination instead of guessing.
 	if opts.Quarantine && !b.Manifest.Named() {
-		return fmt.Errorf("deploy: quarantined deployment (DRIL-002) of a nameless bundle is not supported; drill a named bundle, or attach a name first (UP-007)")
+		return errors.New("deploy: a quarantined deployment of a nameless bundle is not supported; drill a named bundle, or attach a name first")
 	}
 
 	job.Started(StepCheckHost, "checking Docker is reachable")
@@ -279,7 +280,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		return fmt.Errorf("deploy: configure forge: %w", err)
 	}
 	if opts.Quarantine {
-		job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped with outbound webhooks, email, and mirrors disabled (DRIL-002 quarantine)")
+		job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped with outbound webhooks, email, and mirrors disabled for quarantine")
 	} else {
 		job.Emit(StepConfigureForge, events.StateSucceeded, "app.ini rendered and shipped")
 	}
@@ -293,7 +294,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 			return fmt.Errorf("deploy: configure tls: %w", err)
 		}
 		if renewed {
-			job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal; a fresh one was issued and persisted to the keystore (ACME-002)")
+			job.Emit(StepConfigureTLS, events.StateSucceeded, "certificate was due for renewal; a fresh one was issued and persisted to the keystore")
 		} else {
 			job.Emit(StepConfigureTLS, events.StateSucceeded, "persisted certificate reused and caddy configured")
 		}
