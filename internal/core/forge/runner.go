@@ -187,7 +187,7 @@ func RegisterRunner(ctx context.Context, runner Runner, job *events.Job, secretP
 		// the path it lives at — no reason to widen what a failure prints.
 		// Both output streams are read, since Forgejo's CLI does not commit
 		// to writing a fatal to stderr.
-		detail := failureDetail(&stdout, &stderr)
+		detail := FailureDetail(&stdout, &stderr)
 		if strings.Contains(detail, runnerAlreadyRegisteredMarker) {
 			job.Emit(StepRunnerRegister, events.StateSucceeded, fmt.Sprintf(
 				"runner %s is already registered, leaving it as-is", RunnerName,

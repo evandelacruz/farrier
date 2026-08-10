@@ -192,6 +192,7 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 - **RTO:** promote completes — snapshot pulled, restored, verified, services live, DNS flipped — within 10 minutes on the reference instance (10 GB state, 100 Mbps between backup target and new host).
 - **RPO:** equals backup cadence, which the operator sets — Farrier ships no scheduler. The golden-path cron is an example, not a default.
 - **Backup impact:** push-hold is database-only and stays a second or two regardless of git data size; reads and fetches are uninterrupted throughout. A configurable ceiling bounds both the capture and the release that always follows it — a bug backstop, not a growth alarm.
+- **First deployment:** `up` gives Forgejo three minutes to finish the database migrations its first boot runs, and any other container one minute to start. Only a genuinely first boot spends that budget — a re-run, a restore, and a promote all open a schema that already exists — so the RTO above is unaffected.
 - **Forge host floor:** 2 vCPU, 2 GB RAM, Linux x86_64 or arm64, Docker ≥ 24.
 - **Control plane:** macOS and Linux; single static binary per platform.
 - **DNS TTL:** 60 seconds on all bundle records.

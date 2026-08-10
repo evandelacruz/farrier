@@ -101,6 +101,19 @@ type Secrets struct {
 	LFSJWTSecret string
 }
 
+// Redact replaces every occurrence of s's key material in text, so a
+// caller can report something Forgejo produced — a container log, a command's
+// own output — without having to reason about whether Forgejo chose to echo
+// the config it was handed. Key material may not reach a log, an event, or
+// command output (KEY-003), and being certain is cheaper than being right
+// about what a given Forgejo version prints on a given failure.
+func (s Secrets) Redact(text string) string {
+	for _, secret := range []string{s.SecretKey, s.InternalToken, s.LFSJWTSecret} {
+		text = redact(text, secret)
+	}
+	return text
+}
+
 func (s Secrets) validate() error {
 	fields := []struct {
 		name  string

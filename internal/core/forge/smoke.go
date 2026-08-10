@@ -154,7 +154,7 @@ func SmokeCI(ctx context.Context, runner Runner, job *events.Job, opts SmokeOpti
 		// on the message naming what broke; when stdout does carry something
 		// it came from the CLI aborting under the script, and failureDetail
 		// puts it last, which is where lastLine looks.
-		detail := lastLine(failureDetail(&stdout, &stderr))
+		detail := lastLine(FailureDetail(&stdout, &stderr))
 		job.Emit(StepSmokeCI, events.StateFailed, fmt.Sprintf("smoke ci: %s", detail))
 		return SmokeResult{}, fmt.Errorf("forge: smoke ci: %s", detail)
 	}

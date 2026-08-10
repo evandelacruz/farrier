@@ -241,7 +241,7 @@ func TestBootstrapRedactsThePasswordFromReportedOutput(t *testing.T) {
 		}
 	}
 	last := job.Events()[len(job.Events())-1]
-	if !strings.Contains(last.Detail, redactedPassword) {
+	if !strings.Contains(last.Detail, redactedValue) {
 		t.Errorf("failed detail %q does not mark where the password was removed", last.Detail)
 	}
 	if !strings.Contains(last.Detail, "invalid argument") {

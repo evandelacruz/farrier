@@ -68,6 +68,10 @@ import (
 // the order it runs them. forge.StepAdminBootstrap follows StepWaitForge,
 // and forge.StepRunnerRegister follows that.
 //
+// StepWaitForge is what makes that order mean anything: it does not
+// complete until Forgejo can actually open its database (waitForge), so the
+// admin account the next step creates lands in a schema that exists.
+//
 // StepConfigureTLS and StepConfigureHTTP are alternatives, not a sequence:
 // a deployment runs exactly one of them, whichever the bundle calls for
 // (UP-002 for a named bundle, UP-006 for a nameless one). They are separate
@@ -104,13 +108,32 @@ const appINIFilename = "app.ini"
 // what `docker compose up -d` decides to recreate on).
 const appINIChecksumEnv = "FARRIER_APP_INI_CHECKSUM"
 
-// readyTimeout bounds how long Up waits for the forgejo container to
-// accept `docker compose exec` after Converge starts it.
+// readyTimeout bounds how long Up waits for a container that only has to be
+// running — caddy — to accept `docker compose exec` after Converge starts it.
 const readyTimeout = 60 * time.Second
 
-// readyInterval is the delay between readiness probes within readyTimeout.
-// A var, not a const, so tests can shorten it rather than actually waiting.
+// forgeReadyTimeout bounds how long Up waits for Forgejo, which has to be
+// more than running (waitForge). It is deliberately several times
+// readyTimeout: on a host whose state directory is fresh, the wait covers
+// Forgejo's entire first-boot migration set, and that runs on whatever
+// machine the operator brought — a cold laptop with Docker itself still
+// warming up is the ordinary case, not the pathological one. The budget is
+// what a stuck deployment costs, and waiting three minutes to be told the
+// truth beats being told a lie in one.
+//
+// A var, not a const, for the same reason readyInterval is: the test that
+// covers a Forgejo which never finishes would otherwise take three minutes
+// to run.
+var forgeReadyTimeout = 180 * time.Second
+
+// readyInterval is the delay between readiness probes within a wait's
+// budget. A var, not a const, so tests can shorten it rather than actually
+// waiting.
 var readyInterval = 2 * time.Second
+
+// logTailLines is how many lines of the forgejo container's log a wait that
+// ran out of budget reports back (waitForge).
+const logTailLines = 50
 
 // Host is everything Up needs from a connected SSH session: orchestrate.
 // Transport (so Up can hand it straight to orchestrate.Converge) plus Run
@@ -189,7 +212,9 @@ type Options struct {
 // push` over SSH work against a fresh deployment (UP-005), wires up the colocated
 // Actions runner unless the bundle turns it off (FORGE-005), converges the
 // host to the bundle's Compose definition plus that config, waits for
-// Forgejo to accept commands, provisions the first admin account, registers
+// Forgejo to finish setting up its database (waitForge — the container
+// accepting a command is not the same thing, and on a fresh host it is true
+// first), provisions the first admin account, registers
 // that runner against the instance, and waits for Caddy to accept commands
 // so the forge is serving HTTPS and usable in a browser before Up returns
 // (UP-002).
@@ -203,7 +228,9 @@ type Options struct {
 // the package doc for what that trades and why the two are one path.
 //
 // Every step is safe to repeat against a host Up has already deployed to
-// (UP-003): CheckHost and waitReady are read-only, configureForge always
+// (UP-003): CheckHost and the readiness waits are read-only — the forge
+// wait's second probe lists Forgejo's users and changes nothing
+// (forge.ReadyCommand) — configureForge always
 // re-ships app.ini and re-derives its checksum so a changed manifest is
 // visible to Converge (WithEnv's doc comment), configureTLS reuses the
 // persisted certificate untouched unless it's actually due for renewal
@@ -283,7 +310,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	job.Emit(StepCheckHost, events.StateSucceeded, "Docker reachable")
 
 	job.Started(StepConfigureForge, "resolving key material and rendering app.ini")
-	compose, err := configureForge(ctx, host, b, opts.RemoteDir, address, opts.Quarantine)
+	compose, secrets, err := configureForge(ctx, host, b, opts.RemoteDir, address, opts.Quarantine)
 	if err != nil {
 		job.Emit(StepConfigureForge, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure forge: %w", err)
@@ -372,12 +399,12 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 
 	runner := &composeRunner{host: host, remoteDir: opts.RemoteDir, bundle: deployed}
 
-	job.Started(StepWaitForge, "waiting for forgejo to accept commands")
-	if err := waitReady(ctx, runner, forge.Service); err != nil {
+	job.Started(StepWaitForge, "waiting for forgejo to finish setting up its database")
+	if err := waitForge(ctx, runner, secrets); err != nil {
 		job.Emit(StepWaitForge, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: wait for forgejo: %w", err)
 	}
-	job.Emit(StepWaitForge, events.StateSucceeded, "forgejo ready")
+	job.Emit(StepWaitForge, events.StateSucceeded, "forgejo is up and its database is ready")
 
 	account, err := forge.NewAdminAccount(forge.AdminEmailDomain(&b.Manifest))
 	if err != nil {
@@ -397,7 +424,10 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	}
 
 	job.Started(StepWaitCaddy, "waiting for caddy to accept commands")
-	if err := waitReady(ctx, runner, caddy.Service); err != nil {
+	if err := waitReady(ctx, runner, readyTimeout, probe{
+		command:    execProbe(caddy.Service),
+		waitingFor: "caddy did not become ready",
+	}); err != nil {
 		job.Emit(StepWaitCaddy, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: wait for caddy: %w", err)
 	}
@@ -407,7 +437,13 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 
 // configureForge resolves the bundle's key material, renders app.ini,
 // ships it to host, and returns b's Compose files with a bind mount added
-// so the forgejo service loads the file that was just shipped.
+// so the forgejo service loads the file that was just shipped, plus the key
+// material it resolved.
+//
+// That last return is not for use — nothing downstream renders config
+// again — but for scrubbing: waitForge reports the forgejo container's log
+// when a deployment stalls, and the values Forgejo was configured with are
+// what that report has to be scrubbed of (forge.Secrets.Redact, KEY-003).
 //
 // address is the operator-supplied address a nameless bundle is served at
 // (UP-006) and is empty for a named one, which addresses itself; app.ini's
@@ -419,66 +455,163 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 // deployment and an ordinary one are distinguishable to Converge and a
 // host converged one way is actually re-converged when converged the
 // other.
-func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir, address string, quarantine bool) (map[string][]byte, error) {
+func configureForge(ctx context.Context, host Host, b *bundle.Bundle, remoteDir, address string, quarantine bool) (map[string][]byte, forge.Secrets, error) {
 	driver, err := keystore.New(b.Manifest.Drivers.Keystore.Driver, b.Manifest.Drivers.Keystore.Config)
 	if err != nil {
-		return nil, fmt.Errorf("keystore driver: %w", err)
+		return nil, forge.Secrets{}, fmt.Errorf("keystore driver: %w", err)
 	}
 	secrets, err := forge.ResolveSecrets(ctx, driver)
 	if err != nil {
-		return nil, fmt.Errorf("resolve key material: %w", err)
+		return nil, forge.Secrets{}, fmt.Errorf("resolve key material: %w", err)
 	}
 	appINI, err := forge.RenderAppINI(&b.Manifest, secrets, forge.AppINIOptions{Quarantine: quarantine, Address: address})
 	if err != nil {
-		return nil, fmt.Errorf("render app.ini: %w", err)
+		return nil, forge.Secrets{}, fmt.Errorf("render app.ini: %w", err)
 	}
 
 	hostPath := path.Join(remoteDir, hostConfigDir, appINIFilename)
 	if err := host.WriteFile(ctx, hostPath, appINI, 0o600); err != nil {
-		return nil, fmt.Errorf("ship app.ini: %w", err)
+		return nil, forge.Secrets{}, fmt.Errorf("ship app.ini: %w", err)
 	}
 
 	compose, err := orchestrate.WithBindMount(b.Compose, forge.Service, hostPath, forge.AppINIPath)
 	if err != nil {
-		return nil, fmt.Errorf("mount app.ini: %w", err)
+		return nil, forge.Secrets{}, fmt.Errorf("mount app.ini: %w", err)
 	}
 
 	sum := sha256.Sum256(appINI)
 	compose, err = orchestrate.WithEnv(compose, forge.Service, appINIChecksumEnv, hex.EncodeToString(sum[:]))
 	if err != nil {
-		return nil, fmt.Errorf("set app.ini checksum: %w", err)
+		return nil, forge.Secrets{}, fmt.Errorf("set app.ini checksum: %w", err)
 	}
-	return compose, nil
+	return compose, secrets, nil
 }
 
-// waitReady polls until service accepts `docker compose exec`, or
-// readyTimeout elapses. Converge's `docker compose up -d` returns once
-// containers are created and started, which can race the container's own
-// entrypoint init; admin bootstrap and the browser-readiness check right
-// after would then fail intermittently rather than deterministically, so
-// this waits the race out instead of leaving it as a heisenbug in the
-// caller.
-func waitReady(ctx context.Context, runner forge.Runner, service string) error {
-	deadline := time.Now().Add(readyTimeout)
-	var lastErr error
-	for {
-		var stderr bytes.Buffer
-		err := runner.Run(ctx, fmt.Sprintf("docker compose exec -T %s true", service), io.Discard, &stderr)
-		if err == nil {
-			return nil
-		}
-		lastErr = err
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			lastErr = fmt.Errorf("%s", msg)
-		}
+// probe is one question a wait asks the host: command, run until it
+// succeeds, and waitingFor — what the operator is told was never answered
+// when the budget runs out. waitingFor is operator-facing prose and reads as
+// the first half of a sentence the budget completes ("... within 3m0s").
+type probe struct {
+	command    string
+	waitingFor string
+}
 
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%s did not become ready within %s: %w", service, readyTimeout, lastErr)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(readyInterval):
+// execProbe asks whether service accepts a `docker compose exec` at all.
+// It is the first thing every wait asks, because nothing else can be asked
+// until it is true — and it is all a service whose readiness is the same
+// question as its container's, like caddy, has to answer.
+func execProbe(service string) string {
+	return fmt.Sprintf("docker compose exec -T %s true", service)
+}
+
+// waitReady polls each probe in order until it succeeds, or the shared
+// budget elapses. Converge's `docker compose up -d` returns once containers
+// are created and started, which says nothing about whether the software
+// inside them has finished coming up; the steps after would then fail
+// intermittently rather than deterministically, so this waits the race out
+// instead of leaving it as a heisenbug in the caller.
+//
+// The budget covers the probes together rather than each in turn: they are
+// phases of one wait for one service, and an operator who was told a
+// deployment gets three minutes means three minutes in total.
+func waitReady(ctx context.Context, runner forge.Runner, budget time.Duration, probes ...probe) error {
+	deadline := time.Now().Add(budget)
+	for _, p := range probes {
+		for {
+			var stdout, stderr bytes.Buffer
+			err := runner.Run(ctx, p.command, &stdout, &stderr)
+			if err == nil {
+				break
+			}
+			if !time.Now().Before(deadline) {
+				return fmt.Errorf("%s within %s: %s", p.waitingFor, budget, probeFailure(err, &stdout, &stderr))
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(readyInterval):
+			}
 		}
 	}
+	return nil
+}
+
+// probeFailure is what a probe that never succeeded left for the operator
+// to read. Both streams are captured for the reason forge.FailureDetail
+// documents — Forgejo's CLI does not commit to one, and a probe reading only
+// one of them reports a failure with no message — and the transport's own
+// error stands in when the command produced no output at all, which is what
+// a dropped session or a container that is not there looks like.
+func probeFailure(err error, stdout, stderr *bytes.Buffer) string {
+	if strings.TrimSpace(stdout.String()) == "" && strings.TrimSpace(stderr.String()) == "" {
+		return err.Error()
+	}
+	return forge.FailureDetail(stdout, stderr)
+}
+
+// waitForge waits for Forgejo to be usable, which is not the same as its
+// container being up.
+//
+// On a host whose state directory is fresh, Forgejo's first boot runs its
+// entire migration set to create the database schema, and the container
+// accepts an exec seconds before that finishes. A wait that stopped there
+// would hand a schemaless database to forge.Bootstrap, which fails with
+// "no such table: user" — and only on a host that has never booted before,
+// which is every operator's first deployment and no re-run afterwards. So
+// the container accepting an exec is the first phase, not the answer, and
+// the second phase asks Forgejo itself (forge.ReadyCommand).
+//
+// A Forgejo that never comes up — an unwritable state directory, a bad
+// image, a config it refuses — also ends here, and the reason is in its
+// container log rather than in the probe's own output, so the failure
+// carries the tail of that log. secrets is what the log is scrubbed of
+// before it goes anywhere: Forgejo was handed key material in app.ini and
+// what it echoes back on a config failure is its business, not something
+// this should have to be right about (KEY-003, forge.Secrets.Redact).
+func waitForge(ctx context.Context, runner forge.Runner, secrets forge.Secrets) error {
+	err := waitReady(ctx, runner, forgeReadyTimeout,
+		probe{
+			command:    execProbe(forge.Service),
+			waitingFor: "the forgejo container did not start",
+		},
+		probe{
+			command:    forge.ReadyCommand(),
+			waitingFor: "forgejo did not finish setting up its database",
+		},
+	)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	if tail := forgeLogTail(ctx, runner, secrets); tail != "" {
+		return fmt.Errorf("%w\nthe last %d lines of the forgejo container's log:\n%s", err, logTailLines, tail)
+	}
+	return err
+}
+
+// forgeLogTail is the tail of the forgejo container's log, redacted, or ""
+// if there is none to be had. A log that could not be read is reported as no
+// log rather than as an empty one: `docker compose logs` failing puts
+// Docker's complaint on stderr, and passing that off as the container's
+// output would be a lie in the one place the operator is looking for the
+// truth.
+func forgeLogTail(ctx context.Context, runner forge.Runner, secrets forge.Secrets) string {
+	var stdout, stderr bytes.Buffer
+	command := fmt.Sprintf("docker compose logs --tail=%d %s", logTailLines, forge.Service)
+	if err := runner.Run(ctx, command, &stdout, &stderr); err != nil {
+		return ""
+	}
+	// Both streams again, and for a second reason on top of forge.
+	// FailureDetail's: `docker compose logs` relays the container's own
+	// stdout and stderr, and which one a Forgejo boot failure lands on is
+	// not something to depend on.
+	parts := make([]string, 0, 2)
+	for _, buf := range []*bytes.Buffer{&stdout, &stderr} {
+		if msg := strings.TrimSpace(buf.String()); msg != "" {
+			parts = append(parts, msg)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return secrets.Redact(strings.Join(parts, "\n"))
 }
