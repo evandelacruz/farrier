@@ -26,25 +26,32 @@ const (
 // answered at before and the domain it answers at now, so the operator can
 // hand their team the change without deriving it.
 //
-// m is the bundle's manifest after naming, and oldAddress is the address it
-// was served at before (normalized the way `up` normalized it). Both URLs
-// are built by the same functions that produce the real ones — every
-// spelling rule about ports, scp-style versus ssh://, and bracketed IPv6
-// lives in bundle.Manifest and forge.InstanceURL, so a URL reported here
-// cannot drift from the URL Forgejo displays or the one `publish` writes
-// into a project's origin (IMPT-004).
+// m is the bundle's manifest after naming, before is the same manifest as
+// it was while nameless, and oldAddress is the address it was served at
+// then (normalized the way `up` normalized it). Both URLs are built by the
+// same functions that produce the real ones — every spelling rule about
+// ports, scp-style versus ssh://, and bracketed IPv6 lives in
+// bundle.Manifest and forge.InstanceURL, so a URL reported here cannot
+// drift from the URL Forgejo displays or the one `publish` writes into a
+// project's origin (IMPT-004).
+//
+// The "was" half is rendered from before rather than from a blank manifest
+// because the web port is the operator's (bundle.Manifest.WebPort) and
+// attach is one of the things that moves it: a nameless instance published
+// on 8222 that becomes a named one on 443 changed both the scheme and the
+// port, and a report that dropped the old port would name a URL nobody
+// ever used.
 //
 // One event per line, not one event with three lines in it: the dashboard
 // renders an event as a row and the CLI renders it as a line, so a detail
 // carrying embedded newlines would read correctly in exactly one of the two
 // frontends (initialize.reportKeyMaterial documents the same choice).
-func reportCloneURLs(job *events.Job, m *bundle.Manifest, oldAddress string) {
+func reportCloneURLs(job *events.Job, m, before *bundle.Manifest, oldAddress string) {
 	job.Started(StepReportCloneURLs, "what consumers have to re-point")
 
-	nameless := bundle.Manifest{}
 	job.Emit(StepReportCloneURLs, events.StateSucceeded, fmt.Sprintf(
 		"web UI: %s → %s",
-		forge.InstanceURL(&nameless, oldAddress), forge.InstanceURL(m, ""),
+		forge.InstanceURL(before, oldAddress), forge.InstanceURL(m, ""),
 	))
 
 	job.Emit(StepReportCloneURLs, events.StateSucceeded, fmt.Sprintf(

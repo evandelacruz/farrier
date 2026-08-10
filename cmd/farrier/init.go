@@ -47,6 +47,8 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required with -domain); reads that provider's credentials from the environment")
 	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
 	gitSSHPort := fs.Int("git-ssh-port", bundle.DefaultGitSSHPort, "host port the instance serves git over SSH on; 22 gives bare git@domain:owner/repo.git clone URLs, but the host's own sshd usually owns it")
+	webPort := fs.Int("web-port", 0, "host port the instance's web UI is published on (default: 443 with -domain, 8222 without); move it if the host already serves something there")
+	publicWebPort := fs.Int("public-web-port", 0, "port clients actually connect on, when something on the host holds the standard port and forwards to Farrier; that forwarder must pass TCP through so Farrier still terminates TLS")
 	colocatedRunner := fs.Bool("colocated-runner", true, "deploy a Forgejo Actions runner on the forge host; false keeps CI off the machine holding git data and the database, and the operator registers a remote runner instead")
 	var keystoreConfig, blobConfig, images keyValueFlag
 	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
@@ -82,6 +84,14 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		fmt.Fprintf(os.Stderr, "farrier: init: -git-ssh-port: %v\n", err)
 		return initialize.Params{}, 2
 	}
+	if err := bundle.ValidateWebPort(*webPort); err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: init: -web-port: %v\n", err)
+		return initialize.Params{}, 2
+	}
+	if err := bundle.ValidateWebPort(*publicWebPort); err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: init: -public-web-port: %v\n", err)
+		return initialize.Params{}, 2
+	}
 
 	return initialize.Params{
 		Domain:          *domain,
@@ -94,6 +104,8 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		Images:          images.asStrings(),
 		ColocatedRunner: colocatedRunner,
 		GitSSHPort:      *gitSSHPort,
+		WebPort:         *webPort,
+		PublicWebPort:   *publicWebPort,
 	}, 0
 }
 

@@ -71,10 +71,10 @@ func TestInstanceURLIsTheBundleDomainOverHTTPS(t *testing.T) {
 // browser opens.
 func TestInstanceURLIsTheSuppliedAddressOverHTTPForANamelessBundle(t *testing.T) {
 	m := &bundle.Manifest{}
-	if got, want := InstanceURL(m, " box.tail1234.ts.net "), "http://box.tail1234.ts.net/"; got != want {
+	if got, want := InstanceURL(m, " box.tail1234.ts.net "), "http://box.tail1234.ts.net:8222/"; got != want {
 		t.Errorf("InstanceURL = %q, want %q", got, want)
 	}
-	if got, want := InstanceURL(m, "192.168.1.5"), "http://192.168.1.5/"; got != want {
+	if got, want := InstanceURL(m, "192.168.1.5"), "http://192.168.1.5:8222/"; got != want {
 		t.Errorf("InstanceURL = %q, want %q", got, want)
 	}
 }

@@ -38,6 +38,38 @@ const DefaultChecksumAlgorithm = "sha256"
 // `git@domain:owner/repo.git` URLs back.
 const DefaultGitSSHPort = 2222
 
+// DefaultNamedWebPort and DefaultNamelessWebPort are the host ports `up`
+// publishes Caddy on when a manifest declares none — the web endpoint's
+// counterpart to DefaultGitSSHPort, resolved by WebPortOrDefault.
+//
+// A named bundle takes 443 because that is where an HTTPS client looks
+// without being told, and a named instance is meant to be handed to a team
+// as a bare domain.
+//
+// A nameless one takes 8222 rather than 80. Port 80 is the most contended
+// port on a developer's machine, and the nameless tier (INIT-005) exists
+// precisely so Farrier can be tried on the machine the operator is sitting
+// at — a default that collides with whatever else is already listening
+// turns the first command a new operator runs into a Docker
+// "port is already allocated" failure. 8222 keeps the web port visibly
+// related to DefaultGitSSHPort while staying clear of 3000, 5000, 8000,
+// and 8080, which the things already running on that machine tend to own.
+//
+// Neither default is an assumption Farrier is entitled to: the operator
+// brings the host and may already be serving something on either port, so
+// both are manifest fields (Manifest.WebPort) and both are theirs to move.
+const (
+	DefaultNamedWebPort    = 443
+	DefaultNamelessWebPort = 8222
+)
+
+// standardHTTPSPort and standardHTTPPort are the ports a URL of each scheme
+// implies, and therefore the ports WebURL leaves out of the URL it renders.
+const (
+	standardHTTPSPort = 443
+	standardHTTPPort  = 80
+)
+
 // maxPort is the highest TCP port number a manifest may declare.
 const maxPort = 65535
 
@@ -121,10 +153,10 @@ type ActionsConfig struct {
 	ColocatedRunner *bool `yaml:"colocatedRunner,omitempty"`
 }
 
-// Manifest is the bundle's farrier.yaml: domain, git-over-SSH host port,
-// pinned image digests, driver config, ACME DNS-01 config, CI runner
-// config, state-kind declarations, and the checksum algorithm used
-// throughout backup and restore.
+// Manifest is the bundle's farrier.yaml: domain, published web port and the
+// public one, git-over-SSH host port, pinned image digests, driver config,
+// ACME DNS-01 config, CI runner config, state-kind declarations, and the
+// checksum algorithm used throughout backup and restore.
 type Manifest struct {
 	// Domain is the DNS name the instance's identity derives from
 	// (spec.md "The domain"). It is optional: an absent domain is what
@@ -147,6 +179,45 @@ type Manifest struct {
 	// restored or promoted instance answers on the same port with the same
 	// host key and existing remotes keep working (RSTR-004).
 	GitSSHPort int `yaml:"gitSshPort,omitempty"`
+
+	// WebPort is the host port `up` publishes the instance's web endpoint
+	// on — the host side of Caddy's port mapping, and nothing else. Zero
+	// means unset and resolves through WebPortOrDefault to
+	// DefaultNamedWebPort or DefaultNamelessWebPort depending on whether
+	// the bundle carries a name.
+	//
+	// Only the host side is a choice. Caddy binds inside its own network
+	// namespace, where nothing else of the operator's is listening, so the
+	// container port never moves and never collides.
+	//
+	// It is deliberately separate from PublicWebPort. This field says where
+	// Caddy listens; that one says where clients connect. The two are the
+	// same number whenever Farrier's Caddy is the edge, which is the normal
+	// case and the reason PublicWebPort is usually empty.
+	WebPort int `yaml:"webPort,omitempty"`
+
+	// PublicWebPort is the port clients actually reach this instance on,
+	// when that is not the port Caddy is published at. Zero means unset and
+	// resolves through PublicWebPortOrDefault to WebPortOrDefault — Caddy
+	// is the edge and the two are one number.
+	//
+	// It exists for exactly one configuration: something already on the
+	// host holds the standard port and forwards to Farrier. Then Caddy is
+	// published somewhere else, while every URL the forge renders must
+	// still name the port clients connect to, or the instance advertises an
+	// endpoint nothing answers on.
+	//
+	// A fronting proxy has to pass TCP through — SNI routing — and let
+	// Caddy terminate TLS. Farrier owns the certificate: identity lives in
+	// the bundle, and restore and promote promise an unchanged TLS identity
+	// on new hardware. A proxy that terminates TLS itself hands clients a
+	// certificate that is not the bundle's and breaks that promise (spec.md
+	// "Reaching the forge").
+	//
+	// Farrier cannot see the proxy, so this field is the operator asserting
+	// it. That is why a named bundle published somewhere other than
+	// DefaultNamedWebPort must set it — see ValidateWebPorts.
+	PublicWebPort int `yaml:"publicWebPort,omitempty"`
 
 	// SSHHostKeyPublic is the public half of the instance's SSH host key,
 	// in OpenSSH authorized-keys format — the fingerprint a client checks
@@ -199,6 +270,85 @@ func (m *Manifest) GitSSHPortOrDefault() int {
 		return DefaultGitSSHPort
 	}
 	return m.GitSSHPort
+}
+
+// WebPortOrDefault reports the host port `up` publishes this bundle's web
+// endpoint on: the manifest's own WebPort, or the default for the tier the
+// bundle is in when it declares none. Named and nameless have different
+// defaults (DefaultNamedWebPort, DefaultNamelessWebPort), so the answer
+// changes when a nameless bundle is given a name — see attach.
+//
+// Every caller that publishes the port or advertises it reads it through
+// here, the same way GitSSHPortOrDefault is the one answer for git over
+// SSH, so the port Compose binds and the port a URL names cannot disagree.
+func (m *Manifest) WebPortOrDefault() int {
+	if m.WebPort != 0 {
+		return m.WebPort
+	}
+	if m.Named() {
+		return DefaultNamedWebPort
+	}
+	return DefaultNamelessWebPort
+}
+
+// PublicWebPortOrDefault reports the port clients reach this instance on:
+// the manifest's own PublicWebPort, or the published port when it declares
+// none. Unset is the ordinary case — Caddy is the edge, so where it listens
+// and where clients connect are one number.
+func (m *Manifest) PublicWebPortOrDefault() int {
+	if m.PublicWebPort != 0 {
+		return m.PublicWebPort
+	}
+	return m.WebPortOrDefault()
+}
+
+// WebScheme is how browsers reach this instance: HTTPS for a named bundle,
+// which `up` completes with a certificate serving at its domain (UP-002),
+// and plain HTTP for a nameless one (UP-006). Caddy terminates in both
+// cases; only the outer hop's encryption differs.
+func (m *Manifest) WebScheme() string {
+	if m.Named() {
+		return "https"
+	}
+	return "http"
+}
+
+// WebURL renders the instance's URL at host on port, with the port left out
+// when it is the one the scheme already implies — 443 for https, 80 for
+// http. Omitting it is not cosmetic: the URL lands in ROOT_URL, in every
+// clone URL Forgejo displays, and in the runner's registration, and an
+// operator handed `https://git.example.com:443/` would reasonably wonder
+// what else about their instance is non-standard.
+//
+// host is spelled for a URL authority, so an IPv6 literal arrives already
+// bracketed. The trailing slash is Forgejo's ROOT_URL convention and every
+// caller here wants the same spelling.
+func (m *Manifest) WebURL(host string, port int) string {
+	host = strings.TrimSpace(host)
+	scheme := m.WebScheme()
+	if (scheme == "https" && port == standardHTTPSPort) || (scheme == "http" && port == standardHTTPPort) {
+		return fmt.Sprintf("%s://%s/", scheme, host)
+	}
+	return fmt.Sprintf("%s://%s:%d/", scheme, host, port)
+}
+
+// PublicURLAt is the URL clients use to reach this instance at host: the
+// bundle's scheme, the given host, and the public port. It is what
+// ROOT_URL, the clone URLs Forgejo renders, and runner registration all
+// have to say, because it is what something is actually listening on.
+//
+// host is the bundle domain for a named bundle and the operator-supplied
+// address for a nameless one; forge.InstanceURL picks between them so no
+// caller has to.
+func (m *Manifest) PublicURLAt(host string) string {
+	return m.WebURL(host, m.PublicWebPortOrDefault())
+}
+
+// PublicURL is PublicURLAt at this bundle's own domain — the URL a named
+// instance is reached at. It is meaningless for a nameless bundle, which
+// carries no host of its own; use PublicURLAt with the address instead.
+func (m *Manifest) PublicURL() string {
+	return m.PublicURLAt(m.Domain)
 }
 
 // GitSSHCloneURL is the git-over-SSH clone URL for owner/repo on this
@@ -324,6 +474,66 @@ func ValidateGitSSHPort(port int) error {
 	return nil
 }
 
+// ValidateWebPort checks that port is one a manifest may carry as a web
+// port: zero, meaning unset, or a real TCP port. Exported for the same
+// reason ValidateGitSSHPort is — a frontend collecting the operator's
+// choice rejects an impossible one up front.
+func ValidateWebPort(port int) error {
+	if port < 0 || port > maxPort {
+		return fmt.Errorf("bundle: web port %d is not a valid TCP port", port)
+	}
+	return nil
+}
+
+// ValidateWebPorts checks that the published web port and the public one
+// agree about what clients should be told, and refuses a named bundle that
+// leaves the question open.
+//
+// Moving a named instance's published port off 443 has two possible
+// meanings, and they produce different URLs:
+//
+//   - nothing else is on 443, so clients connect to the moved port and
+//     every URL the forge renders must carry it
+//   - something on 443 forwards to Farrier, so clients connect to 443 and
+//     no URL should mention the moved port at all
+//
+// Farrier cannot tell which. It sees one Docker daemon on one host and has
+// no way to know what is bound in front of it, and guessing wrong is worse
+// than refusing: the forge comes up healthy while every clone URL, webhook
+// target, and runner registration it hands out points at an endpoint
+// nothing answers on. So the operator states it, by setting PublicWebPort
+// — to 443 when a proxy fronts the instance, or to the published port when
+// nothing does. Saying the same number twice is not redundant; it is the
+// assertion that Caddy is the edge.
+//
+// A nameless bundle is exempt. It is served over plain HTTP at an address
+// the operator supplies on a trusted network (UP-006), nothing fronts it,
+// and its default published port is already non-standard — requiring a
+// second field to confirm the first would be a question with one possible
+// answer.
+//
+// It is exported so `up` and `attach` can refuse before they touch a host
+// or spend an ACME exchange, and it is called from Validate so no path
+// writes a manifest that cannot be deployed.
+func (m *Manifest) ValidateWebPorts() error {
+	if err := ValidateWebPort(m.WebPort); err != nil {
+		return err
+	}
+	if err := ValidateWebPort(m.PublicWebPort); err != nil {
+		return err
+	}
+	if !m.Named() || m.PublicWebPort != 0 {
+		return nil
+	}
+	if published := m.WebPortOrDefault(); published != DefaultNamedWebPort {
+		return fmt.Errorf(
+			"bundle: this bundle publishes its web port on %d rather than %d, so set publicWebPort in %s to say which port clients connect to: %d if something on the host forwards to Farrier, or %d if nothing does and clients reach it directly",
+			published, DefaultNamedWebPort, ManifestFile, DefaultNamedWebPort, published,
+		)
+	}
+	return nil
+}
+
 // ColocatedRunnerEnabled reports whether this bundle wants the colocated
 // Actions runner deployed (FORGE-005). An unset ColocatedRunner is enabled:
 // a manifest written before the field existed, or one an operator never
@@ -396,6 +606,9 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	if err := ValidateGitSSHPort(m.GitSSHPort); err != nil {
+		return err
+	}
+	if err := m.ValidateWebPorts(); err != nil {
 		return err
 	}
 	// Shape-checked, not merely carried. An unreadable entry here is a

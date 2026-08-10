@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/evandelacruz/farrier/internal/core/acme"
@@ -30,9 +31,23 @@ const (
 	keyFilename       = "tls.key"
 )
 
-// httpsPort is the host and container port Caddy publishes for UP-002
-// ("usable in a browser immediately").
-const httpsPort = "443"
+// containerHTTPSPort is the container-side port Caddy's TLS-terminating
+// site binds (caddy.HTTPSPort), spelled for a Compose port mapping. The
+// host side of that mapping is the manifest's, not this file's — see
+// publishedWebPort.
+var containerHTTPSPort = strconv.Itoa(caddy.HTTPSPort)
+
+// publishedWebPort is the host port a deployment publishes Caddy on,
+// spelled for a Compose port mapping: the manifest's WebPortOrDefault.
+//
+// It is a function rather than a constant because the host side is the
+// operator's to choose (UP-002, UP-006). The operator brings the host and
+// may already be serving something on 443 or 80 — an assumption Farrier
+// held until it met a host that had, and Docker refused the deployment with
+// "port is already allocated". The container side never moves.
+func publishedWebPort(m *bundle.Manifest) string {
+	return strconv.Itoa(m.WebPortOrDefault())
+}
 
 // CertIssuer returns a TLS certificate for cfg.Domain valid at now: existing
 // unchanged if it isn't yet due for renewal, or freshly issued via ACME
@@ -168,9 +183,9 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 		return nil, false, fmt.Errorf("mount private key: %w", err)
 	}
 	if quarantine {
-		compose, err = orchestrate.WithLoopbackPorts(compose, caddy.Service, httpsPort, httpsPort)
+		compose, err = orchestrate.WithLoopbackPorts(compose, caddy.Service, publishedWebPort(&b.Manifest), containerHTTPSPort)
 	} else {
-		compose, err = orchestrate.WithPorts(compose, caddy.Service, httpsPort, httpsPort)
+		compose, err = orchestrate.WithPorts(compose, caddy.Service, publishedWebPort(&b.Manifest), containerHTTPSPort)
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("publish https port: %w", err)

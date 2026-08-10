@@ -31,7 +31,7 @@ func runPublish(args []string) int {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "project folder to publish")
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (default: .farrier inside -dir)")
-	targetURL := fs.String("target", "", "base URL of the instance's API (default: https://<the bundle's domain>)")
+	targetURL := fs.String("target", "", "base URL of the instance's API (default: the bundle's own public URL — its domain over HTTPS, at the port clients connect on)")
 	owner := fs.String("owner", "", "owner (user or organization) the repository lands under on the instance (default: the account the token belongs to)")
 	name := fs.String("name", "", "repository name on the instance (default: the project folder's name)")
 	private := fs.Bool("private", true, "create the repository private")

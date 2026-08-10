@@ -255,6 +255,14 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	if err != nil {
 		return err
 	}
+	// Checked here, beside the address, and for the same reason: a bundle
+	// that publishes its web port somewhere other than the standard one
+	// without saying where clients connect would deploy a forge whose every
+	// rendered URL is wrong (bundle.Manifest.ValidateWebPorts). Refusing
+	// before CheckHost leaves the host exactly as Up found it.
+	if err := b.Manifest.ValidateWebPorts(); err != nil {
+		return err
+	}
 	// DRIL-002's containment is defined against a named instance: the
 	// drilled instance answers at the bundle domain on loopback, and Caddy
 	// carries that domain as a network alias so the drilled runner reaches
@@ -301,12 +309,12 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		}
 	} else {
 		job.Started(StepConfigureHTTP, fmt.Sprintf("rendering plain-HTTP caddy config for %s", address))
-		compose, err = configurePlainHTTP(ctx, host, opts.RemoteDir, compose, address)
+		compose, err = configurePlainHTTP(ctx, host, &b.Manifest, opts.RemoteDir, compose, address)
 		if err != nil {
 			job.Emit(StepConfigureHTTP, events.StateFailed, err.Error())
 			return fmt.Errorf("deploy: configure plain http: %w", err)
 		}
-		job.Emit(StepConfigureHTTP, events.StateSucceeded, plainHTTPDetail(address))
+		job.Emit(StepConfigureHTTP, events.StateSucceeded, plainHTTPDetail(&b.Manifest, address))
 	}
 
 	job.Started(StepConfigureState, "creating host state directories")
@@ -335,7 +343,7 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	job.Emit(StepConfigureGitSSH, events.StateSucceeded, gitSSHDetail(&b.Manifest, address, opts.Quarantine))
 
 	job.Started(StepConfigureRunner, "configuring the colocated actions runner")
-	compose, runnerDeployed, err := configureRunner(ctx, host, b, opts.RemoteDir, address, compose)
+	compose, runnerDeployed, err := configureRunner(ctx, host, b, opts.RemoteDir, address, compose, opts.Quarantine)
 	if err != nil {
 		job.Emit(StepConfigureRunner, events.StateFailed, err.Error())
 		return fmt.Errorf("deploy: configure runner: %w", err)

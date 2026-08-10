@@ -276,7 +276,7 @@ func attach(ctx context.Context, job *events.Job, opts Options) (*bundle.Bundle,
 		return nil, err
 	}
 
-	reportCloneURLs(job, &named.Manifest, checked.address)
+	reportCloneURLs(job, &named.Manifest, &opts.Bundle.Manifest, checked.address)
 	return named, nil
 }
 
@@ -333,6 +333,17 @@ func validate(ctx context.Context, opts Options) (checkedOptions, error) {
 	address, err := deploy.NormalizeAddress(strings.TrimSpace(opts.Address))
 	if err != nil {
 		return checked, fmt.Errorf("attach: current address: %w", err)
+	}
+
+	// Naming an instance changes what its published web port means: the
+	// nameless tier's default gives way to the named one's, and a port the
+	// operator picked themselves now has to be accompanied by a statement
+	// of what clients connect to (bundle.Manifest.ValidateWebPorts). Check
+	// the manifest attach is about to write, here, rather than discovering
+	// it cannot be saved after an ACME exchange has already been spent.
+	after := bundle.Manifest{Domain: domain, WebPort: namedWebPort(&opts.Bundle.Manifest), PublicWebPort: opts.Bundle.Manifest.PublicWebPort}
+	if err := after.ValidateWebPorts(); err != nil {
+		return checked, fmt.Errorf("attach: %w", err)
 	}
 
 	driver, err := keystore.New(opts.Bundle.Manifest.Drivers.Keystore.Driver, opts.Bundle.Manifest.Drivers.Keystore.Config)
@@ -408,13 +419,15 @@ func persistCertificate(ctx context.Context, driver keystore.Driver, cert *acme.
 // the pinned image digests, the git-over-SSH port, the driver config, the
 // runner setting, and the state declarations are all copied through
 // unchanged. That is the whole of "in place" at the manifest level — the
-// only field that differs between the bundle that went in and the bundle
-// that comes out is the one the operator asked to change, plus the ACME
-// section Manifest.Validate requires to accompany it.
+// only fields that differ between the bundle that went in and the bundle
+// that comes out are the one the operator asked to change, the ACME
+// section Manifest.Validate requires to accompany it, and the published
+// web port, which follows the name (namedWebPort).
 func namedBundle(b *bundle.Bundle, domain string, acmeCfg bundle.ACMEConfig) (*bundle.Bundle, error) {
 	manifest := b.Manifest
 	manifest.Domain = domain
 	manifest.ACME = acmeCfg
+	manifest.WebPort = namedWebPort(&b.Manifest)
 
 	compose, err := orchestrate.Render(&manifest)
 	if err != nil {
@@ -423,11 +436,30 @@ func namedBundle(b *bundle.Bundle, domain string, acmeCfg bundle.ACMEConfig) (*b
 	return &bundle.Bundle{Manifest: manifest, Compose: compose}, nil
 }
 
+// namedWebPort is the host port the instance publishes its web endpoint on
+// once it has a name: the named tier's default, unless the operator had
+// already moved it off the nameless one.
+//
+// The two tiers default differently on purpose (bundle.DefaultNamedWebPort,
+// bundle.DefaultNamelessWebPort), so a port that was only ever the nameless
+// default is not a choice to preserve — carrying 8222 onto a named instance
+// would leave every consumer typing a port at a domain that could serve
+// them 443. An operator who did pick a port keeps it, and then has already
+// had to say what clients connect to (bundle.Manifest.ValidateWebPorts,
+// checked in validate before this runs).
+func namedWebPort(m *bundle.Manifest) int {
+	if m.WebPort == 0 || m.WebPort == bundle.DefaultNamelessWebPort {
+		return bundle.DefaultNamedWebPort
+	}
+	return m.WebPort
+}
+
 // runDeploy re-renders every piece of configuration that derives from the
 // name and converges the host to it, through deploy.Up on the now-named
 // bundle — app.ini's ROOT_URL, DOMAIN, and SSH_DOMAIN, the Caddy site block
 // (TLS this time, with the certificate persisted two steps ago), and the
-// published port moving from 80 to 443. It relays every step event onto job
+// published web port moving to the named tier's default (namedWebPort). It
+// relays every step event onto job
 // as it happens, the same relay pattern promote.restoreOnto and
 // upgrade.runDeploy use and for the same reason: deploy.Up ends whatever
 // job it is given, so sharing job would close job's stream mid-run.

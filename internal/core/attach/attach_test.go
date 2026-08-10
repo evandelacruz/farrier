@@ -628,7 +628,10 @@ func TestAttachReportsTheCloneURLsThatChanged(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"http://" + oldAddress + "/",
+		// The "was" half carries the nameless tier's published port; the
+		// "now" half carries none, because 443 is what https already
+		// means (bundle.Manifest.WebURL).
+		fmt.Sprintf("http://%s:%d/", oldAddress, bundle.DefaultNamelessWebPort),
 		"https://" + newDomain + "/",
 		fmt.Sprintf("ssh://git@%s:%d/<owner>/<repo>.git", oldAddress, bundle.DefaultGitSSHPort),
 		fmt.Sprintf("ssh://git@%s:%d/<owner>/<repo>.git", newDomain, bundle.DefaultGitSSHPort),

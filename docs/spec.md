@@ -68,10 +68,16 @@ A forge's identity — its URL, its keys, its certificates — is what welds it 
 
 Two ports carry every client protocol, and both are part of the identity the bundle owns:
 
-- **HTTPS on 443**, terminated by Caddy with a core-issued certificate. Browser, REST API, git-over-HTTPS, and LFS all arrive here.
+- **HTTPS on 443 by default**, terminated by Caddy with a core-issued certificate. Browser, REST API, git-over-HTTPS, and LFS all arrive here.
 - **Git over SSH on 2222 by default**, served by Forgejo's own SSH server using the bundle's host key. The port is a manifest field, so an operator whose host sshd lives elsewhere can set 22 and get bare `git@domain:owner/repo.git` URLs. The default is 2222 because the host's sshd normally owns 22 — `up` reaches hosts over it (ORCH-001), and taking it would require reconfiguring the host, which Farrier deliberately does not ask for. The cost of the default is a port in the SSH clone URL, which Forgejo renders into the URLs it displays.
 
-The port belongs to the instance: one bundle owns one domain, and every repository on it answers at the same endpoint.
+Both ports are manifest fields, because the operator brings the host and Farrier is not entitled to assume it owns anything on it. A nameless instance's web port defaults to 8222 rather than 80: the nameless tier exists so Farrier can be tried on the machine the operator is sitting at, and 80 is the port that machine is most likely to have taken already.
+
+**Where Caddy is published and what clients are told are two facts, not one.** The published port is where Caddy listens on the host. The public URL — `ROOT_URL`, every clone URL, runner registration — is what clients connect to, and is derived from the domain (or the nameless instance's address) plus a port, omitting the port when the scheme already implies it. They are the same number whenever Farrier's Caddy is the edge, which is the ordinary case. They differ only when something already on the host holds the standard port and forwards, and then the operator states the public port explicitly. Farrier cannot see a forwarder, and a named instance published off 443 that says nothing is refused rather than deployed: guessing wrong brings up a healthy forge whose every rendered link is unreachable.
+
+**A forwarder must pass TCP through and let Caddy terminate.** Farrier owns the certificate — identity lives in the bundle, and restore and promote deliver an unchanged TLS identity on new hardware. A proxy that terminates TLS itself hands clients a certificate that is not the bundle's, which breaks that guarantee. SNI routing to Farrier's Caddy is supported; upstream termination is a different product, not a configuration option.
+
+The ports belong to the instance: one bundle owns one domain, and every repository on it answers at the same endpoint.
 
 The host key is bundle key material, so a restored or promoted instance answers on the same port with the same key and existing remotes and `known_hosts` entries keep working.
 

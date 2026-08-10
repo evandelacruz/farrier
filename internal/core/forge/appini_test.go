@@ -292,7 +292,10 @@ func TestRenderAppINIRendersANamelessBundleAtTheSuppliedAddress(t *testing.T) {
 	}
 	text := string(out)
 	for _, want := range []string{
-		"ROOT_URL = http://192.168.1.5/",
+		// The nameless tier's default published port, carried into the
+		// URL because that is where clients actually connect
+		// (bundle.DefaultNamelessWebPort).
+		"ROOT_URL = http://192.168.1.5:8222/",
 		"DOMAIN = 192.168.1.5",
 		"SSH_DOMAIN = 192.168.1.5",
 		// Unchanged from the named case: Caddy is what terminates, and it
