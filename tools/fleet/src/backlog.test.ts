@@ -188,6 +188,21 @@ test("dependenciesSatisfied blocks publishing a local folder until an origin exi
   assert.equal(dependenciesSatisfied("IMPT-001", base), true);
 });
 
+test("dependenciesSatisfied holds the nameless-case conditionals until INIT-005", () => {
+  // INIT-002 and UP-002 are landed except for the nameless case. Offering
+  // either before INIT-005 sends an agent to build nameless-bundle support as
+  // a side effect of a conditional — twice, in parallel, in two packages.
+  const base = new Set([...CORE_FOUNDATION, ...ORCH_CORE, "FORGE-001", "ACME-001"]);
+  assert.equal(dependenciesSatisfied("INIT-002", base), false);
+  assert.equal(dependenciesSatisfied("UP-002", base), false);
+  const withNameless = new Set([...base, "INIT-005"]);
+  assert.equal(dependenciesSatisfied("INIT-002", withNameless), true);
+  assert.equal(dependenciesSatisfied("UP-002", withNameless), true);
+  // Siblings in the same prefixes are unaffected — this is not a prefix gate.
+  assert.equal(dependenciesSatisfied("INIT-004", base), true);
+  assert.equal(dependenciesSatisfied("UP-001", base), true);
+});
+
 test("dependenciesSatisfied orders the nameless-instance chain", () => {
   const base = new Set([...CORE_FOUNDATION, ...ORCH_CORE, "FORGE-001"]);
   // A nameless instance must exist before it can be served...
@@ -254,7 +269,13 @@ test("dependenciesSatisfied orders the paired driver and cert requirements", () 
   assert.equal(dependenciesSatisfied("ACME-002", base), false);
   assert.equal(dependenciesSatisfied("ACME-002", new Set([...base, "ACME-001"])), true);
   assert.equal(dependenciesSatisfied("INIT-002", base), false);
-  assert.equal(dependenciesSatisfied("INIT-002", new Set([...base, "ACME-001"])), true);
+  // INIT-002 takes a second dependency now: zone proof is ACME-001's, and what
+  // remains of the requirement is the nameless case, which is INIT-005's.
+  assert.equal(dependenciesSatisfied("INIT-002", new Set([...base, "ACME-001"])), false);
+  assert.equal(
+    dependenciesSatisfied("INIT-002", new Set([...base, "ACME-001", "INIT-005"])),
+    true,
+  );
 });
 
 test("pickNextRequirementIds skips landed and reserved IDs in spec order", () => {

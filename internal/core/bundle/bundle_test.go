@@ -319,3 +319,88 @@ func TestManifestNamed(t *testing.T) {
 		t.Error("Named() = true for a whitespace-only domain")
 	}
 }
+
+// INIT-004: Exists is what stands between a re-run of `init` and a live
+// instance's identity, so it has to answer for every shape a bundle
+// directory turns up in — including the torn ones.
+func TestExists(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  bool
+	}{
+		{
+			name:  "absent directory",
+			setup: func(t *testing.T, dir string) {},
+			want:  false,
+		},
+		{
+			name: "empty directory",
+			setup: func(t *testing.T, dir string) {
+				mkdir(t, dir)
+			},
+			want: false,
+		},
+		{
+			name: "unrelated files only",
+			setup: func(t *testing.T, dir string) {
+				mkdir(t, dir)
+				writeTestFile(t, filepath.Join(dir, "README.md"), "not a bundle")
+			},
+			want: false,
+		},
+		{
+			name: "saved bundle",
+			setup: func(t *testing.T, dir string) {
+				if err := validBundle().Save(dir); err != nil {
+					t.Fatalf("Save: %v", err)
+				}
+			},
+			want: true,
+		},
+		{
+			name: "manifest without compose",
+			setup: func(t *testing.T, dir string) {
+				mkdir(t, dir)
+				writeTestFile(t, filepath.Join(dir, ManifestFile), "domain: forge.example.com\n")
+			},
+			want: true,
+		},
+		{
+			name: "compose without manifest",
+			setup: func(t *testing.T, dir string) {
+				mkdir(t, filepath.Join(dir, ComposeDir))
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), DirName)
+			tc.setup(t, dir)
+
+			got, err := Exists(dir)
+			if err != nil {
+				t.Fatalf("Exists: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Exists(%s) = %v, want %v", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+func mkdir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+}
+
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}

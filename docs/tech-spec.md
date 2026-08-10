@@ -125,7 +125,7 @@ Two constraints shape the implementations:
 All three follow one posture: a Go interface for in-tree drivers, plus an exec-based protocol for out-of-tree ones. The exec protocol is generic and lives once, in `internal/core/driver` (CORE-003): `driver.Exec` runs an executable once per call, writing `{"method", "params"}` to its stdin and reading `{"ok", "result", "error"}` from its stdout. One process per call, no long-lived session.
 
 - **DNS:** `Set(record, value, ttl)`, `Delete(record)`. Shipped: `cloudflare`, `rfc2136`.
-- **Keystore:** `Resolve(keyName) → secret` on every driver; `Store(keyName, secret)` on `file` only. Shipped: `file`, `command`.
+- **Keystore:** `Resolve(keyName) → secret` on every driver; `Store(keyName, secret)` on the optional `Writer` side, which `init` requires. Shipped: `file`, `command`.
 - **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every `List` result carries `Modified`, the time an object was last written; an exec adapter written before that field existed omits it, which decodes as the zero time meaning *unknown* — never "very old".
 
 ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
@@ -139,8 +139,10 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 ### Keystore driver config
 
 - **`file`** (`config.path`): a local directory, one file per key. `Resolve` reads `path/keyName` verbatim; `Store` writes it.
-- **`command`** (`config.command`): one command run via `sh -c`, with `FARRIER_KEY_NAME` in its environment; returns trimmed stdout. One command branches on the env var to serve every key.
-- **Anything else** resolves through the CORE-003 exec protocol: `config.path` is the executable, `config.args` its fixed arguments; method `resolve`, params `{"key": keyName}`, result `{"secret": "<base64>"}`.
+- **`command`** (`config.command`, `config.storeCommand`): each is one command run via `sh -c` with `FARRIER_KEY_NAME` in its environment. `config.command` returns the secret as trimmed stdout; `config.storeCommand` receives it on stdin and exits zero on success. One command of each kind branches on the env var to serve every key. A driver configured without `storeCommand` is resolve-only, and `init` fails clearly against it rather than minting somewhere else.
+- **Anything else** goes through the CORE-003 exec protocol: `config.path` is the executable, `config.args` its fixed arguments. Method `resolve`, params `{"key": keyName}`, result `{"secret": "<base64>"}`; method `store`, params `{"key": keyName, "secret": "<base64>"}`, empty result. `config.store: true` declares the executable implements `store`; absent means resolve-only.
+
+  **Store capability is a construction-time fact for every driver, and that is load-bearing.** `init` type-asserts `keystore.Writer` at validate, before proving zone control or generating anything, so an operator pointed at a keystore that cannot accept key material is told immediately rather than after an ACME round trip. `file` always writes and `command` decides on the presence of `storeCommand` — both settled before the driver exists. An exec driver cannot decide from the executable, since one Go type serves every one of them, so it decides from `config.store` instead. Declaring `store: true` against an executable that does not implement it fails at the first `store` call, which is the operator's own misconfiguration rather than a hole in the guarantee.
 
 ## Orchestration
 

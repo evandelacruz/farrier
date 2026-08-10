@@ -16,6 +16,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - DNS-001 precedes FAIL-004; ACME-001 precedes INIT-002.
 - UP-005 precedes IMPT-004: nothing can push to an `origin` the instance does not serve.
 - INIT-005 precedes UP-006; UP-006 precedes UP-007: a nameless instance must exist before it can be served, and be served before it can be named.
+- INIT-005 also precedes UP-002: what remains of it is the nameless case, which does not exist until INIT-005 creates it.
 - API-001 precedes all UI.
 
 ---
@@ -29,8 +30,9 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 ## KEY — keystore drivers
 
 - **KEY-001** · The `file` driver must resolve key material from a local path.
-- **KEY-002** · The `command` driver must resolve key material from the stdout of any operator-specified command.
+- **KEY-002** · The `command` driver must resolve key material from the stdout of any operator-specified command, and must store it through a second operator-specified command that receives the secret on stdin — so `init` mints straight into the operator's own secret manager, with no plaintext copy written anywhere along the way.
 - **KEY-003** · Key material must never appear in logs, event streams, command output, or the bundle directory.
+- **KEY-004** · The exec keystore protocol must carry a `store` method alongside `resolve`, so an out-of-tree driver can receive minted key material rather than only serving it back. Whether a driver can store must be decided from its config before the driver is built, so `init` rejects a resolve-only keystore at validate rather than after proving zone control and generating key material.
 
 ## BLOB — blob adapters
 
@@ -77,6 +79,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - **INIT-003** · `init` must generate all key material: Forgejo `SECRET_KEY` and `INTERNAL_TOKEN`, LFS JWT secret, TLS certificates, SSH host keys, and the age backup key.
 - **INIT-004** · `init` must refuse to overwrite an existing `.farrier/` bundle, naming the folder, so re-running it against an initialized project cannot clobber a live instance's identity.
 - **INIT-005** · `init` must accept a project folder with no domain, producing a nameless bundle that skips DNS-01 proof and certificate issuance entirely and requires the operator to own nothing. Every other piece of key material is generated as usual, so a nameless instance is a complete instance in all respects but its name.
+- **INIT-006** · `init` must report where each piece of key material was stored — the driver and its target — and must state that the age backup key is unrecoverable if lost, since it alone decrypts every snapshot the instance will ever produce. It must do so without revealing any key material (KEY-003).
 
 ## UP — deployment
 

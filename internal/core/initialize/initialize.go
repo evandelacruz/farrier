@@ -3,13 +3,16 @@
 // inside that folder unless the operator points somewhere else; INIT-002:
 // proving control of that domain's DNS zone via an ACME DNS-01 challenge
 // before the bundle is written; INIT-003: generating every piece of bundle
-// key material and persisting it through the bundle's keystore driver; and
-// INIT-005: accepting a project folder with no domain at all. It is the core
-// logic behind the `init` CLI command — cmd/farrier's init command parses
-// flags and calls Run; every real decision (validation, zone-control proof,
-// key generation, image-digest resolution, manifest assembly) lives here so
-// a future API frontend (API-001) can call the same function and get the
-// same CORE-002 event stream.
+// key material and persisting it through the bundle's keystore driver;
+// INIT-004: refusing to write over a bundle directory that already holds
+// one, so re-running init in an initialized project cannot replace a live
+// instance's identity; and INIT-005: accepting a project folder with no
+// domain at all. It is the core logic behind the `init` CLI command —
+// cmd/farrier's init command parses flags and calls Run; every real
+// decision (validation, zone-control proof, key generation, image-digest
+// resolution, manifest assembly) lives here so a future API frontend
+// (API-001) can call the same function and get the same CORE-002 event
+// stream.
 //
 // # Bundles without a name
 //
@@ -33,6 +36,10 @@
 // DNS-01 provider meant to supply a domain too, and silently producing a
 // nameless bundle would hand them an instance with no HTTPS they did not ask
 // for.
+//
+// Namelessness changes nothing about INIT-004: a nameless init refuses an
+// already-initialized folder exactly as a named one does. The two compose —
+// having no name is not a reason to be allowed to overwrite an identity.
 package initialize
 
 import (
@@ -217,6 +224,9 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 		return fail(job, StepValidate, err)
 	}
 	dir := BundleDir(params)
+	if err := refuseExistingBundle(dir); err != nil {
+		return fail(job, StepValidate, err)
+	}
 	keystoreDriver, err := keystore.New(params.Keystore.Driver, params.Keystore.Config)
 	if err != nil {
 		return fail(job, StepValidate, fmt.Errorf("initialize: keystore target: %w", err))
@@ -418,6 +428,37 @@ func validateName(params Params) error {
 	}
 	if provider == "" {
 		return fmt.Errorf("initialize: acme dns-01 provider is required to prove control of %s", domain)
+	}
+	return nil
+}
+
+// refuseExistingBundle implements INIT-004: a bundle directory that
+// already holds a bundle is never written over, and the error names the
+// folder so the operator knows which one to move, remove, or point away
+// from with an explicit location.
+//
+// It runs in the validate step, ahead of everything that costs something.
+// Zone-control proof spends a real ACME exchange (INIT-002) and key
+// generation mints an identity and persists it through the operator's
+// keystore (INIT-003); a second `init` that is going to be refused should
+// spend neither. Refusing at the write step instead would leave the
+// keystore holding a second instance's worth of key material for an
+// instance that was never created.
+//
+// The check is not, and cannot be, atomic with the write that follows it:
+// for a named bundle, zone-control proof sits in between and takes as long
+// as a DNS record takes to propagate. Two inits racing for the same folder
+// is not the case
+// INIT-004 is about — a person re-running init in a project they already
+// initialized is — and closing that window would mean holding a lock
+// across an unbounded network operation.
+func refuseExistingBundle(dir string) error {
+	exists, err := bundle.Exists(dir)
+	if err != nil {
+		return fmt.Errorf("initialize: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("initialize: %s already holds a bundle; refusing to overwrite it, because a second init would replace the instance's identity with newly generated key material. Remove that folder deliberately, or give init another location, to create a second bundle", dir)
 	}
 	return nil
 }
