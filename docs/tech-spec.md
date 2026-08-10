@@ -152,6 +152,7 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 - Host identity is checked against the operator's `known_hosts`; an unrecorded or mismatched host key fails the connection rather than prompting, since jobs run unattended.
 - Host readiness beyond SSH is a single check: Docker reachable over the same session. Farrier requires nothing else of the host.
 - The CLI renders Compose files from the manifest, ships them to the host, and drives `docker compose` over the SSH session.
+- An SSH command session is non-interactive and non-login, so a `docker` that a shell rc file puts on PATH is invisible to it. Every command the transport sends carries a preamble that appends a fixed candidate list — `$HOME/.docker/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, `/snap/bin` — to PATH, and only when `docker` does not already resolve. Nothing on the host has to be installed, configured, or exported for this to work.
 - The stateless layer is disposable: `up` converges the host to the bundle definition idempotently and drift is overwritten. State under `<RemoteDir>/state` is not.
 
 ## Forge configuration
