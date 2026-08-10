@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -24,6 +25,10 @@ func validManifest() *Manifest {
 }
 
 const fakeDigest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// testHostPublicKey is an OpenSSH authorized-keys line with a comment on
+// it — the shape `init` stores and copies into the manifest.
+const testHostPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBundleTestHostKeyBlobAAAAAAAAAAAAAAAAAAAAA farrier@instance"
 
 func validBundle() *Bundle {
 	return &Bundle{
@@ -52,6 +57,13 @@ func TestManifestValidate(t *testing.T) {
 		{"missing state kind", func(m *Manifest) { m.State = m.State[1:] }, true},
 		{"duplicate state kind", func(m *Manifest) { m.State = append(m.State, m.State[0]) }, true},
 		{"missing checksum algorithm", func(m *Manifest) { m.ChecksumAlgorithm = "" }, true},
+		// The host public key is optional — absent is a manifest written
+		// before the field existed — but a present one has to be readable
+		// as a pin, since a pin nobody can parse is a push that fails at
+		// the far end of the operation instead of here.
+		{"no ssh host public key", func(m *Manifest) { m.SSHHostKeyPublic = "" }, false},
+		{"valid ssh host public key", func(m *Manifest) { m.SSHHostKeyPublic = testHostPublicKey }, false},
+		{"ssh host public key with no blob", func(m *Manifest) { m.SSHHostKeyPublic = "ssh-ed25519" }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -387,6 +399,80 @@ func TestGitSSHPortSurvivesSaveAndLoad(t *testing.T) {
 	}
 	if got := loaded.Manifest.GitSSHPortOrDefault(); got != 22 {
 		t.Errorf("loaded git-over-ssh port = %d, want the saved 22", got)
+	}
+}
+
+// The host public key travels with the bundle, under a manifest key an
+// operator can read: it is what lets someone publish to a shared instance
+// pin its identity without holding the keystore (CORE-001, IMPT-004).
+func TestSSHHostPublicKeySurvivesSaveAndLoad(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	b.Manifest.SSHHostKeyPublic = testHostPublicKey
+
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var fields map[string]any
+	if err := yaml.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	if got := fields["sshHostKeyPublic"]; got != testHostPublicKey {
+		t.Errorf("sshHostKeyPublic = %v, want %q", got, testHostPublicKey)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Manifest.SSHHostKeyPublic != testHostPublicKey {
+		t.Errorf("loaded ssh host public key = %q, want %q", loaded.Manifest.SSHHostKeyPublic, testHostPublicKey)
+	}
+}
+
+// A manifest that carries no host public key is one written before the
+// field existed, and it must not start emitting an empty key.
+func TestSSHHostPublicKeyIsOmittedWhenUnset(t *testing.T) {
+	raw, err := yaml.Marshal(validManifest())
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "sshHostKeyPublic") {
+		t.Errorf("manifest = %s, want no sshHostKeyPublic key when none is set", raw)
+	}
+}
+
+func TestSSHKnownHostsLineFor(t *testing.T) {
+	cases := []struct {
+		name string
+		port int
+		want string
+	}{
+		// The comment is dropped in both: OpenSSH would read whatever
+		// follows the blob as a further host-key option.
+		{"default port is bracketed", 0, "[forge.example.com]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBundleTestHostKeyBlobAAAAAAAAAAAAAAAAAAAAA\n"},
+		{"port 22 is a bare hostname", 22, "forge.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBundleTestHostKeyBlobAAAAAAAAAAAAAAAAAAAAA\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validManifest()
+			m.GitSSHPort = tc.port
+			got, err := m.SSHKnownHostsLineFor(testHostPublicKey)
+			if err != nil {
+				t.Fatalf("SSHKnownHostsLineFor: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("line = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	if _, err := validManifest().SSHKnownHostsLineFor("ssh-ed25519"); err == nil {
+		t.Error("SSHKnownHostsLineFor with no blob = nil error, want a refusal")
 	}
 }
 

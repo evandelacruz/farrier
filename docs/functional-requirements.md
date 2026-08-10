@@ -23,7 +23,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 ## CORE — engine foundation
 
-- **CORE-001** · The bundle must be a plain directory containing a YAML manifest (domain, image digests, driver config, state declarations) and rendered Compose files, holding zero key material. It must function identically after being copied to another machine, given key access.
+- **CORE-001** · The bundle must be a plain directory containing a YAML manifest (domain, image digests, driver config, state declarations) and rendered Compose files, holding zero secret key material — public key material, such as the SSH host key's public half, may live in the manifest, and nothing secret ever may. It must function identically after being copied to another machine, given key access.
 - **CORE-002** · Every long-running operation must be a job identified by ID, emitting a single progress event stream (`jobId`, `step`, `state`, `detail`, `timestamp`) that both frontends render.
 - **CORE-003** · Driver extension points must be published as a Go interface plus an exec protocol (JSON on stdin/stdout), so third parties ship drivers as standalone executables without Go.
 

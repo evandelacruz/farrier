@@ -84,6 +84,8 @@ Generated at `init`, carried through every backup and restore:
 - TLS certificates, issued and renewed by the core via ACME DNS-01 — a standby holds a valid cert before any traffic points at it
 - SSH host keys, installed on every deploy including the first, so a fresh host and a restored one both present an unchanged identity
 
+Secrets stay in the keystore; the SSH host key's public half also travels in the bundle manifest, written there at `init`. That half is public by definition — it is the string an operator would paste into `known_hosts` — and carrying it means publishing a project to an instance can pin its identity without read access to the store holding `SECRET_KEY`, `INTERNAL_TOKEN`, and the age backup key. On a shared instance, that is the difference between every project owner being able to publish and only the instance's owner. The private half never leaves the keystore, and nothing secret is ever written into a bundle.
+
 Key material is non-rotating by default: once `init` writes a piece of it, nothing may silently overwrite it, the same guarantee that keeps a second `init` from clobbering a live instance's identity. The TLS certificate and its private key are the one declared exception — an ACME-issued certificate is required to rotate before it expires. Every other piece above, plus the age backup key (spec.md "Key custody"), never rotates. A keystore driver's write side enforces this from a fixed rotation registry, consulted above the driver rather than trusted to it, so a piece of key material nobody has explicitly declared rotating defaults to protected.
 
 ### Runners across relocation
@@ -94,7 +96,7 @@ Runner registrations live in the database, and runners dial out to the domain. A
 
 The thing Farrier hands you is a forge for one project, and the project folder is where it starts.
 
-- **The bundle lives in the project, at `.farrier/`.** Manifest and rendered Compose definitions sit beside the code, holding no key material, so the forge definition is versioned with the thing it serves and travels with it. This is the default and the shape the design optimizes for: `cd my-project && farrier init`, and that project has its own forge.
+- **The bundle lives in the project, at `.farrier/`.** Manifest and rendered Compose definitions sit beside the code, holding no secrets, so the forge definition is versioned with the thing it serves and travels with it. This is the default and the shape the design optimizes for: `cd my-project && farrier init`, and that project has its own forge.
 - **One instance may serve several projects, and then the bundle lives on its own.** An instance hosts as many repositories as the operator puts on it — ten projects on one instance is one address, one backup, one drill, and a Forgejo that lists all ten. Nothing in the code differs; it is how many times `init` and `up` are run. But a bundle serving ten projects belongs to none of them, so `init` takes an explicit location for that case rather than making one project arbitrarily own the forge that hosts the other nine. A location argument, not a mode.
 - **`init` takes a folder; `up` takes a host.** They stay separate commands. `init` makes a folder into a forge definition; `up` puts it on a machine.
 - **A host is a host.** `ssh://user@localhost` and `ssh://user@a-vps` run the same path. There is no local mode — locality is an argument, not a branch. ACME DNS-01 proves zone control by writing a TXT record rather than answering an inbound request, so an instance on the operator's own machine holds a publicly valid certificate for its name exactly like a remote one.
@@ -164,7 +166,7 @@ The system defines the state interface; the operator owns transport and topology
 
 ## Bundle config is shareable; keys resolve through drivers
 
-The bundle configuration (manifest, Compose definitions, pinned versions) is a plain directory living at `.farrier/` in the project it serves, so any teammate who can clone the project can operate the instance from their own machine. Key material stays out of the repo and resolves at runtime through a keystore driver:
+The bundle configuration (manifest, Compose definitions, pinned versions) is a plain directory living at `.farrier/` in the project it serves, so any teammate who can clone the project can operate the instance from their own machine. Secrets stay out of the repo and resolve at runtime through a keystore driver:
 
 - **`file`:** a path to a local directory; each piece of key material is a file named by its key name. The default.
 - **`command`:** any command that prints the key, plus a second that takes one on stdin — one interface that covers 1Password CLI, Vault, `pass`, sops, cloud secret managers, and anything else the team already uses. Both halves matter: `init` mints key material and has to put it somewhere, and a driver that can only read forces the operator to mint into a file first and copy it across, leaving a plaintext copy on disk in exactly the place they were trying to avoid.
@@ -273,7 +275,7 @@ The bundle lives at `.farrier/` in the project, and the project is hosted on the
 
 Ordinary git already breaks the loop — every developer clone carries `.farrier/`, so a working copy on any machine is a complete bundle. The rule is that at least one such copy must exist somewhere the instance does not serve, and that the operator knows which one it is. A single-developer instance whose only clone is on a laptop that dies has lost its bundle as surely as one that kept it nowhere.
 
-This is operator discipline rather than an enforced constraint. Key material is unaffected: it never lives in the bundle, and its custody is the keystore driver's ("Key custody").
+This is operator discipline rather than an enforced constraint. Secrets are unaffected: none of them lives in the bundle, and their custody is the keystore driver's ("Key custody").
 
 ## Distribution and licensing
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 )
 
@@ -234,13 +235,13 @@ func ensurePushKey(ctx context.Context, c *client, user, publicKeyPath string) (
 	if err != nil {
 		return "", fmt.Errorf("read ssh public key: %w", err)
 	}
-	keyType, blob, err := splitPublicKey(string(raw))
+	keyType, blob, err := bundle.SplitSSHPublicKey(string(raw))
 	if err != nil {
 		return "", fmt.Errorf("%s %w", publicKeyPath, err)
 	}
 
 	for _, existing := range keys {
-		existingType, existingBlob, err := splitPublicKey(existing.Key)
+		existingType, existingBlob, err := bundle.SplitSSHPublicKey(existing.Key)
 		if err != nil {
 			continue
 		}

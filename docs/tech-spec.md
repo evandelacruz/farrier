@@ -51,9 +51,10 @@ Every operator command is one core package sequencing others, with `cmd/farrier`
 A plain directory at `.farrier/` in the project it serves, versioned with it.
 
 ```
-farrier.yaml          manifest: domain, git-over-SSH host port, pinned image
-                      digests, driver config, ACME DNS-01 config, CI runner
-                      config, state-kind declarations, checksum algorithm
+farrier.yaml          manifest: domain, git-over-SSH host port, SSH host
+                      public key, pinned image digests, driver config, ACME
+                      DNS-01 config, CI runner config, state-kind
+                      declarations, checksum algorithm
 compose/              rendered Docker Compose definitions
 ```
 
@@ -61,7 +62,8 @@ compose/              rendered Docker Compose definitions
 - Versions are pinned by image digest, not tag.
 - `domain` is optional, and absent is what makes a bundle nameless (INIT-005, spec.md "Instances without a name"). A nameless manifest carries no `acme` section either, and the two must agree: a named bundle states the DNS-01 provider its zone was proven through, a nameless one states nothing.
 - `actions.colocatedRunner` is the CI runner config: `false` keeps the bundled Actions runner off the forge host, and the operator registers a remote runner against the bundle domain instead (spec.md "CI trust boundary"). Absent means enabled.
-- Key material is referenced by keystore driver config, never stored.
+- `sshHostKeyPublic` is the instance's SSH host key, public half, in OpenSSH authorized-keys format — the fingerprint `publish` renders into a `known_hosts` entry so a host answering with a different key fails the push. `init` writes it from the keystore, which keeps the private half and stays the source of truth. Absent is a manifest written before the field existed; readers fall back to the keystore rather than skipping the pin.
+- Key material is referenced by keystore driver config, never stored — the host key's public half above is the exception, and it is public by definition.
 - Driver config paths are absolute. The manifest carries them as literal strings re-resolved on every call, so a relative path would silently follow whatever directory a later command ran from (XCUT-001).
 
 ## Snapshot format

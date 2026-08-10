@@ -46,10 +46,15 @@
 // Options.PublicKeyPath registers a key; without it, an account that has
 // no key at all fails the step before anything is created.
 //
-// The instance's own host key is not left to trust-on-first-use: it is in
-// the bundle's keystore (state.KeySSHHostKeyPublic, installed on every
-// deploy by deploy.Up), so push runs against a known_hosts file rendered
-// from it, under StrictHostKeyChecking. That file is a temporary file
+// The instance's own host key is not left to trust-on-first-use: its public
+// half is in the bundle manifest (bundle.Manifest.SSHHostKeyPublic, written
+// by `init` from the same keystore entry deploy.Up installs on the host), so
+// push runs against a known_hosts file rendered from it, under
+// StrictHostKeyChecking. Reading the pin from the manifest is what lets
+// someone publish to an instance whose secrets they do not hold — the whole
+// point of a fingerprint is that it is public. A manifest written before
+// that field existed falls back to the keystore, so no bundle already on
+// disk loses its pin. That file is a temporary file
 // outside the bundle directory, holds only the public half, and is removed
 // when the push returns — the operator's own ~/.ssh/known_hosts is never
 // edited, so their first manual `git push` prompts to accept the host key

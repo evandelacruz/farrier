@@ -1,13 +1,20 @@
 // Package bundle defines the bundle directory format: the manifest and
 // rendered Compose files that together describe a Farrier deployment.
 //
-// The manifest never carries key material. Driver config holds only
-// references to where secrets live (a keystore driver name plus its
-// non-secret config, e.g. a file path or a command line) — never a secret
-// value itself. That, plus the fact that Bundle is loaded and saved purely
-// from a directory path with no host-specific state retained, is what makes
-// a bundle "function identically after being copied to another machine,
-// given key access" (CORE-001).
+// The manifest never carries a secret. Driver config holds only references
+// to where secrets live (a keystore driver name plus its non-secret config,
+// e.g. a file path or a command line) — never a secret value itself. That,
+// plus the fact that Bundle is loaded and saved purely from a directory
+// path with no host-specific state retained, is what makes a bundle
+// "function identically after being copied to another machine, given key
+// access" (CORE-001).
+//
+// The one piece of key material the manifest does carry is the SSH host
+// key's public half (SSHHostKeyPublic), which is public by definition —
+// the same string an operator would paste into known_hosts. CORE-001 draws
+// the line at secrecy, not at the phrase "key material": a bundle is meant
+// to be copied, and a fingerprint a reader can verify the instance against
+// is exactly the kind of thing that should travel with it.
 package bundle
 
 import (
@@ -141,6 +148,28 @@ type Manifest struct {
 	// host key and existing remotes keep working (RSTR-004).
 	GitSSHPort int `yaml:"gitSshPort,omitempty"`
 
+	// SSHHostKeyPublic is the public half of the instance's SSH host key,
+	// in OpenSSH authorized-keys format — the fingerprint a client checks
+	// the git-over-SSH endpoint against. `init` writes it here from the
+	// keystore, which stays the source of truth and keeps the private half
+	// (INIT-003); this is a copy for readers who should not hold the
+	// keystore.
+	//
+	// It is here rather than only in the keystore because pinning a host
+	// key is not a privileged act. `publish` renders it into a known_hosts
+	// entry so a host answering with a different key fails the push
+	// (IMPT-004), and reading it out of the keystore meant anyone who
+	// publishes to an instance needs read access to the store holding
+	// SECRET_KEY, INTERNAL_TOKEN, and the age backup key. That is what
+	// blocked the shared instance the design supports (spec.md "The unit:
+	// one forge per project"): one forge, several projects, each project's
+	// owner publishing to it.
+	//
+	// Empty is a manifest written before the field existed. Readers fall
+	// back to the keystore rather than skipping the pin — see
+	// publish.knownHostsLine.
+	SSHHostKeyPublic string `yaml:"sshHostKeyPublic,omitempty"`
+
 	Images            map[string]string  `yaml:"images"`
 	Drivers           DriverConfig       `yaml:"drivers"`
 	ACME              ACMEConfig         `yaml:"acme,omitempty"`
@@ -217,6 +246,40 @@ func (m *Manifest) GitSSHKnownHostsHost() string {
 		return m.Domain
 	}
 	return fmt.Sprintf("[%s]:%d", m.Domain, port)
+}
+
+// SSHKnownHostsLineFor renders publicKey as an OpenSSH known_hosts entry
+// pinning this bundle's git-over-SSH endpoint: the endpoint's known_hosts
+// spelling, then the key's type and blob.
+//
+// The comment field of an authorized-keys line is dropped, because it is
+// not part of a known_hosts entry — OpenSSH would read whatever follows the
+// blob as a further host-key option.
+//
+// It takes the key rather than reading SSHHostKeyPublic so that a caller
+// falling back to the keystore for a manifest written before that field
+// existed gets a line rendered by the same code. One renderer means the two
+// sources cannot produce entries that differ.
+func (m *Manifest) SSHKnownHostsLineFor(publicKey string) (string, error) {
+	keyType, blob, err := SplitSSHPublicKey(publicKey)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s %s %s\n", m.GitSSHKnownHostsHost(), keyType, blob), nil
+}
+
+// SplitSSHPublicKey pulls the type and base64 blob out of an OpenSSH
+// authorized-keys line, discarding any comment. It reports the shape it
+// wanted rather than the bytes it got: a host key is public, but a value
+// that came out of a keystore is never echoed into an error, an event, or a
+// log (KEY-003), and one function that is safe in both cases is better than
+// two that differ only in what they may print.
+func SplitSSHPublicKey(line string) (keyType, blob string, err error) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) < 2 {
+		return "", "", fmt.Errorf("is not an openssh public key: want \"<type> <base64> [comment]\"")
+	}
+	return fields[0], fields[1], nil
 }
 
 // domainPattern is the grammar a bundle domain has to match: one or more
@@ -334,6 +397,16 @@ func (m *Manifest) Validate() error {
 	}
 	if err := ValidateGitSSHPort(m.GitSSHPort); err != nil {
 		return err
+	}
+	// Shape-checked, not merely carried. An unreadable entry here is a
+	// host-key pin that would fail at the point a push is being made, or —
+	// worse, if a reader were lenient — one that quietly stopped pinning
+	// anything. Empty is fine: that is a manifest written before the field
+	// existed, and readers fall back to the keystore.
+	if strings.TrimSpace(m.SSHHostKeyPublic) != "" {
+		if _, _, err := SplitSSHPublicKey(m.SSHHostKeyPublic); err != nil {
+			return fmt.Errorf("bundle: ssh host public key %w", err)
+		}
 	}
 	if strings.TrimSpace(m.Drivers.Keystore.Driver) == "" {
 		return fmt.Errorf("bundle: keystore driver is required")

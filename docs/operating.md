@@ -142,4 +142,4 @@ Snapshots are age-encrypted and you hold the only key. **Lose that key and every
 
 Keep it where you would keep the thing you cannot re-derive, and keep it somewhere other than the machine you would be recovering from.
 
-The same applies to the bundle itself. It holds no key material, but it holds your instance's definition, so at least one copy must live somewhere the instance does not serve.
+The same applies to the bundle itself. It holds no secrets, but it holds your instance's definition, so at least one copy must live somewhere the instance does not serve.

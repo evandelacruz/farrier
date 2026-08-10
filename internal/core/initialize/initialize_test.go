@@ -561,6 +561,56 @@ func TestRunGeneratesAndStoresAllKeyMaterial(t *testing.T) {
 	}
 }
 
+// The manifest carries the host key's public half, so someone publishing a
+// project to this instance can pin its identity without read access to the
+// keystore holding SECRET_KEY, INTERNAL_TOKEN, and the age backup key
+// (CORE-001, IMPT-004). The copy has to be the key the keystore holds, and
+// the private half has to stay out of the bundle directory entirely
+// (KEY-003).
+func TestRunRecordsTheSSHHostPublicKeyInTheManifest(t *testing.T) {
+	keysDir := t.TempDir()
+	params := validParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}}
+
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	driver, err := keystore.New("file", map[string]any{"path": keysDir})
+	if err != nil {
+		t.Fatalf("keystore.New: %v", err)
+	}
+	stored, err := driver.Resolve(context.Background(), KeySSHHostKeyPublic)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", KeySSHHostKeyPublic, err)
+	}
+	want := strings.TrimSpace(stored.Reveal())
+	if b.Manifest.SSHHostKeyPublic != want {
+		t.Errorf("manifest ssh host public key = %q, want the stored %q", b.Manifest.SSHHostKeyPublic, want)
+	}
+
+	loaded, err := bundle.Load(BundleDir(params))
+	if err != nil {
+		t.Fatalf("bundle.Load: %v", err)
+	}
+	if loaded.Manifest.SSHHostKeyPublic != want {
+		t.Errorf("loaded ssh host public key = %q, want %q", loaded.Manifest.SSHHostKeyPublic, want)
+	}
+
+	private, err := driver.Resolve(context.Background(), KeySSHHostKey)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", KeySSHHostKey, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(BundleDir(params), bundle.ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if strings.Contains(string(raw), strings.TrimSpace(private.Reveal())) {
+		t.Error("the manifest carries the host key's private half; only the public half may travel with the bundle")
+	}
+}
+
 // Everything that can fail without persisting anything runs before the
 // first Store, so an ordinary failure leaves the keystore untouched and a
 // retry is just a retry. This is the ordering the non-atomic-init defect
