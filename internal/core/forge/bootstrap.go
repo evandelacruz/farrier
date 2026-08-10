@@ -30,11 +30,12 @@ type Runner interface {
 // bootstrapped" (UP-003: safe to repeat) apart from a genuine failure.
 const alreadyExistsMarker = "user already exists"
 
-// redactedPassword is what a password is replaced with in anything reported
-// to the operator.
-const redactedPassword = "[redacted]"
+// redactedValue is what key material is replaced with in anything reported
+// to the operator — the admin password here, the app.ini secrets in
+// Secrets.Redact.
+const redactedValue = "[redacted]"
 
-// failureDetail is what a failed command left for the operator to read.
+// FailureDetail is what a failed command left for the operator to read.
 //
 // Both streams are captured because Forgejo's CLI does not commit to one:
 // its refusal to run as root — the failure a missing `-u git` produces —
@@ -42,7 +43,12 @@ const redactedPassword = "[redacted]"
 // caller reading only one of them reports a failure with no message at all.
 // stderr comes first when both carry something, so the stream a command that
 // distinguishes them puts its error on leads.
-func failureDetail(stdout, stderr *bytes.Buffer) string {
+//
+// Exported because every caller that runs a Forgejo command through a
+// Runner needs it, not only the ones in this package: internal/core/deploy's
+// readiness probes (ReadyCommand) are Forgejo CLI invocations and fail the
+// same silent way without it.
+func FailureDetail(stdout, stderr *bytes.Buffer) string {
 	parts := make([]string, 0, 2)
 	for _, buf := range []*bytes.Buffer{stderr, stdout} {
 		if msg := strings.TrimSpace(buf.String()); msg != "" {
@@ -63,7 +69,7 @@ func redact(s, secret string) string {
 	if secret == "" {
 		return s
 	}
-	return strings.ReplaceAll(s, secret, redactedPassword)
+	return strings.ReplaceAll(s, secret, redactedValue)
 }
 
 // Bootstrap creates account on the running forgejo service by running
@@ -91,7 +97,7 @@ func Bootstrap(ctx context.Context, runner Runner, job *events.Job, account Admi
 		// session or a canceled context. That rules out the transport's
 		// error, not the command's own output, which is captured from both
 		// streams and redacted before it goes anywhere.
-		detail := redact(failureDetail(&stdout, &stderr), account.Password.Reveal())
+		detail := redact(FailureDetail(&stdout, &stderr), account.Password.Reveal())
 		if strings.Contains(detail, alreadyExistsMarker) {
 			job.Emit(StepAdminBootstrap, events.StateSucceeded, fmt.Sprintf(
 				"admin account %s already exists, leaving it as-is", account.Username,
@@ -126,6 +132,27 @@ func createCommand(a AdminAccount) string {
 		"docker compose exec -T -u %s %s forgejo admin user create --username %s --email %s --password %s --admin --must-change-password=false",
 		runUser, Service, quote(a.Username), quote(a.Email), quote(a.Password.Reveal()),
 	)
+}
+
+// ReadyCommand is the command that answers whether Forgejo is ready to be
+// used, as opposed to merely running: it succeeds once Forgejo can open its
+// database and query the user table.
+//
+// That distinction is the whole point of it. On a host whose state
+// directory is fresh, Forgejo's first boot runs its entire migration set to
+// create the schema, and it accepts an exec into its container seconds
+// before that finishes — so a caller that only checks the container goes
+// straight to Bootstrap and meets a database with no tables in it. `admin
+// user list` walks the same initDB-then-query-the-user-table path `admin
+// user create` needs, has no side effects, and needs nothing in the image
+// beyond Forgejo's own binary.
+//
+// It runs as the git user for the reason createCommand does: `docker
+// compose exec` defaults to root and Forgejo refuses to run as root, so a
+// probe without `-u git` fails forever on something that has nothing to do
+// with readiness.
+func ReadyCommand() string {
+	return fmt.Sprintf("docker compose exec -T -u %s %s forgejo admin user list", runUser, Service)
 }
 
 // quote wraps s in single quotes for a POSIX shell, escaping any single

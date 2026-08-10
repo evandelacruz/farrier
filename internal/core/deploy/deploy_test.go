@@ -79,6 +79,22 @@ type fakeHost struct {
 	adminCreateErr    error
 	adminCreateStderr string
 
+	// forgeReadyFailures is how many leading forgejo readiness probes
+	// (`forgejo admin user list`) fail before one succeeds. It is separate
+	// from execFailures on purpose: the two model the two things that are
+	// true at different moments on a fresh host — the container accepts an
+	// exec well before Forgejo has finished creating its database schema —
+	// and the bug this fake exists to catch lives in the gap between them.
+	forgeReadyFailures int
+
+	// forgeReadyStderr is what a failing readiness probe writes to stderr,
+	// so a test can assert the operator is told what Forgejo said.
+	forgeReadyStderr string
+
+	// forgeLog is what `docker compose logs ... forgejo` prints, standing in
+	// for the container log a stalled deployment reports back.
+	forgeLog string
+
 	// readVersionErr fails the read of the recorded forge version
 	// (stateversion.go), standing in for an unreadable host.
 	readVersionErr error
@@ -156,6 +172,22 @@ func (f *fakeHost) Run(ctx context.Context, command string, stdout, stderr io.Wr
 		if f.execFailures > 0 {
 			f.execFailures--
 			return errors.New("container not ready")
+		}
+		return nil
+	}
+	if strings.Contains(command, "admin user list") {
+		if f.forgeReadyFailures > 0 {
+			f.forgeReadyFailures--
+			if f.forgeReadyStderr != "" && stderr != nil {
+				stderr.Write([]byte(f.forgeReadyStderr))
+			}
+			return errors.New("forgejo not ready")
+		}
+		return nil
+	}
+	if strings.Contains(command, "docker compose logs") {
+		if f.forgeLog != "" && stdout != nil {
+			stdout.Write([]byte(f.forgeLog))
 		}
 		return nil
 	}
@@ -315,7 +347,7 @@ func TestUpSucceeds(t *testing.T) {
 		t.Errorf("private key not shipped, wrote: %v", keysOf(host.files))
 	}
 
-	var sawCheckHost, sawComposeUp, sawExecForgejoReady, sawExecCaddyReady, sawAdminCreate bool
+	var sawCheckHost, sawComposeUp, sawExecForgejoReady, sawForgeDBReady, sawExecCaddyReady, sawAdminCreate bool
 	for _, cmd := range host.commands {
 		switch {
 		case strings.Contains(cmd, "docker version"):
@@ -327,6 +359,8 @@ func TestUpSucceeds(t *testing.T) {
 			}
 		case strings.Contains(cmd, "exec -T forgejo true"):
 			sawExecForgejoReady = true
+		case strings.Contains(cmd, "admin user list"):
+			sawForgeDBReady = true
 		case strings.Contains(cmd, "exec -T caddy true"):
 			sawExecCaddyReady = true
 		case strings.Contains(cmd, "admin user create"):
@@ -336,9 +370,9 @@ func TestUpSucceeds(t *testing.T) {
 			}
 		}
 	}
-	if !sawCheckHost || !sawComposeUp || !sawExecForgejoReady || !sawExecCaddyReady || !sawAdminCreate {
-		t.Fatalf("missing a step: checkHost=%v composeUp=%v execForgejoReady=%v execCaddyReady=%v adminCreate=%v (commands: %v)",
-			sawCheckHost, sawComposeUp, sawExecForgejoReady, sawExecCaddyReady, sawAdminCreate, host.commands)
+	if !sawCheckHost || !sawComposeUp || !sawExecForgejoReady || !sawForgeDBReady || !sawExecCaddyReady || !sawAdminCreate {
+		t.Fatalf("missing a step: checkHost=%v composeUp=%v execForgejoReady=%v forgeDBReady=%v execCaddyReady=%v adminCreate=%v (commands: %v)",
+			sawCheckHost, sawComposeUp, sawExecForgejoReady, sawForgeDBReady, sawExecCaddyReady, sawAdminCreate, host.commands)
 	}
 }
 
@@ -526,6 +560,177 @@ func TestUpRetriesUntilForgejoReady(t *testing.T) {
 	if count != 3 {
 		t.Errorf("readiness probes = %d, want 3 (2 failures + 1 success)", count)
 	}
+}
+
+// The bug this exists to catch: on a host whose state directory is fresh,
+// the forgejo container accepts an exec seconds before Forgejo has finished
+// creating its database schema, and an admin account created in that window
+// fails with "no such table: user". The container accepting an exec is
+// therefore not the condition Up may bootstrap on.
+func TestUpWaitsForForgejoDatabaseBeforeBootstrapping(t *testing.T) {
+	host := newFakeHost()
+	host.execFailures = 0 // the container is up immediately, as it is in the real failure
+	host.forgeReadyFailures = 3
+	host.forgeReadyStderr = "Command error: CreateUser: no such table: user"
+
+	if err := Up(context.Background(), events.NewJob(), host, testBundle(t), testOptions("/opt/farrier")); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	probes := 0
+	lastProbe, create := -1, -1
+	for i, cmd := range host.commands {
+		switch {
+		case strings.Contains(cmd, "admin user list"):
+			probes++
+			lastProbe = i
+		case strings.Contains(cmd, "admin user create"):
+			if create < 0 {
+				create = i
+			}
+		}
+	}
+	if probes != 4 {
+		t.Errorf("database probes = %d, want 4 (3 failures + 1 success); commands: %v", probes, host.commands)
+	}
+	if create < 0 {
+		t.Fatalf("no admin account was created; commands: %v", host.commands)
+	}
+	if lastProbe > create {
+		t.Errorf("admin bootstrap ran at %d, before the database was ready at %d; commands: %v", create, lastProbe, host.commands)
+	}
+}
+
+// A Forgejo that never finishes — an unwritable state directory, a bad
+// image, a config it refuses — has to fail the step saying what was being
+// waited for, and hand over the container log the reason is actually in.
+func TestUpFailsWhenForgejoNeverFinishesItsDatabase(t *testing.T) {
+	shortenForgeReadyTimeout(t)
+
+	host := newFakeHost()
+	host.forgeReadyFailures = 1 << 30
+	host.forgeReadyStderr = "Command error: CreateUser: no such table: user"
+	host.forgeLog = "boot: failed to open provider: permission denied"
+	job := events.NewJob()
+
+	err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier"))
+	if err == nil {
+		t.Fatal("Up: want error when forgejo never finishes setting up its database, got nil")
+	}
+	for _, want := range []string{"did not finish setting up its database", "no such table: user", host.forgeLog} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+	if ranCommandContaining(host, "admin user create") {
+		t.Errorf("admin bootstrap ran against a forge that was never ready; commands: %v", host.commands)
+	}
+
+	evs := drain(job)
+	if last := evs[len(evs)-1]; last.State != events.StateFailed {
+		t.Fatalf("terminal event state = %v, want failed", last.State)
+	}
+	var detail string
+	for _, ev := range evs {
+		if ev.Step == StepWaitForge && ev.State == events.StateFailed {
+			detail = ev.Detail
+		}
+	}
+	if !strings.Contains(detail, "did not finish setting up its database") {
+		t.Errorf("%s detail = %q, want it to name what was being waited for", StepWaitForge, detail)
+	}
+	if !strings.Contains(detail, host.forgeLog) {
+		t.Errorf("%s detail = %q, want it to carry the container log", StepWaitForge, detail)
+	}
+}
+
+// KEY-003: the container log is Forgejo's output, and Forgejo was handed the
+// bundle's key material in app.ini. Whatever it chooses to echo, none of it
+// reaches an event.
+func TestUpKeepsKeyMaterialOutOfTheReportedForgejoLog(t *testing.T) {
+	shortenForgeReadyTimeout(t)
+
+	host := newFakeHost()
+	host.forgeReadyFailures = 1 << 30
+	host.forgeLog = "config: [security] SECRET_KEY = test-secret-key-value is not valid"
+
+	err := Up(context.Background(), events.NewJob(), host, testBundle(t), testOptions("/opt/farrier"))
+	if err == nil {
+		t.Fatal("Up: want error when forgejo never finishes setting up its database, got nil")
+	}
+	if strings.Contains(err.Error(), "test-secret-key-value") {
+		t.Errorf("error = %q, want the forgejo secret key redacted out of the reported log", err)
+	}
+	if !strings.Contains(err.Error(), "[redacted]") {
+		t.Errorf("error = %q, want the redacted stand-in in place of the secret", err)
+	}
+}
+
+// KEY-003 again, for the other half of what a stalled wait reports. The
+// readiness probe runs the same Forgejo binary against the same app.ini the
+// container log is scrubbed for, so its own output is Forgejo's output too:
+// a config failure it answers with the value it objected to must not reach
+// the error or the event either. All three secrets, because app.ini carries
+// all three and any of them can be the one Forgejo echoes.
+func TestUpKeepsKeyMaterialOutOfTheReportedReadinessProbe(t *testing.T) {
+	shortenForgeReadyTimeout(t)
+
+	secrets := []string{
+		"test-secret-key-value",
+		"test-internal-token-value",
+		"test-lfs-jwt-secret-value",
+	}
+
+	host := newFakeHost()
+	host.forgeReadyFailures = 1 << 30
+	host.forgeReadyStderr = "Command error: invalid config: SECRET_KEY=" + secrets[0] +
+		" INTERNAL_TOKEN=" + secrets[1] + " JWT_SECRET=" + secrets[2]
+	// No container log, so the probe's own output is the only thing the
+	// failure can be carrying — otherwise a pass here would prove nothing
+	// the log-tail test does not already prove.
+	host.forgeLog = ""
+	job := events.NewJob()
+
+	err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier"))
+	if err == nil {
+		t.Fatal("Up: want error when forgejo never finishes setting up its database, got nil")
+	}
+
+	var detail string
+	for _, ev := range drain(job) {
+		if ev.Step == StepWaitForge && ev.State == events.StateFailed {
+			detail = ev.Detail
+		}
+	}
+	if detail == "" {
+		t.Fatalf("no failed %s event to check", StepWaitForge)
+	}
+
+	for _, secret := range secrets {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error = %q, want %q redacted out of the probe's output", err, secret)
+		}
+		if strings.Contains(detail, secret) {
+			t.Errorf("%s detail = %q, want %q redacted out of the probe's output", StepWaitForge, detail, secret)
+		}
+	}
+	if !strings.Contains(detail, "[redacted]") {
+		t.Errorf("%s detail = %q, want the redacted stand-in in place of the secrets", StepWaitForge, detail)
+	}
+	// The probe's non-secret text is the whole reason the operator is shown
+	// it at all, and redaction may not cost them that.
+	if !strings.Contains(detail, "invalid config") {
+		t.Errorf("%s detail = %q, want it to still carry what forgejo said", StepWaitForge, detail)
+	}
+}
+
+// shortenForgeReadyTimeout drops the forge wait's budget to something a test
+// can afford, restoring it afterwards. The real budget is three minutes.
+func shortenForgeReadyTimeout(t *testing.T) {
+	t.Helper()
+	original := forgeReadyTimeout
+	forgeReadyTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { forgeReadyTimeout = original })
 }
 
 func TestUpFailsWhenDockerUnreachable(t *testing.T) {

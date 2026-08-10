@@ -331,9 +331,10 @@ func (f *fakeHost) Run(ctx context.Context, command string, stdout, stderr io.Wr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
-	// deploy.Up's readiness polling (`docker compose exec -T <service>
-	// true`) and admin bootstrap both go through Run; neither needs to
-	// fail for restore's own tests.
+	// deploy.Up's readiness polling (an exec into each container, then
+	// `forgejo admin user list` until Forgejo's database answers) and admin
+	// bootstrap all go through Run; none of them needs to fail for
+	// restore's own tests.
 	return nil
 }
 
