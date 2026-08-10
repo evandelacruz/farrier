@@ -38,6 +38,7 @@ const (
 	StepValidate         = "validate"
 	StepProveZoneControl = "prove-zone-control"
 	StepGenerateKeys     = "generate-keys"
+	StepReportKeys       = "report-key-material"
 	StepResolveImages    = "resolve-images"
 	StepWrite            = "write"
 )
@@ -238,6 +239,13 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 		return fail(job, StepGenerateKeys, err)
 	}
 	job.Emit(StepGenerateKeys, events.StateSucceeded, fmt.Sprintf("stored %d piece(s) of key material", len(material)))
+
+	// INIT-006. It runs the moment the material is safely stored rather
+	// than at the end of Run: a later step failing must not be the reason
+	// an operator never learns where the age backup key went, since by
+	// this point it exists and is already the one thing they cannot
+	// re-derive.
+	reportKeyMaterial(job, params.Keystore.Driver, keystoreDriver, material)
 
 	job.Started(StepResolveImages, "resolving image references to digests")
 	images, err := resolveImages(ctx, resolverOrDefault(params.Resolver), params.Images)
