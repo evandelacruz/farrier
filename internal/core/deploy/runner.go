@@ -70,11 +70,16 @@ func RunnerHostPath(remoteDir string) string {
 // bundle that predates the field is not, and skips the runner with an event
 // saying so rather than failing a deployment that used to work.
 //
+// address is the operator-supplied address a nameless bundle is served at
+// (UP-006) and is empty for a named one; it is what the runner is pointed
+// at, through forge.InstanceURL, so a nameless instance's CI reaches the
+// instance over plain HTTP at the same URL the operator's browser does.
+//
 // Every part of this is safe to repeat (UP-003): the secret is non-rotating
 // key material written back byte-for-byte, the mounts and command are
 // derived from the manifest alone, and the registration the caller performs
 // afterwards is an upsert keyed by that same secret.
-func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string, compose map[string][]byte) (map[string][]byte, bool, error) {
+func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir, address string, compose map[string][]byte) (map[string][]byte, bool, error) {
 	if !b.Manifest.ColocatedRunnerEnabled() {
 		compose, err := orchestrate.WithoutService(compose, forge.RunnerService)
 		if err != nil {
@@ -119,7 +124,7 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 	if err != nil {
 		return nil, false, fmt.Errorf("set runner user: %w", err)
 	}
-	compose, err = orchestrate.WithCommand(compose, forge.RunnerService, forge.RunnerCommand(forge.RunnerInstanceURL(b.Manifest.Domain)))
+	compose, err = orchestrate.WithCommand(compose, forge.RunnerService, forge.RunnerCommand(forge.InstanceURL(&b.Manifest, address)))
 	if err != nil {
 		return nil, false, fmt.Errorf("set runner command: %w", err)
 	}

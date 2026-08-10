@@ -152,20 +152,6 @@ func RunnerCommand(instanceURL string) []string {
 	return []string{"sh", "-ec", script}
 }
 
-// RunnerInstanceURL is the URL the colocated runner and its job containers
-// reach the instance at: the bundle domain over HTTPS.
-//
-// It is deliberately the public domain rather than the forgejo service's
-// name on the Compose network. Job containers are started on the host's
-// Docker daemon, on per-job networks the runner creates, so a Compose
-// service name would not resolve inside them — and spec.md "The domain"
-// settles the general case anyway: clone URLs, webhooks, and runner
-// registration all derive from the domain, which is what survives the host
-// changing underneath it.
-func RunnerInstanceURL(domain string) string {
-	return fmt.Sprintf("https://%s/", strings.TrimSpace(domain))
-}
-
 // RegisterRunner registers the colocated runner against the running
 // instance without operator action (FORGE-005), reading the secret from
 // secretPath on the deploy host and feeding it to Forgejo's registration

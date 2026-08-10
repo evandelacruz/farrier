@@ -238,3 +238,36 @@ func waitDone(t *testing.T, job *events.Job) {
 		}
 	}
 }
+
+// UP-006: a nameless bundle's address is supplied at `up`, and the API is
+// the second frontend that has to be able to supply it. The pairing rule
+// itself belongs to the core, so all the handler owes is passing it
+// through unchanged.
+func TestHandleUpPassesTheAddressThrough(t *testing.T) {
+	s := newTestServer()
+	s.loadBundle = func(dir string) (*bundle.Bundle, error) { return testBundle(), nil }
+	host := newFakeHost()
+	s.dial = func(ctx context.Context, target string, opts orchestrate.Options) (Host, error) {
+		return host, nil
+	}
+	gotAddress := make(chan string, 1)
+	s.deployUp = func(ctx context.Context, job *events.Job, h deploy.Host, b *bundle.Bundle, opts deploy.Options) error {
+		gotAddress <- opts.Address
+		job.Succeeded("deployed")
+		return nil
+	}
+
+	rec := doUp(t, s, `{"bundleDir":"/tmp/bundle","target":"ssh://user@host","address":"box.tail1234.ts.net"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	select {
+	case got := <-gotAddress:
+		if got != "box.tail1234.ts.net" {
+			t.Errorf("deploy.Options.Address = %q, want box.tail1234.ts.net", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("deployUp was not called in time")
+	}
+	host.waitClosed(t)
+}

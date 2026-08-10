@@ -260,21 +260,84 @@ func TestRenderAppINIQuarantineKeepsIdentityIntact(t *testing.T) {
 	}
 }
 
-// INIT-005 + UP-006: every URL in app.ini is built from the domain, so a
-// nameless bundle has nothing to render one from. Until UP-006 teaches `up`
-// to serve at an operator-supplied address, this fails loudly rather than
-// deploying a Forgejo whose ROOT_URL is "https:///".
-func TestRenderAppINIRejectsANamelessBundle(t *testing.T) {
+// namelessManifest is what `init` with no domain produces (INIT-005): no
+// domain, and no ACME section to pair with one.
+func namelessManifest() *bundle.Manifest {
 	m := validManifest()
 	m.Domain = ""
 	m.ACME = bundle.ACMEConfig{}
+	return m
+}
 
-	_, err := RenderAppINI(m, validSecrets(), AppINIOptions{})
+// INIT-005 + UP-006: every URL in app.ini is built from one host, and a
+// nameless bundle carries none — the operator supplies it at `up`. Without
+// it this fails loudly rather than deploying a Forgejo whose ROOT_URL is
+// "https:///".
+func TestRenderAppINIRejectsANamelessBundleWithoutAnAddress(t *testing.T) {
+	_, err := RenderAppINI(namelessManifest(), validSecrets(), AppINIOptions{})
 	if err == nil {
-		t.Fatal("RenderAppINI: want error for a nameless bundle, got nil")
+		t.Fatal("RenderAppINI: want error for a nameless bundle with no address, got nil")
 	}
 	if !strings.Contains(err.Error(), "UP-006") {
 		t.Errorf("error = %v, want it to point at UP-006", err)
+	}
+}
+
+// UP-006: with the operator's address, every URL a nameless instance
+// advertises is built from it, over plain HTTP.
+func TestRenderAppINIRendersANamelessBundleAtTheSuppliedAddress(t *testing.T) {
+	out, err := RenderAppINI(namelessManifest(), validSecrets(), AppINIOptions{Address: "192.168.1.5"})
+	if err != nil {
+		t.Fatalf("RenderAppINI: %v", err)
+	}
+	text := string(out)
+	for _, want := range []string{
+		"ROOT_URL = http://192.168.1.5/",
+		"DOMAIN = 192.168.1.5",
+		"SSH_DOMAIN = 192.168.1.5",
+		// Unchanged from the named case: Caddy is what terminates, and it
+		// proxies to Forgejo in plaintext either way.
+		"PROTOCOL = http",
+		// UP-006's "git over SSH unchanged".
+		"START_SSH_SERVER = true",
+		"SSH_SERVER_HOST_KEYS = " + SSHHostKeyPath,
+		"INSTALL_LOCK = true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("nameless app.ini missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "https://") {
+		t.Errorf("nameless app.ini advertises an https URL:\n%s", text)
+	}
+}
+
+// A named bundle already answers where it is reached, so an address on top
+// of it is a conflict rather than an override.
+func TestRenderAppINIRejectsAnAddressForANamedBundle(t *testing.T) {
+	_, err := RenderAppINI(validManifest(), validSecrets(), AppINIOptions{Address: "192.168.1.5"})
+	if err == nil {
+		t.Fatal("RenderAppINI: want error for an address on a named bundle, got nil")
+	}
+}
+
+// The admin account's email has to be a valid one, and a nameless instance
+// has no name to build it from — an IP literal would not be a valid email
+// domain at all (UP-006).
+func TestAdminEmailDomainFallsBackToAReservedDomainWhenNameless(t *testing.T) {
+	if got, want := AdminEmailDomain(validManifest()), "forge.example.com"; got != want {
+		t.Errorf("AdminEmailDomain(named) = %q, want %q", got, want)
+	}
+	got := AdminEmailDomain(namelessManifest())
+	if !strings.HasSuffix(got, ".invalid") {
+		t.Errorf("AdminEmailDomain(nameless) = %q, want a reserved .invalid domain", got)
+	}
+	account, err := NewAdminAccount(got)
+	if err != nil {
+		t.Fatalf("NewAdminAccount(%q): %v", got, err)
+	}
+	if !strings.Contains(account.Email, "@") {
+		t.Errorf("admin email = %q, want a well-formed address", account.Email)
 	}
 }
 

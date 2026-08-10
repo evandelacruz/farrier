@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/forge"
@@ -153,7 +154,7 @@ func TestDrilledRunnerReachesTheDrilledInstance(t *testing.T) {
 	// The runner's own configuration is untouched: it still connects to the
 	// bundle domain over HTTPS, exactly as production's does. The alias
 	// changes where that resolves on the drilled host, nothing else.
-	if !strings.Contains(composed, forge.RunnerInstanceURL(testDomain)) {
+	if !strings.Contains(composed, forge.InstanceURL(&bundle.Manifest{Domain: testDomain}, "")) {
 		t.Errorf("drilled runner no longer connects to the bundle domain:\n%s", composed)
 	}
 }

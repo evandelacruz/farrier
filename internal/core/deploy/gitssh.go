@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/forge"
@@ -54,16 +55,26 @@ func publishGitSSH(compose map[string][]byte, m *bundle.Manifest, quarantine boo
 
 // gitSSHDetail is the event detail publishGitSSH's step reports (CORE-002):
 // the clone URL the operator can actually use, spelled the way Forgejo will
-// display it. The spelling comes from bundle.Manifest.GitSSHCloneURL, the
+// display it. The spelling comes from bundle.Manifest.GitSSHCloneURLAt, the
 // same function `publish` writes into a project's `origin` (IMPT-004), so
 // the URL reported here and the URL configured there cannot diverge.
 //
+// address is the operator-supplied address a nameless bundle is served at
+// (UP-006) and is empty for a named one, which is addressed at its domain.
+// It changes the host in the clone URL and nothing else — the port, the
+// key, and the published mapping are identical either way, which is
+// UP-006's "with git over SSH unchanged".
+//
 // It names no key material — the host key is identified by where it came
 // from, never by its bytes (KEY-003).
-func gitSSHDetail(m *bundle.Manifest, quarantine bool) string {
+func gitSSHDetail(m *bundle.Manifest, address string, quarantine bool) string {
 	port := m.GitSSHPortOrDefault()
 
-	clone := m.GitSSHCloneURL("<owner>", "<repo>")
+	host := strings.TrimSpace(m.Domain)
+	if !m.Named() {
+		host = address
+	}
+	clone := m.GitSSHCloneURLAt(host, "<owner>", "<repo>")
 	if quarantine {
 		return fmt.Sprintf("ssh host key installed; git over SSH published on %s:%d only, reachable through an SSH tunnel (DRIL-002)", orchestrate.LoopbackAddress, port)
 	}

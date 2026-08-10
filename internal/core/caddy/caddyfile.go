@@ -53,6 +53,45 @@ func RenderCaddyfile(domain, upstream string) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+// RenderPlainHTTPCaddyfile renders a Caddyfile that serves address over
+// plain HTTP and reverse-proxies every request to upstream — what a
+// nameless bundle gets (UP-006), where there is no domain to name a
+// certificate for and the operator supplies the address at `up`.
+//
+// The `http://` prefix on the site address is load-bearing rather than
+// decorative. A bare site address puts Caddy into automatic HTTPS: it would
+// listen on 443, and it would try to obtain its own certificate — becoming
+// the second ACME client this package's doc comment exists to rule out, for
+// a name no ACME server would issue for anyway. Prefixed, the site is
+// HTTP-only on port 80 and Caddy attempts no issuance at all.
+//
+// address is an IP or a hostname, spelled for a URL authority (an IPv6
+// literal bracketed). It is the same string the caller renders into
+// Forgejo's ROOT_URL, so the site Caddy answers for and the URL the forge
+// tells browsers about are the same one.
+//
+// What this costs the operator is stated in spec.md "Instances without a
+// name" and docs/security.md "A nameless instance serves its web UI in the
+// clear": pull requests, review, and login travel unencrypted, so the
+// instance belongs on a LAN, a VPN, or a tailnet. Git over SSH is
+// untouched by any of this and is encrypted regardless.
+func RenderPlainHTTPCaddyfile(address, upstream string) ([]byte, error) {
+	address = strings.TrimSpace(address)
+	upstream = strings.TrimSpace(upstream)
+	if address == "" {
+		return nil, fmt.Errorf("caddy: address is required")
+	}
+	if upstream == "" {
+		return nil, fmt.Errorf("caddy: upstream is required")
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "http://%s {\n", address)
+	fmt.Fprintf(&b, "\treverse_proxy %s\n", upstream)
+	fmt.Fprintf(&b, "}\n")
+	return []byte(b.String()), nil
+}
+
 // RenderPushHoldCaddyfile renders the same TLS-terminating,
 // reverse-proxying Caddyfile RenderCaddyfile does, with two routes ahead of
 // the proxy that reject git's smart-HTTP push endpoints —

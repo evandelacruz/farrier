@@ -638,11 +638,11 @@ func TestUpReportsHTTPSEndpointAtTheDomainOnCompletion(t *testing.T) {
 	}
 }
 
-// UP-002 is a guarantee about a named bundle. A nameless one (INIT-005) has
-// no domain to serve HTTPS at, and serving it over plain HTTP at an
-// operator-supplied address is UP-006's job — so Up refuses rather than
-// half-deploying an instance nothing can reach.
-func TestUpRejectsNamelessBundle(t *testing.T) {
+// A nameless bundle (INIT-005) has no domain, so `up` is where the
+// instance learns how it is reached (UP-006). Without an address there is
+// nothing to render a ROOT_URL or a Caddy site from, so Up refuses rather
+// than half-deploying an instance nothing can reach.
+func TestUpRejectsNamelessBundleWithoutAnAddress(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()
 

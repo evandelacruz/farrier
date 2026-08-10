@@ -60,11 +60,17 @@ func printCommands() {
 // runUp implements the `up` command (UP-001): it connects to the target
 // over SSH and calls deploy.Up, printing the same job event stream a
 // dashboard would render over SSE (spec.md "one core, thin frontends").
+//
+// -address is how a nameless bundle (INIT-005) learns where it is reached
+// (UP-006). It is not validated here: whether it is required, forbidden, or
+// well-formed is deploy.Up's call, so the CLI and the API report the same
+// thing.
 func runUp(args []string) int {
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (required)")
 	target := fs.String("target", "", "ssh://user@host[:port] of the deployment target (required)")
 	remoteDir := fs.String("remote-dir", "/opt/farrier", "directory on the host to deploy into")
+	address := fs.String("address", "", "IP or hostname to serve a nameless bundle's web UI at over plain HTTP (nameless bundles only)")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file (default: ~/.ssh/known_hosts)")
 	timeout := fs.Duration("ssh-timeout", 0, "SSH dial and handshake timeout (default: orchestrate.DefaultTimeout)")
@@ -97,7 +103,7 @@ func runUp(args []string) int {
 
 	job := events.NewJob()
 	err = runJob(job, func() error {
-		return deploy.Up(ctx, job, client, b, deploy.Options{RemoteDir: *remoteDir})
+		return deploy.Up(ctx, job, client, b, deploy.Options{RemoteDir: *remoteDir, Address: *address})
 	})
 
 	if err != nil {

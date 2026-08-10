@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
 )
 
@@ -58,9 +59,23 @@ func TestValidateRunnerSecretRejectsMalformedSecrets(t *testing.T) {
 	}
 }
 
-func TestRunnerInstanceURLIsTheBundleDomain(t *testing.T) {
-	if got, want := RunnerInstanceURL(" forge.example.com "), "https://forge.example.com/"; got != want {
-		t.Errorf("RunnerInstanceURL = %q, want %q", got, want)
+func TestInstanceURLIsTheBundleDomainOverHTTPS(t *testing.T) {
+	m := &bundle.Manifest{Domain: " forge.example.com "}
+	if got, want := InstanceURL(m, ""), "https://forge.example.com/"; got != want {
+		t.Errorf("InstanceURL = %q, want %q", got, want)
+	}
+}
+
+// UP-006: a nameless bundle is reached at the operator-supplied address
+// over plain HTTP, and the runner is pointed at the same URL the operator's
+// browser opens.
+func TestInstanceURLIsTheSuppliedAddressOverHTTPForANamelessBundle(t *testing.T) {
+	m := &bundle.Manifest{}
+	if got, want := InstanceURL(m, " box.tail1234.ts.net "), "http://box.tail1234.ts.net/"; got != want {
+		t.Errorf("InstanceURL = %q, want %q", got, want)
+	}
+	if got, want := InstanceURL(m, "192.168.1.5"), "http://192.168.1.5/"; got != want {
+		t.Errorf("InstanceURL = %q, want %q", got, want)
 	}
 }
 

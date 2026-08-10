@@ -79,3 +79,49 @@ func TestRenderPushHoldCaddyfileRejectsEmptyMessage(t *testing.T) {
 		t.Fatal("RenderPushHoldCaddyfile: want error for empty message, got nil")
 	}
 }
+
+// UP-006: a nameless bundle has no domain to name a certificate for, so
+// Caddy serves the operator's address in plain HTTP — and must not fall
+// into automatic HTTPS, which would make it the second ACME client this
+// package exists to rule out.
+func TestRenderPlainHTTPCaddyfileServesTheAddressWithoutTLS(t *testing.T) {
+	out, err := RenderPlainHTTPCaddyfile(" box.tail1234.ts.net ", "forgejo:3000")
+	if err != nil {
+		t.Fatalf("RenderPlainHTTPCaddyfile: %v", err)
+	}
+	got := string(out)
+
+	if !strings.Contains(got, "http://box.tail1234.ts.net {") {
+		t.Errorf("caddyfile does not pin the site to plain HTTP: %s", got)
+	}
+	if !strings.Contains(got, "reverse_proxy forgejo:3000") {
+		t.Errorf("caddyfile missing reverse_proxy to upstream: %s", got)
+	}
+	if strings.Contains(got, "tls") {
+		t.Errorf("caddyfile carries a tls directive: %s", got)
+	}
+	if strings.Contains(got, CertPath) || strings.Contains(got, KeyPath) {
+		t.Errorf("caddyfile references certificate files that a nameless bundle does not have: %s", got)
+	}
+}
+
+// An IPv6 address arrives bracketed and stays that way: Caddy's site
+// address is a URL authority like every other place it lands.
+func TestRenderPlainHTTPCaddyfileAcceptsABracketedIPv6Address(t *testing.T) {
+	out, err := RenderPlainHTTPCaddyfile("[fd00::1]", "forgejo:3000")
+	if err != nil {
+		t.Fatalf("RenderPlainHTTPCaddyfile: %v", err)
+	}
+	if !strings.Contains(string(out), "http://[fd00::1] {") {
+		t.Errorf("caddyfile does not serve the bracketed literal: %s", out)
+	}
+}
+
+func TestRenderPlainHTTPCaddyfileRejectsEmptyAddressOrUpstream(t *testing.T) {
+	if _, err := RenderPlainHTTPCaddyfile("", "forgejo:3000"); err == nil {
+		t.Fatal("RenderPlainHTTPCaddyfile: want error for empty address, got nil")
+	}
+	if _, err := RenderPlainHTTPCaddyfile("box.local", ""); err == nil {
+		t.Fatal("RenderPlainHTTPCaddyfile: want error for empty upstream, got nil")
+	}
+}
