@@ -16,6 +16,7 @@ Each doc has one function. Content lives in exactly one place; the others link t
 | [docs/spec.md](docs/spec.md) | The decision record: every settled design decision, what and how. **Source of truth**, with the README, when documents disagree. |
 | [docs/functional-requirements.md](docs/functional-requirements.md) | Observable behavior, stated testably, with the stable requirement IDs. The WHAT. |
 | [docs/tech-spec.md](docs/tech-spec.md) | Internal structure, formats, protocols, operational targets — only what no single package owns. The HOW. |
+| [docs/operating.md](docs/operating.md) | The operator's runbook: recovery, backups, restore, drill, upgrade. Task-shaped, not design. |
 | [docs/status.json](docs/status.json) | Delivery record — one line per requirement ID. A work list, not a source of truth. |
 | CLAUDE.md | This file: how to work here. |
 | [AGENTS.md](AGENTS.md) | Cloud-agent environment notes: setup, build ordering, test scope. |

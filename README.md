@@ -25,7 +25,7 @@ farrier backup --to ./backups
 # farrier backup --to s3://my-bucket/farrier
 ```
 
-Day-to-day work stays in Forgejo's UI at your domain. Portability — status, drills, promote — stays on your machine (`farrier status`, `farrier drill`, `farrier promote`, or `farrier ui`). Full command set: [docs/spec.md](docs/spec.md).
+Day-to-day work stays in Forgejo's UI at your domain. Portability — status, drills, promote — stays on your machine (`farrier status`, `farrier drill`, `farrier promote`, or `farrier ui`). Backing up, restoring, and getting back after losing a host: [docs/operating.md](docs/operating.md). Full command set: [docs/spec.md](docs/spec.md).
 
 Build from source with Go (version in `go.mod`):
 
