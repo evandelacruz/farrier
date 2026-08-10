@@ -21,6 +21,10 @@ type initDriverRef struct {
 
 // initRequest is the POST /init body, one field per initialize.Params.
 type initRequest struct {
+	// Domain is optional: omitting it asks for a nameless bundle
+	// (INIT-005), which skips zone proof and certificate issuance and
+	// requires the operator to own nothing. acmeDnsProvider then has to be
+	// omitted too.
 	Domain string `json:"domain"`
 	// Project is the project folder the forge is for, resolved on the
 	// machine running the loopback server — the operator's own, since that
@@ -51,10 +55,6 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("decode request: %w", err))
 		return
 	}
-	if strings.TrimSpace(req.Domain) == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("domain is required"))
-		return
-	}
 	if strings.TrimSpace(req.Project) == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("project is required"))
 		return
@@ -67,8 +67,11 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("blob.driver is required"))
 		return
 	}
-	if strings.TrimSpace(req.ACMEDNSProvider) == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("acmeDnsProvider is required"))
+	// Required only with a domain (INIT-005). A provider without one is a
+	// contradiction initialize.Run rejects through the event stream, the
+	// same as every other params-level disagreement.
+	if strings.TrimSpace(req.Domain) != "" && strings.TrimSpace(req.ACMEDNSProvider) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("acmeDnsProvider is required with domain"))
 		return
 	}
 	if err := bundle.ValidateGitSSHPort(req.GitSSHPort); err != nil {

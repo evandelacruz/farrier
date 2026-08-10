@@ -149,6 +149,44 @@ func TestRunReportsKeyMaterialBeforeResolvingImages(t *testing.T) {
 	}
 }
 
+// INIT-005 × INIT-006: a nameless bundle issues no certificate, so the
+// report must say so by omission rather than naming a destination for two
+// pieces of key material that were never generated. An operator reading
+// "TLS certificate → /keys/tls.crt" would go looking for a file that does
+// not exist, and would believe the instance is serving HTTPS when it is
+// not. Everything else is reported exactly as it is for a named bundle,
+// including the age key warning — a nameless instance takes real backups.
+func TestRunWithNoDomainReportsEveryKeyButTLS(t *testing.T) {
+	keysDir := t.TempDir()
+	params := namelessParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}}
+	job := events.NewJob()
+	if _, err := Run(context.Background(), job, params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	details := reportDetails(job)
+
+	for _, name := range allKeyNames {
+		var found bool
+		for _, detail := range details {
+			if strings.HasPrefix(detail, name+" ") {
+				found = true
+				break
+			}
+		}
+		tls := name == KeyTLSCertificate || name == KeyTLSPrivateKey
+		if tls && found {
+			t.Errorf("report claims %s was stored, but a nameless bundle issues no certificate; events = %q", name, details)
+		}
+		if !tls && !found {
+			t.Errorf("no report event for %s; events = %q", name, details)
+		}
+	}
+	if !strings.Contains(details[len(details)-1], "unrecoverable") {
+		t.Errorf("last report event = %q, want the age backup key warning last", details[len(details)-1])
+	}
+}
+
 // describingDriver stands in for a driver whose storage farrier can name.
 type describingDriver struct {
 	stubKeystore

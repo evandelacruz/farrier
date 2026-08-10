@@ -40,7 +40,6 @@ func TestHandleInitMissingRequiredFields(t *testing.T) {
 		name string
 		body string
 	}{
-		{"missing domain", `{"project":"/srv/p","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
 		{"missing project", `{"domain":"example.com","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
 		{"missing keystore driver", `{"domain":"example.com","project":"/srv/p","blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
 		{"missing blob driver", `{"domain":"example.com","project":"/srv/p","keystore":{"driver":"file"},"acmeDnsProvider":"manual"}`},
@@ -54,6 +53,48 @@ func TestHandleInitMissingRequiredFields(t *testing.T) {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
 			}
 		})
+	}
+}
+
+// INIT-005: a request with no domain is a request for a nameless bundle,
+// not an incomplete one, and the acmeDnsProvider that only makes sense
+// alongside a domain goes with it. The capability is reachable from the API
+// as it is from the CLI.
+func TestHandleInitAcceptsARequestWithNoDomain(t *testing.T) {
+	s := newTestServer()
+
+	var gotParams initialize.Params
+	done := make(chan struct{})
+	s.initRun = func(ctx context.Context, job *events.Job, params initialize.Params) (*bundle.Bundle, error) {
+		gotParams = params
+		job.Succeeded("done")
+		close(done)
+		return nil, nil
+	}
+
+	rec := doInit(t, s, `{
+		"project": "/srv/my-project",
+		"keystore": {"driver": "file", "config": {"path": "/tmp/keys"}},
+		"blob": {"driver": "local", "config": {"path": "/tmp/blobs"}}
+	}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("initRun was not called")
+	}
+
+	if gotParams.Domain != "" {
+		t.Errorf("Domain = %q, want it empty for a nameless bundle", gotParams.Domain)
+	}
+	if gotParams.ACMEDNSProvider != "" {
+		t.Errorf("ACMEDNSProvider = %q, want it empty for a nameless bundle", gotParams.ACMEDNSProvider)
+	}
+	if gotParams.Project != "/srv/my-project" {
+		t.Errorf("Project = %q, want /srv/my-project", gotParams.Project)
 	}
 }
 
