@@ -31,6 +31,7 @@ func writeKnownHosts(t *testing.T, addr string, hostPub ssh.PublicKey) string {
 
 func echoHandler(t *testing.T) func(string) fakeResponse {
 	return func(command string) fakeResponse {
+		command = withoutDockerPath(command)
 		if strings.HasPrefix(command, "docker version") {
 			return fakeResponse{stdout: "26.1.0\n", exitCode: 0}
 		}

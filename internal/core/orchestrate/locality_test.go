@@ -255,6 +255,10 @@ func assertDeployShape(t *testing.T, got []exchange) {
 
 	next := 0
 	for _, e := range got {
+		// Match on the command Farrier asked for, not the wire form: every
+		// command carries the docker PATH preamble, which is the same on
+		// all three legs and so says nothing about locality either way.
+		e.command = withoutDockerPath(e.command)
 		if next < len(steps) && steps[next].match(e) {
 			next++
 		}
@@ -392,7 +396,7 @@ func (s *recordingSSHServer) serveSession(channel ssh.Channel, requests <-chan *
 		stdin, _ := io.ReadAll(channel)
 		s.record(exchange{command: msg.Command, stdin: string(stdin)})
 
-		if strings.HasPrefix(msg.Command, "docker version") {
+		if strings.HasPrefix(withoutDockerPath(msg.Command), "docker version") {
 			io.WriteString(channel, "26.1.0\n")
 		}
 		channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))

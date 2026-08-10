@@ -153,6 +153,12 @@ func (c *Client) WriteFile(ctx context.Context, remotePath string, content []byt
 
 // run is the one place a session is opened, wired up, and waited on. Run,
 // Output, and WriteFile differ only in what they attach to it.
+//
+// It is also the one place the docker PATH fallback is applied. Every
+// command this package runs — and so every docker invocation any package
+// makes, since they all reach a host through this transport — goes over a
+// session started here, which is what keeps that fallback a single decision
+// rather than one per caller.
 func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) error {
 	session, err := c.conn.NewSession()
 	if err != nil {
@@ -170,7 +176,7 @@ func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdou
 		session.Stderr = stderr
 	}
 
-	if err := session.Start(command); err != nil {
+	if err := session.Start(withDockerPath(command)); err != nil {
 		return fmt.Errorf("orchestrate: %s: start %q: %w", c.target, command, err)
 	}
 
@@ -184,7 +190,7 @@ func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdou
 		return fmt.Errorf("orchestrate: %s: %q: %w", c.target, command, ctx.Err())
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("orchestrate: %s: %q: %w", c.target, command, err)
+			return fmt.Errorf("orchestrate: %s: %q: %w%s", c.target, command, err, dockerMissingHint(command, err))
 		}
 		return nil
 	}
@@ -203,16 +209,27 @@ func (c *Client) RunStdin(ctx context.Context, command string, stdin io.Reader, 
 	return c.run(ctx, command, stdin, stdout, stderr)
 }
 
+// dockerVersionCommand asks the host's Docker daemon for its version. It is
+// the readiness check: it fails if the CLI is missing and equally if the CLI
+// is there but cannot reach a daemon.
+const dockerVersionCommand = "docker version --format '{{.Server.Version}}'"
+
 // CheckHost verifies the host meets the whole of what ORCH-001 requires
 // beyond SSH itself: Docker, reachable over the same SSH session used for
 // everything else. Its error names Docker specifically — the only thing
 // Farrier ever requires of the host besides SSH — so an operator whose
 // host lacks it gets a diagnosis instead of a generic exit-status failure.
+// When the CLI itself could not be found, the diagnosis carries
+// dockerMissingHint's explanation of where Farrier looked and why an SSH
+// session sees a different PATH than a terminal does.
 func (c *Client) CheckHost(ctx context.Context) error {
 	var stderr bytes.Buffer
-	if err := c.Run(ctx, "docker version --format '{{.Server.Version}}'", io.Discard, &stderr); err != nil {
+	if err := c.Run(ctx, dockerVersionCommand, io.Discard, &stderr); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return fmt.Errorf("orchestrate: %s: Docker not usable over SSH: %s", c.target, msg)
+			// Run's error already carries the hint; this branch drops it
+			// in favor of the host's own stderr, so re-attach it here.
+			return fmt.Errorf("orchestrate: %s: Docker not usable over SSH: %s%s",
+				c.target, msg, dockerMissingHint(dockerVersionCommand, err))
 		}
 		return fmt.Errorf("orchestrate: %s: Docker not usable over SSH: %w", c.target, err)
 	}
