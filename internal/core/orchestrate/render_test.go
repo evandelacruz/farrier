@@ -97,3 +97,26 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// INIT-005: a nameless bundle has no domain, so its services carry no
+// FARRIER_DOMAIN — an empty value would read as a name that failed to
+// render.
+func TestRenderOmitsTheDomainForANamelessBundle(t *testing.T) {
+	m := testManifest()
+	m.Domain = ""
+	m.ACME = bundle.ACMEConfig{}
+
+	files, err := Render(m)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var spec composeSpec
+	if err := yaml.Unmarshal(files[ComposeFile], &spec); err != nil {
+		t.Fatalf("unmarshal rendered compose: %v", err)
+	}
+	for name, service := range spec.Services {
+		if _, ok := service.Environment["FARRIER_DOMAIN"]; ok {
+			t.Errorf("service %q carries FARRIER_DOMAIN = %q, want it absent", name, service.Environment["FARRIER_DOMAIN"])
+		}
+	}
+}

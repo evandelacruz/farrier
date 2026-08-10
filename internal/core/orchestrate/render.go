@@ -45,6 +45,10 @@ type composeNetwork struct {
 // and carrying the bundle's domain as an environment variable. The result
 // is keyed by filename, ready to assign directly to bundle.Bundle.Compose.
 //
+// A nameless bundle (INIT-005) has no domain, and its services carry no
+// FARRIER_DOMAIN at all rather than an empty one — an empty value would read
+// as a name that failed to render rather than a bundle that has none.
+//
 // Per-component specifics beyond the image itself — ports, volumes, config
 // mounts — belong to the component's own configuration story (e.g.
 // FORGE-001 for Forgejo's app.ini) and are layered on separately; Render
@@ -59,12 +63,16 @@ func Render(m *bundle.Manifest) (map[string][]byte, error) {
 
 	services := make(map[string]composeService, len(m.Images))
 	for component, image := range m.Images {
+		env := map[string]string{}
+		if m.Named() {
+			env["FARRIER_DOMAIN"] = m.Domain
+		}
 		services[component] = composeService{
 			Image:         image,
 			ContainerName: "farrier-" + component,
 			Restart:       "unless-stopped",
 			Networks:      []string{networkName},
-			Environment:   map[string]string{"FARRIER_DOMAIN": m.Domain},
+			Environment:   env,
 		}
 	}
 

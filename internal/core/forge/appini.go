@@ -197,6 +197,14 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 	if err := secrets.validate(); err != nil {
 		return nil, err
 	}
+	// Every URL below is built from the domain, so a nameless bundle
+	// (INIT-005) has nothing to render an app.ini from: its address is
+	// supplied to `up` rather than carried by the manifest, and serving one
+	// is UP-006's job. Until that lands this fails loudly, on `up`'s first
+	// step, rather than deploying a Forgejo whose ROOT_URL is "https:///".
+	if !m.Named() {
+		return nil, fmt.Errorf("forge: app.ini requires a domain; this bundle is nameless, and serving one over plain HTTP at an operator-supplied address is not implemented yet (UP-006)")
+	}
 
 	domain := strings.TrimSpace(m.Domain)
 	rootURL := fmt.Sprintf("https://%s/", domain)

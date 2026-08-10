@@ -87,6 +87,18 @@ func validParams(t *testing.T, resolver Resolver) Params {
 	}
 }
 
+// namelessParams is validParams with the two things a nameless bundle
+// (INIT-005) does not have: a domain and an ACME DNS-01 provider. Everything
+// else — project folder, keystore, blob — is identical, which is the point:
+// a nameless instance is a complete instance in all respects but its name.
+func namelessParams(t *testing.T, resolver Resolver) Params {
+	t.Helper()
+	params := validParams(t, resolver)
+	params.Domain = ""
+	params.ACMEDNSProvider = ""
+	return params
+}
+
 func TestRunWritesAValidBundle(t *testing.T) {
 	resolver := &fakeResolver{}
 	prover := &fakeProver{}
@@ -248,15 +260,34 @@ func TestRunFailsWithReasonWhenZoneControlProofFails(t *testing.T) {
 	}
 }
 
-func TestRunRejectsEmptyDomain(t *testing.T) {
-	params := validParams(t, &fakeResolver{})
-	params.Domain = ""
-	job := events.NewJob()
+// INIT-005: an empty domain asks for a nameless bundle, so it is only an
+// error alongside ACME settings — which have nothing to prove and nothing to
+// issue a certificate for. Refusing the combination is what stops an
+// operator who meant to pass a domain from silently getting an instance with
+// no HTTPS.
+func TestRunRejectsACMESettingsWithoutADomain(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		apply func(*Params)
+	}{
+		{"provider", func(p *Params) { p.ACMEDNSProvider = "manual" }},
+		{"email", func(p *Params) { p.ACMEEmail = "ops@example.com" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := namelessParams(t, &fakeResolver{})
+			tc.apply(&params)
+			job := events.NewJob()
 
-	if _, err := Run(context.Background(), job, params); err == nil {
-		t.Fatal("Run: want error for empty domain, got nil")
+			_, err := Run(context.Background(), job, params)
+			if err == nil {
+				t.Fatal("Run: want error for acme settings without a domain, got nil")
+			}
+			if !strings.Contains(err.Error(), "without a domain") {
+				t.Errorf("error = %v, want it to say the settings came without a domain", err)
+			}
+			assertJobFailed(t, job)
+		})
 	}
-	assertJobFailed(t, job)
 }
 
 func TestRunRejectsMalformedDomain(t *testing.T) {
@@ -635,6 +666,216 @@ func TestRunStoresAWellFormedRunnerSecret(t *testing.T) {
 	}
 	if err := forge.ValidateRunnerSecret(secret.Reveal()); err != nil {
 		t.Errorf("stored runner secret is not in Forgejo's registration format: %v", err)
+	}
+}
+
+// INIT-005: `init` with no domain writes a real bundle. The manifest carries
+// no domain and no ACME section, and — the part that matters — the bundle
+// reloads from disk, since bundle.Load validates what it reads.
+func TestRunWithNoDomainWritesANamelessBundle(t *testing.T) {
+	prover := &fakeProver{}
+	params := namelessParams(t, &fakeResolver{})
+	params.Prover = prover
+	job := events.NewJob()
+
+	b, err := Run(context.Background(), job, params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(prover.calls) != 0 {
+		t.Errorf("prover calls = %v, want none: a nameless bundle proves no zone", prover.calls)
+	}
+	if b.Manifest.Named() {
+		t.Errorf("manifest domain = %q, want it empty", b.Manifest.Domain)
+	}
+	if b.Manifest.ACME.DNSProvider != "" || b.Manifest.ACME.Email != "" {
+		t.Errorf("manifest acme = %+v, want it empty for a nameless bundle", b.Manifest.ACME)
+	}
+
+	reloaded, err := bundle.Load(BundleDir(params))
+	if err != nil {
+		t.Fatalf("reload the written bundle: %v", err)
+	}
+	if reloaded.Manifest.Named() {
+		t.Errorf("reloaded domain = %q, want it empty", reloaded.Manifest.Domain)
+	}
+	if len(reloaded.Compose) == 0 {
+		t.Error("reloaded bundle has no rendered compose files")
+	}
+}
+
+// INIT-005: the manifest a nameless bundle writes omits the domain key
+// rather than writing an empty one, so farrier.yaml reads as a bundle with
+// no name instead of one whose name failed to render.
+func TestRunWithNoDomainOmitsTheDomainFromTheManifestFile(t *testing.T) {
+	params := namelessParams(t, &fakeResolver{})
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(BundleDir(params), bundle.ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if strings.Contains(string(raw), "domain:") {
+		t.Errorf("manifest carries a domain key:\n%s", raw)
+	}
+}
+
+// INIT-005: "every other piece of key material is generated as usual" — the
+// TLS certificate and its private key are the only two a nameless bundle
+// lacks, and they are absent because there is no name to issue them for.
+func TestRunWithNoDomainGeneratesEveryKeyButTLS(t *testing.T) {
+	keysDir := t.TempDir()
+	params := namelessParams(t, &fakeResolver{})
+	params.Keystore = bundle.DriverRef{Driver: "file", Config: map[string]any{"path": keysDir}}
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	driver, err := keystore.New("file", map[string]any{"path": keysDir})
+	if err != nil {
+		t.Fatalf("keystore.New: %v", err)
+	}
+	for _, name := range []string{
+		forge.KeySecretKey,
+		forge.KeyInternalToken,
+		forge.KeyLFSJWTSecret,
+		forge.KeyRunnerSecret,
+		KeySSHHostKey,
+		KeySSHHostKeyPublic,
+		KeyAgeBackupKey,
+	} {
+		secret, err := driver.Resolve(context.Background(), name)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", name, err)
+		}
+		if strings.TrimSpace(secret.Reveal()) == "" {
+			t.Errorf("%s resolved to an empty secret", name)
+		}
+	}
+	for _, name := range []string{KeyTLSCertificate, KeyTLSPrivateKey} {
+		if _, err := driver.Resolve(context.Background(), name); err == nil {
+			t.Errorf("resolve %s: want it absent from a nameless bundle's keystore, got a secret", name)
+		}
+	}
+}
+
+// INIT-005: the skipped proof is reported rather than dropped — an operator
+// watching the stream should see that no zone was proven by design.
+func TestRunWithNoDomainReportsTheSkippedProof(t *testing.T) {
+	params := namelessParams(t, &fakeResolver{})
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var detail string
+	var found bool
+	for _, ev := range job.Events() {
+		if ev.Step == StepProveZoneControl && ev.State == events.StateSucceeded {
+			detail, found = ev.Detail, true
+		}
+	}
+	if !found {
+		t.Fatalf("no succeeded %s event in the stream: %+v", StepProveZoneControl, job.Events())
+	}
+	if !strings.Contains(detail, "skipping") {
+		t.Errorf("%s detail = %q, want it to say the proof was skipped", StepProveZoneControl, detail)
+	}
+}
+
+// INIT-004 and INIT-005 compose: having no name is not permission to
+// overwrite an identity. Both directions are covered, because the two
+// requirements meet at the same folder — a nameless init must not clobber a
+// named bundle, and a named one must not clobber a nameless bundle. The
+// refusal happens in the validate step, so the nameless run still spends no
+// ACME exchange and mints no key material for an instance never created.
+func TestRunRefusesToOverwriteAnExistingBundleWithoutADomain(t *testing.T) {
+	cases := []struct {
+		name  string
+		first func(t *testing.T) Params
+		again func(t *testing.T, project string) Params
+	}{
+		{
+			name:  "nameless init over a named bundle",
+			first: func(t *testing.T) Params { return validParams(t, &fakeResolver{}) },
+			again: func(t *testing.T, project string) Params {
+				p := namelessParams(t, &fakeResolver{})
+				p.Project = project
+				return p
+			},
+		},
+		{
+			name:  "nameless init over a nameless bundle",
+			first: func(t *testing.T) Params { return namelessParams(t, &fakeResolver{}) },
+			again: func(t *testing.T, project string) Params {
+				p := namelessParams(t, &fakeResolver{})
+				p.Project = project
+				return p
+			},
+		},
+		{
+			name:  "named init over a nameless bundle",
+			first: func(t *testing.T) Params { return namelessParams(t, &fakeResolver{}) },
+			again: func(t *testing.T, project string) Params {
+				p := validParams(t, &fakeResolver{})
+				p.Project = project
+				return p
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			params := tc.first(t)
+			if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+				t.Fatalf("first Run: %v", err)
+			}
+			dir := BundleDir(params)
+			before, err := os.ReadFile(filepath.Join(dir, bundle.ManifestFile))
+			if err != nil {
+				t.Fatalf("read first manifest: %v", err)
+			}
+
+			// A fresh keystore and prover for the second attempt, so what
+			// the refused run did — and did not do — is visible on its own.
+			second := tc.again(t, params.Project)
+			prover := &fakeProver{}
+			second.Prover = prover
+			job := events.NewJob()
+
+			_, err = Run(context.Background(), job, second)
+			if err == nil {
+				t.Fatal("Run: want error re-initializing a project that already has a bundle, got nil")
+			}
+			if !strings.Contains(err.Error(), dir) {
+				t.Errorf("error = %v, want it to name the bundle folder %s", err, dir)
+			}
+			assertJobFailed(t, job)
+
+			after, err := os.ReadFile(filepath.Join(dir, bundle.ManifestFile))
+			if err != nil {
+				t.Fatalf("read manifest after refusal: %v", err)
+			}
+			if string(after) != string(before) {
+				t.Error("the existing manifest changed; a refused init must leave the bundle untouched")
+			}
+			if len(prover.calls) != 0 {
+				t.Errorf("prover calls = %v, want a refused init to spend no ACME exchange", prover.calls)
+			}
+			entries, err := os.ReadDir(second.Keystore.Config["path"].(string))
+			if err != nil {
+				t.Fatalf("read keystore dir: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("keystore holds %d entry/entries, want a refused init to generate no key material", len(entries))
+			}
+		})
 	}
 }
 

@@ -76,9 +76,16 @@ var keyMaterialOrder = []string{
 // exchange against the operator's ACME/DNS provider — a fresh SSH host key
 // pair, and a fresh age backup key. It returns each as a keyName -> Secret
 // pair, ready to hand to a keystore.Writer.
+//
+// A nil cert means a nameless bundle (INIT-005): no zone was proven and no
+// certificate exists, so the two TLS entries are absent from the result and
+// everything else is generated exactly as it is for a named bundle. Nil is
+// the caller's deliberate signal — Run checks a named bundle's proof
+// returned a usable certificate before calling, so a nil here is never a
+// prover that silently returned nothing.
 func generateKeyMaterial(cert *acme.Certificate) (map[string]keystore.Secret, error) {
-	if cert == nil || len(cert.Certificate) == 0 || len(cert.PrivateKey) == 0 {
-		return nil, fmt.Errorf("initialize: no certificate from zone-control proof to persist")
+	if cert != nil && (len(cert.Certificate) == 0 || len(cert.PrivateKey) == 0) {
+		return nil, fmt.Errorf("initialize: certificate from zone-control proof is incomplete")
 	}
 
 	secretKey, err := randomSecret()
@@ -110,17 +117,20 @@ func generateKeyMaterial(cert *acme.Certificate) (map[string]keystore.Secret, er
 		return nil, fmt.Errorf("initialize: generate %s: %w", KeyAgeBackupKey, err)
 	}
 
-	return map[string]keystore.Secret{
+	material := map[string]keystore.Secret{
 		forge.KeySecretKey:     keystore.NewSecret(secretKey),
 		forge.KeyInternalToken: keystore.NewSecret(internalToken),
 		forge.KeyLFSJWTSecret:  keystore.NewSecret(lfsJWTSecret),
 		forge.KeyRunnerSecret:  keystore.NewSecret(runnerSecret),
-		KeyTLSCertificate:      keystore.NewSecret(string(cert.Certificate)),
-		KeyTLSPrivateKey:       keystore.NewSecret(string(cert.PrivateKey)),
 		KeySSHHostKey:          keystore.NewSecret(sshPrivate),
 		KeySSHHostKeyPublic:    keystore.NewSecret(sshPublic),
 		KeyAgeBackupKey:        keystore.NewSecret(ageIdentity.String()),
-	}, nil
+	}
+	if cert != nil {
+		material[KeyTLSCertificate] = keystore.NewSecret(string(cert.Certificate))
+		material[KeyTLSPrivateKey] = keystore.NewSecret(string(cert.PrivateKey))
+	}
+	return material, nil
 }
 
 // randomSecret returns secretByteLength cryptographically random bytes,
