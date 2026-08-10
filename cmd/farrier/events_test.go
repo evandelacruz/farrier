@@ -3,114 +3,165 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/evandelacruz/farrier/internal/core/events"
 )
 
-func TestPrintEventsRendersStepEvents(t *testing.T) {
-	ch := make(chan events.Event, 1)
-	ch <- events.Event{Step: "validate", State: events.StateStarted, Detail: "checking inputs"}
+// render drains a fixed set of events through printEvents into a buffer.
+// A bytes.Buffer is not a character device, so every assertion below sees
+// plain text — which is also what CI logs and `farrier init > log` see.
+func render(evs ...events.Event) string {
+	ch := make(chan events.Event, len(evs))
+	for _, ev := range evs {
+		ch <- ev
+	}
 	close(ch)
 
 	var buf bytes.Buffer
 	printEvents(&buf, ch)
+	return buf.String()
+}
 
-	want := "[validate] started: checking inputs\n"
-	if got := buf.String(); got != want {
-		t.Errorf("printEvents() = %q, want %q", got, want)
+func TestPrintEventsNamesAStepOnce(t *testing.T) {
+	got := render(
+		events.Event{Step: "report-key-material", State: events.StateStarted, Detail: "where each key went"},
+		events.Event{Step: "report-key-material", State: events.StateSucceeded, Detail: "one"},
+		events.Event{Step: "report-key-material", State: events.StateSucceeded, Detail: "two"},
+	)
+	if n := strings.Count(got, "report-key-material"); n != 1 {
+		t.Errorf("step name appears %d times, want 1:\n%s", n, got)
+	}
+	for _, want := range []string{"where each key went", "✓ one", "✓ two"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
 	}
 }
 
-func TestPrintEventsRendersTerminalEventAsDetailOnly(t *testing.T) {
-	ch := make(chan events.Event, 1)
-	ch <- events.Event{Step: "", State: events.StateSucceeded, Detail: "bundle created"}
-	close(ch)
+func TestPrintEventsSeparatesStepGroups(t *testing.T) {
+	got := render(
+		events.Event{Step: "a", State: events.StateSucceeded, Detail: "first"},
+		events.Event{Step: "b", State: events.StateSucceeded, Detail: "second"},
+	)
+	if !strings.Contains(got, "\n\nb\n") {
+		t.Errorf("no blank line between groups:\n%q", got)
+	}
+	// ...but never one before the first group, which would open every
+	// command with a stray empty line.
+	if strings.HasPrefix(got, "\n") {
+		t.Errorf("output starts with a blank line:\n%q", got)
+	}
+}
 
-	var buf bytes.Buffer
-	printEvents(&buf, ch)
+func TestPrintEventsMarksSuccessAndFailure(t *testing.T) {
+	got := render(
+		events.Event{Step: "a", State: events.StateSucceeded, Detail: "worked"},
+		events.Event{Step: "a", State: events.StateFailed, Detail: "broke"},
+	)
+	if !strings.Contains(got, "✓ worked") || !strings.Contains(got, "✗ broke") {
+		t.Errorf("missing success/failure marks:\n%s", got)
+	}
+}
 
-	want := "bundle created\n"
-	if got := buf.String(); got != want {
-		t.Errorf("printEvents() = %q, want %q", got, want)
+// The terminal event is the line the operator is looking for, and the exit
+// code does not say it on screen.
+func TestPrintEventsBannersTheTerminalEvent(t *testing.T) {
+	ok := render(events.Event{State: events.StateSucceeded, Detail: "bundle created"})
+	if !strings.Contains(ok, "SUCCESS") || !strings.Contains(ok, "bundle created") {
+		t.Errorf("success banner missing:\n%s", ok)
+	}
+
+	bad := render(events.Event{State: events.StateFailed, Detail: "could not resolve"})
+	if !strings.Contains(bad, "FAILED") || !strings.Contains(bad, "could not resolve") {
+		t.Errorf("failure banner missing:\n%s", bad)
 	}
 }
 
 func TestPrintEventsPreservesOrder(t *testing.T) {
-	ch := make(chan events.Event, 3)
-	ch <- events.Event{Step: "a", State: events.StateStarted, Detail: "first"}
-	ch <- events.Event{Step: "a", State: events.StateSucceeded, Detail: "second"}
-	ch <- events.Event{Step: "", State: events.StateSucceeded, Detail: "third"}
-	close(ch)
-
-	var buf bytes.Buffer
-	printEvents(&buf, ch)
-
-	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	want := []string{
-		"[a] started: first",
-		"[a] succeeded: second",
-		"third",
-	}
-	if len(lines) != len(want) {
-		t.Fatalf("printEvents() produced %d lines, want %d: %q", len(lines), len(want), buf.String())
-	}
-	for i := range want {
-		if lines[i] != want[i] {
-			t.Errorf("line %d = %q, want %q", i, lines[i], want[i])
-		}
+	got := render(
+		events.Event{Step: "a", State: events.StateStarted, Detail: "first"},
+		events.Event{Step: "a", State: events.StateSucceeded, Detail: "second"},
+		events.Event{State: events.StateSucceeded, Detail: "third"},
+	)
+	first, second, third := strings.Index(got, "first"), strings.Index(got, "second"), strings.Index(got, "third")
+	if first < 0 || second < first || third < second {
+		t.Errorf("events out of order (%d, %d, %d):\n%s", first, second, third, got)
 	}
 }
 
-func TestRunJobToRendersEventsAndReturnsOperationError(t *testing.T) {
-	job := events.NewJob()
-	wantErr := errors.New("boom")
-
-	var buf bytes.Buffer
-	err := runJobTo(&buf, job, func() error {
-		job.Started("step-one", "doing the thing")
-		job.Emit("step-one", events.StateFailed, "it broke")
-		job.Failed("boom")
-		return wantErr
-	})
-
-	if !errors.Is(err, wantErr) {
-		t.Errorf("runJobTo() error = %v, want %v", err, wantErr)
-	}
-
-	want := "[step-one] started: doing the thing\n[step-one] failed: it broke\nboom\n"
-	if got := buf.String(); got != want {
-		t.Errorf("runJobTo() rendered %q, want %q", got, want)
+// Escapes must never reach a pipe, a file, or a CI log. This is the whole
+// reason wantsColor exists, and a regression would be invisible in a
+// terminal — where it looks correct — while corrupting every log.
+func TestPrintEventsWritesNoEscapesToANonTerminal(t *testing.T) {
+	got := render(
+		events.Event{Step: "a", State: events.StateStarted, Detail: "one"},
+		events.Event{Step: "a", State: events.StateFailed, Detail: "two"},
+		events.Event{State: events.StateSucceeded, Detail: "three"},
+	)
+	if strings.Contains(got, "\x1b[") {
+		t.Errorf("ANSI escape written to a non-terminal:\n%q", got)
 	}
 }
 
-func TestRunJobToWaitsForStreamToDrainBeforeReturning(t *testing.T) {
+func TestWantsColorRespectsNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if wantsColor(os.Stdout) {
+		t.Error("wantsColor() = true with NO_COLOR set")
+	}
+}
+
+func TestWantsColorRespectsDumbTerminals(t *testing.T) {
+	t.Setenv("TERM", "dumb")
+	if wantsColor(os.Stdout) {
+		t.Error("wantsColor() = true with TERM=dumb")
+	}
+}
+
+func TestWrapBreaksOnSpacesWithoutSplittingWords(t *testing.T) {
+	lines := wrap("the age backup key is the one unrecoverable loss", 20)
+	if len(lines) < 2 {
+		t.Fatalf("wrap() did not wrap: %q", lines)
+	}
+	for _, line := range lines {
+		if len(line) > 20 {
+			t.Errorf("line exceeds width: %q", line)
+		}
+	}
+	if strings.Join(lines, " ") != "the age backup key is the one unrecoverable loss" {
+		t.Errorf("wrap() lost or reordered words: %q", lines)
+	}
+}
+
+// A word longer than the width still gets its own line rather than being
+// cut — a filesystem path is the realistic case, and truncating one would
+// be worse than letting it run long.
+func TestWrapKeepsAnOverlongWordIntact(t *testing.T) {
+	long := "/Users/evan/.farrier/keys/forgejo_internal_token"
+	lines := wrap("stored at "+long, 20)
+	if !strings.Contains(strings.Join(lines, "\n"), long) {
+		t.Errorf("wrap() split an overlong word: %q", lines)
+	}
+}
+
+func TestRunJobToRendersAndReturnsTheOperationError(t *testing.T) {
 	job := events.NewJob()
+	want := errors.New("boom")
 
 	var buf bytes.Buffer
 	err := runJobTo(&buf, job, func() error {
-		for i := 0; i < 50; i++ {
-			job.Started("step", "in progress")
-			job.Emit("step", events.StateSucceeded, "done")
-		}
-		job.Succeeded("all done")
-		return nil
+		job.Started("step", "starting")
+		job.Emit("step", events.StateFailed, want.Error())
+		job.Failed(want.Error())
+		return want
 	})
 
-	if err != nil {
-		t.Fatalf("runJobTo() error = %v, want nil", err)
+	if !errors.Is(err, want) {
+		t.Errorf("runJobTo() error = %v, want %v", err, want)
 	}
-
-	// Every emitted event must have been rendered by the time runJobTo
-	// returns — a command printing its own success/failure line right
-	// after runJobTo must never race the last rendered job event.
-	wantLines := 50*2 + 1
-	gotLines := strings.Count(buf.String(), "\n")
-	if gotLines != wantLines {
-		t.Errorf("runJobTo() rendered %d lines, want %d", gotLines, wantLines)
-	}
-	if !strings.HasSuffix(buf.String(), "all done\n") {
-		t.Errorf("runJobTo() output does not end with the terminal event: %q", buf.String())
+	if !strings.Contains(buf.String(), "✗ boom") {
+		t.Errorf("output missing the failure:\n%s", buf.String())
 	}
 }

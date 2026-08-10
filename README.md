@@ -73,10 +73,16 @@ Then authorize your own key, since Farrier uses your SSH agent or a key file and
 [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519      # if you have no key
 cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
+
+ssh-add --apple-use-keychain ~/.ssh/id_ed25519         # macOS; plain ssh-add elsewhere
 ssh localhost true                                     # accept the host key once
 ```
 
-That last line matters: an unrecorded host key fails the connection rather than prompting, because Farrier's jobs run unattended.
+Both of those last two lines matter, and each fails in its own confusing way.
+
+**Load the key into your agent.** Farrier authenticates through your SSH agent, or a key file you name with `-ssh-key`. Plain `ssh` also reads `~/.ssh/id_ed25519` off disk on its own and can fall back to a password, so `ssh localhost` succeeding does **not** mean Farrier will connect — an empty agent fails with `attempted methods [none publickey]`. `ssh-add -l` shows what the agent holds.
+
+**Accept the host key once.** An unrecorded host key fails the connection rather than prompting, because Farrier's jobs run unattended.
 
 **`command not found: docker`, but `docker` works in your terminal.** Common on macOS with Docker Desktop. An SSH command session is a non-interactive, non-login shell, so zsh reads only `~/.zshenv` — not `.zshrc` or `.zprofile`. Docker Desktop installs to `~/.docker/bin` and adds it to your PATH from `.zshrc`, which that session never reads.
 
