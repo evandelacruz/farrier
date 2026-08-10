@@ -59,9 +59,9 @@ A forge's identity — its URL, its keys, its certificates — is what welds it 
 
 ### The domain
 
-- Every bundle owns a DNS name the operator controls, required at `init`.
-- All identity derives from it: clone URLs, webhooks, runner registration, OAuth callbacks, LFS endpoints. Hosts are fungible; the domain is permanent.
-- `init` proves zone control via an ACME DNS-01 challenge, front-loading the project's one external dependency to day one.
+- A named bundle owns a DNS name the operator controls, given at `init`. A bundle may also be nameless ("Instances without a name"), which trades permanence for a first minute that costs nothing.
+- All identity derives from the name: clone URLs, webhooks, runner registration, OAuth callbacks, LFS endpoints. Hosts are fungible; the domain is permanent. A nameless instance puts its address in that role, which is why relocating one breaks remotes.
+- Given a name, `init` proves zone control via an ACME DNS-01 challenge, front-loading the project's one external dependency to day one.
 - Records are created with a 60-second TTL so DNS flips land within the promotion downtime window.
 
 ### Reaching the forge
