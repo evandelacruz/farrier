@@ -55,12 +55,19 @@ func TestKeyValueFlagValueAllowsEmptyValue(t *testing.T) {
 	}
 }
 
-func TestRunInitRequiresDomain(t *testing.T) {
-	code := withSilencedStderr(t, func() int {
-		return runInit([]string{"-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"})
-	})
-	if code != 2 {
-		t.Errorf("runInit without -domain: exit code = %d, want 2", code)
+// INIT-005: -domain is optional. Omitting it, and the ACME settings that
+// only make sense with it, is a complete invocation — the operator gets a
+// nameless bundle rather than a usage error.
+func TestParseInitFlagsAcceptsNoDomain(t *testing.T) {
+	params, code := parseInitFlags([]string{"-project", "/srv/my-project", "-keystore-driver", "file", "-blob-driver", "local"})
+	if code != 0 {
+		t.Fatalf("parseInitFlags without -domain: exit code = %d, want 0", code)
+	}
+	if params.Domain != "" {
+		t.Errorf("Domain = %q, want it empty for a nameless bundle", params.Domain)
+	}
+	if params.ACMEDNSProvider != "" {
+		t.Errorf("ACMEDNSProvider = %q, want it empty for a nameless bundle", params.ACMEDNSProvider)
 	}
 }
 
@@ -82,7 +89,9 @@ func TestRunInitRequiresBlobDriver(t *testing.T) {
 	}
 }
 
-func TestRunInitRequiresACMEDNSProvider(t *testing.T) {
+// A domain still needs a provider to prove its zone through (INIT-002);
+// only the nameless case above is exempt.
+func TestRunInitRequiresACMEDNSProviderWithADomain(t *testing.T) {
 	code := withSilencedStderr(t, func() int {
 		return runInit([]string{"-domain", "example.com", "-keystore-driver", "file", "-blob-driver", "local"})
 	})

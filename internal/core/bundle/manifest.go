@@ -62,9 +62,20 @@ type DriverConfig struct {
 // driver for record management — lego resolves DNSProvider from its own
 // provider set and reads that provider's credentials from the process
 // environment, never from this config (acme.Config's doc comment).
+//
+// A nameless bundle (Manifest.Domain empty, INIT-005) leaves this section
+// empty: there is no zone to prove and no certificate to reissue, so
+// carrying a provider name would describe work nothing performs. Validate
+// enforces that in both directions.
 type ACMEConfig struct {
-	DNSProvider string `yaml:"dnsProvider"`
+	DNSProvider string `yaml:"dnsProvider,omitempty"`
 	Email       string `yaml:"email,omitempty"`
+}
+
+// isZero reports whether an ACME section carries nothing at all — the shape
+// a nameless bundle's manifest has.
+func (c ACMEConfig) isZero() bool {
+	return strings.TrimSpace(c.DNSProvider) == "" && strings.TrimSpace(c.Email) == ""
 }
 
 // ActionsConfig is the manifest's CI section: what `up` deploys alongside
@@ -93,13 +104,30 @@ type ActionsConfig struct {
 // declarations, and the checksum algorithm used throughout backup and
 // restore.
 type Manifest struct {
-	Domain            string             `yaml:"domain"`
+	// Domain is the DNS name the instance's identity derives from
+	// (spec.md "The domain"). It is optional: an absent domain is what
+	// makes a bundle nameless (INIT-005), and namelessness is the absence
+	// of a name rather than a separate flag, so there is one field to read
+	// and nothing that can disagree with itself. A nameless bundle carries
+	// no certificate and no ACME section; `up` serves it over plain HTTP at
+	// an address the operator supplies (UP-006), and attaching a domain
+	// later fills this field in place (UP-007).
+	Domain            string             `yaml:"domain,omitempty"`
 	Images            map[string]string  `yaml:"images"`
 	Drivers           DriverConfig       `yaml:"drivers"`
-	ACME              ACMEConfig         `yaml:"acme"`
+	ACME              ACMEConfig         `yaml:"acme,omitempty"`
 	Actions           ActionsConfig      `yaml:"actions,omitempty"`
 	State             []StateDeclaration `yaml:"state"`
 	ChecksumAlgorithm string             `yaml:"checksumAlgorithm"`
+}
+
+// Named reports whether the bundle owns a DNS name. False is a nameless
+// bundle (INIT-005): no zone was proven, no certificate exists, and the
+// instance's identity is whatever address it is served at. Callers that
+// need a domain — TLS, the HTTPS root URL, a DNS record to flip — branch on
+// this rather than comparing Domain to the empty string in a dozen places.
+func (m *Manifest) Named() bool {
+	return strings.TrimSpace(m.Domain) != ""
 }
 
 // ColocatedRunnerEnabled reports whether this bundle wants the colocated
@@ -121,7 +149,9 @@ func (m *Manifest) ColocatedRunnerDeclared() bool {
 }
 
 // NewManifest builds a manifest with all four state kinds declared and the
-// default checksum algorithm set.
+// default checksum algorithm set. An empty domain with a zero acmeCfg builds
+// a nameless bundle (INIT-005); the two go together, and Validate rejects
+// one without the other.
 //
 // It leaves Actions.ColocatedRunner unset rather than writing the default
 // in: what a bundle deploys is init's policy, not this constructor's, and
@@ -150,9 +180,18 @@ var digestPinned = regexp.MustCompile(`@sha256:[0-9a-f]{64}$`)
 // does not, and cannot, check that no secret ended up in Config — that's a
 // property of the driver code that populates DriverRef, not of the manifest
 // shape.
+//
+// The domain is optional, because a nameless bundle is a complete bundle
+// (INIT-005). What is not optional is that the domain and the ACME section
+// agree: a named bundle must say which DNS-01 provider proved its zone, and
+// a nameless one must carry no ACME configuration at all. That pairing is
+// what keeps "no domain" from being indistinguishable from a named manifest
+// that lost its domain to a bad edit — the ACME section it kept is the tell,
+// and it fails here rather than at the point something tries to renew a
+// certificate for the empty string.
 func (m *Manifest) Validate() error {
-	if strings.TrimSpace(m.Domain) == "" {
-		return fmt.Errorf("bundle: domain is required")
+	if err := m.validateName(); err != nil {
+		return err
 	}
 	if len(m.Images) == 0 {
 		return fmt.Errorf("bundle: at least one image is required")
@@ -168,14 +207,29 @@ func (m *Manifest) Validate() error {
 	if strings.TrimSpace(m.Drivers.Blob.Driver) == "" {
 		return fmt.Errorf("bundle: blob driver is required")
 	}
-	if strings.TrimSpace(m.ACME.DNSProvider) == "" {
-		return fmt.Errorf("bundle: acme dns-01 provider is required")
-	}
 	if err := validateState(m.State); err != nil {
 		return err
 	}
 	if strings.TrimSpace(m.ChecksumAlgorithm) == "" {
 		return fmt.Errorf("bundle: checksum algorithm is required")
+	}
+	return nil
+}
+
+// validateName checks the domain against the ACME section. Named bundles
+// need a DNS-01 provider — `up` and renewal reissue through it, so a named
+// manifest without one is a bundle whose certificate expires with no way to
+// replace it. Nameless bundles need the section empty, since nothing about
+// them ever reaches ACME.
+func (m *Manifest) validateName() error {
+	if !m.Named() {
+		if !m.ACME.isZero() {
+			return fmt.Errorf("bundle: acme config is set but there is no domain; a nameless bundle proves no zone and issues no certificate")
+		}
+		return nil
+	}
+	if strings.TrimSpace(m.ACME.DNSProvider) == "" {
+		return fmt.Errorf("bundle: acme dns-01 provider is required for domain %q", m.Domain)
 	}
 	return nil
 }

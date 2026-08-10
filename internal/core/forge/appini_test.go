@@ -258,3 +258,21 @@ func TestRenderAppINIQuarantineKeepsIdentityIntact(t *testing.T) {
 		}
 	}
 }
+
+// INIT-005 + UP-006: every URL in app.ini is built from the domain, so a
+// nameless bundle has nothing to render one from. Until UP-006 teaches `up`
+// to serve at an operator-supplied address, this fails loudly rather than
+// deploying a Forgejo whose ROOT_URL is "https:///".
+func TestRenderAppINIRejectsANamelessBundle(t *testing.T) {
+	m := validManifest()
+	m.Domain = ""
+	m.ACME = bundle.ACMEConfig{}
+
+	_, err := RenderAppINI(m, validSecrets(), AppINIOptions{})
+	if err == nil {
+		t.Fatal("RenderAppINI: want error for a nameless bundle, got nil")
+	}
+	if !strings.Contains(err.Error(), "UP-006") {
+		t.Errorf("error = %v, want it to point at UP-006", err)
+	}
+}

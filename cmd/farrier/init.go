@@ -39,12 +39,12 @@ func runInit(args []string) int {
 // standing up a real ACME exchange.
 func parseInitFlags(args []string) (initialize.Params, int) {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	domain := fs.String("domain", "", "the bundle's DNS name (required)")
+	domain := fs.String("domain", "", "the bundle's DNS name; omit it for a nameless bundle served over plain HTTP, with no zone to prove and nothing to own")
 	project := fs.String("project", ".", "the project folder to make into a forge definition")
 	dir := fs.String("dir", "", "directory to write the bundle to (default: "+bundle.DirName+" inside the project folder)")
 	keystoreDriver := fs.String("keystore-driver", "", "keystore driver name, e.g. file or command (required)")
 	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
-	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required); reads that provider's credentials from the environment")
+	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required with -domain); reads that provider's credentials from the environment")
 	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
 	colocatedRunner := fs.Bool("colocated-runner", true, "deploy a Forgejo Actions runner on the forge host; false keeps CI off the machine holding git data and the database, and the operator registers a remote runner instead")
 	var keystoreConfig, blobConfig, images keyValueFlag
@@ -56,10 +56,6 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		return initialize.Params{}, 2
 	}
 
-	if strings.TrimSpace(*domain) == "" {
-		fmt.Fprintln(os.Stderr, "farrier: init: -domain is required")
-		return initialize.Params{}, 2
-	}
 	if strings.TrimSpace(*project) == "" {
 		fmt.Fprintln(os.Stderr, "farrier: init: -project cannot be empty")
 		return initialize.Params{}, 2
@@ -72,8 +68,13 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		fmt.Fprintln(os.Stderr, "farrier: init: -blob-driver is required")
 		return initialize.Params{}, 2
 	}
-	if strings.TrimSpace(*acmeDNSProvider) == "" {
-		fmt.Fprintln(os.Stderr, "farrier: init: -acme-dns-provider is required")
+	// Required only alongside -domain: a nameless bundle proves no zone and
+	// issues no certificate, so it has no use for a DNS-01 provider
+	// (INIT-005). The inverse — a provider with no domain — is a
+	// contradiction the core rejects, with a message that says which of the
+	// two the operator probably meant.
+	if strings.TrimSpace(*domain) != "" && strings.TrimSpace(*acmeDNSProvider) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -acme-dns-provider is required with -domain")
 		return initialize.Params{}, 2
 	}
 
