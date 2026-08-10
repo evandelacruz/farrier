@@ -23,6 +23,7 @@ internal/core/        the engine — all logic lives here
   orchestrate/        SSH transport, Compose rendering and execution
   forge/              Forgejo configuration, admin bootstrap, CI reconciliation
   deploy/             `up` sequencing, and the host state layout below
+  attach/             `attach` sequencing: names a nameless instance in place
   status/             instance health, last-backup age, replication lag
   importer/           `import` sequencing over Forgejo's migration API
   publish/            `publish` sequencing: the project folder's first push
@@ -164,7 +165,7 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 ## API
 
 - Loopback HTTP, default `127.0.0.1:7433`.
-- RPC verbs: `POST /init`, `POST /up`, `POST /backup`, `POST /restore`, `POST /promote`, `POST /upgrade`, `POST /drill`, `POST /import`, `POST /publish`, `GET /status`, `GET /snapshots`.
+- RPC verbs: `POST /init`, `POST /up`, `POST /attach`, `POST /backup`, `POST /restore`, `POST /promote`, `POST /upgrade`, `POST /drill`, `POST /import`, `POST /publish`, `GET /status`, `GET /snapshots`.
 - `GET /snapshots?to=<uri>` lists a destination's backup history — key, size, capture time, age — newest first. It reaches no host, so history stays readable while the forge is down.
 - Mutation verbs return `{ jobId }`; `GET /jobs/{id}/events` streams progress over SSE.
 - One event schema for all operations: `{ jobId, step, state, detail, timestamp }`. The CLI renders these in the terminal; the dashboard renders them in the browser.
