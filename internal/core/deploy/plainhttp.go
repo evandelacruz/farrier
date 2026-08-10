@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strconv"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/caddy"
@@ -11,11 +12,13 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
 
-// plainHTTPPort is the host and container port Caddy publishes for a
-// nameless bundle (UP-006) — the plain-HTTP counterpart to httpsPort, and
-// the reason the operator's address carries no port of its own: there is
-// one, it is 80, and it is chosen here rather than negotiated.
-const plainHTTPPort = "80"
+// containerHTTPPort is the container-side port Caddy's plain-HTTP site
+// binds (caddy.HTTPPort), spelled for a Compose port mapping — the
+// counterpart to containerHTTPSPort. The host side is the manifest's
+// (publishedWebPort), and defaults to bundle.DefaultNamelessWebPort rather
+// than 80 because 80 is the port a developer's own machine is most likely
+// to have taken already.
+var containerHTTPPort = strconv.Itoa(caddy.HTTPPort)
 
 // configurePlainHTTP renders Caddy's config for a nameless bundle, ships
 // it to host, and returns compose with Caddy's bind mount and its published
@@ -42,7 +45,7 @@ const plainHTTPPort = "80"
 // config rather than leaving two behind, and a re-run overwrites its own
 // (UP-003). The certificate and key files configureTLS ships are simply
 // never written, and the rendered config never references them.
-func configurePlainHTTP(ctx context.Context, host Host, remoteDir string, compose map[string][]byte, address string) (map[string][]byte, error) {
+func configurePlainHTTP(ctx context.Context, host Host, m *bundle.Manifest, remoteDir string, compose map[string][]byte, address string) (map[string][]byte, error) {
 	upstream := fmt.Sprintf("%s:%d", forge.Service, forge.HTTPPort)
 	caddyfile, err := caddy.RenderPlainHTTPCaddyfile(address, upstream)
 	if err != nil {
@@ -58,7 +61,7 @@ func configurePlainHTTP(ctx context.Context, host Host, remoteDir string, compos
 	if err != nil {
 		return nil, fmt.Errorf("mount caddyfile: %w", err)
 	}
-	compose, err = orchestrate.WithPorts(compose, caddy.Service, plainHTTPPort, plainHTTPPort)
+	compose, err = orchestrate.WithPorts(compose, caddy.Service, publishedWebPort(m), containerHTTPPort)
 	if err != nil {
 		return nil, fmt.Errorf("publish http port: %w", err)
 	}
@@ -76,8 +79,8 @@ func configurePlainHTTP(ctx context.Context, host Host, remoteDir string, compos
 // instance serves its web UI in the clear" uses. Naming git over SSH here
 // is not padding: the operator's next question after "unencrypted" is
 // whether pushing is safe, and the answer is yes.
-func plainHTTPDetail(address string) string {
-	return fmt.Sprintf("caddy configured to serve http://%s/ — the web UI is unencrypted, so pull requests, review, and login travel in the clear: keep this instance on a trusted network (a LAN, a VPN, or a tailnet). Git over SSH is encrypted regardless — see docs/security.md", address)
+func plainHTTPDetail(m *bundle.Manifest, address string) string {
+	return fmt.Sprintf("caddy configured to serve %s — the web UI is unencrypted, so pull requests, review, and login travel in the clear: keep this instance on a trusted network (a LAN, a VPN, or a tailnet). Git over SSH is encrypted regardless — see docs/security.md", forge.InstanceURL(m, address))
 }
 
 // caddyReadyDetail is the event detail Up's final step reports: the URL the

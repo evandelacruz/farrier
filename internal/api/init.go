@@ -42,6 +42,15 @@ type initRequest struct {
 	// GitSSHPort is the host port the instance serves git over SSH on
 	// (UP-005); omitted or zero takes bundle.DefaultGitSSHPort.
 	GitSSHPort int `json:"gitSshPort,omitempty"`
+	// WebPort is the host port the instance's web UI is published on
+	// (UP-002, UP-006); omitted or zero takes the default for the tier —
+	// bundle.DefaultNamedWebPort with a domain, DefaultNamelessWebPort
+	// without one.
+	WebPort int `json:"webPort,omitempty"`
+	// PublicWebPort is the port clients connect on when something on the
+	// host holds the standard port and forwards to Farrier; omitted or
+	// zero means Caddy is the edge.
+	PublicWebPort int `json:"publicWebPort,omitempty"`
 }
 
 // handleInit implements POST /init (API-001, INIT-001..003): it starts a
@@ -78,6 +87,14 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := bundle.ValidateWebPort(req.WebPort); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := bundle.ValidateWebPort(req.PublicWebPort); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	params := initialize.Params{
 		Domain:          req.Domain,
 		Project:         req.Project,
@@ -88,6 +105,8 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		ACMEEmail:       req.ACMEEmail,
 		Images:          req.Images,
 		GitSSHPort:      req.GitSSHPort,
+		WebPort:         req.WebPort,
+		PublicWebPort:   req.PublicWebPort,
 	}
 
 	job := s.jobs.New()

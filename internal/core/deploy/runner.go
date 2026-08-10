@@ -6,6 +6,7 @@ import (
 	"path"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
+	"github.com/evandelacruz/farrier/internal/core/caddy"
 	"github.com/evandelacruz/farrier/internal/core/forge"
 	"github.com/evandelacruz/farrier/internal/core/keystore"
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
@@ -72,14 +73,14 @@ func RunnerHostPath(remoteDir string) string {
 //
 // address is the operator-supplied address a nameless bundle is served at
 // (UP-006) and is empty for a named one; it is what the runner is pointed
-// at, through forge.InstanceURL, so a nameless instance's CI reaches the
+// at, through runnerInstanceURL, so a nameless instance's CI reaches the
 // instance over plain HTTP at the same URL the operator's browser does.
 //
 // Every part of this is safe to repeat (UP-003): the secret is non-rotating
 // key material written back byte-for-byte, the mounts and command are
 // derived from the manifest alone, and the registration the caller performs
 // afterwards is an upsert keyed by that same secret.
-func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir, address string, compose map[string][]byte) (map[string][]byte, bool, error) {
+func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir, address string, compose map[string][]byte, quarantine bool) (map[string][]byte, bool, error) {
 	if !b.Manifest.ColocatedRunnerEnabled() {
 		compose, err := orchestrate.WithoutService(compose, forge.RunnerService)
 		if err != nil {
@@ -124,11 +125,32 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 	if err != nil {
 		return nil, false, fmt.Errorf("set runner user: %w", err)
 	}
-	compose, err = orchestrate.WithCommand(compose, forge.RunnerService, forge.RunnerCommand(forge.InstanceURL(&b.Manifest, address)))
+	compose, err = orchestrate.WithCommand(compose, forge.RunnerService, forge.RunnerCommand(runnerInstanceURL(&b.Manifest, address, quarantine)))
 	if err != nil {
 		return nil, false, fmt.Errorf("set runner command: %w", err)
 	}
 	return compose, true, nil
+}
+
+// runnerInstanceURL is the URL the colocated runner registers against: the
+// instance's public URL (forge.InstanceURL) in an ordinary deployment, and
+// the bundle domain at Caddy's *container* port under quarantine.
+//
+// The difference is what resolves the domain. Ordinarily the runner's job
+// containers and the runner itself reach the instance the way any other
+// client does — public DNS to the host, then the published web port, or the
+// proxy in front of it — so the public URL is exactly right. Under
+// quarantine, configureTLS gives Caddy the bundle domain as a Docker
+// network alias (DRIL-002) so the drilled runner reaches the drilled
+// instance rather than production, and that alias resolves to the container
+// itself, where no host-side port mapping applies. A drilled instance
+// published on a non-standard host port would otherwise send its runner to
+// a port nothing inside the network is listening on.
+func runnerInstanceURL(m *bundle.Manifest, address string, quarantine bool) string {
+	if quarantine {
+		return m.WebURL(m.Domain, caddy.HTTPSPort)
+	}
+	return forge.InstanceURL(m, address)
 }
 
 // resolveRunnerSecret reads the bundle's runner secret through its keystore

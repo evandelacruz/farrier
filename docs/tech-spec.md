@@ -51,16 +51,19 @@ Every operator command is one core package sequencing others, with `cmd/farrier`
 A plain directory at `.farrier/` in the project it serves, versioned with it.
 
 ```
-farrier.yaml          manifest: domain, git-over-SSH host port, SSH host
-                      public key, pinned image digests, driver config, ACME
-                      DNS-01 config, CI runner config, state-kind
-                      declarations, checksum algorithm
+farrier.yaml          manifest: domain, published web port and public web
+                      port, git-over-SSH host port, SSH host public key,
+                      pinned image digests, driver config, ACME DNS-01
+                      config, CI runner config, state-kind declarations,
+                      checksum algorithm
 compose/              rendered Docker Compose definitions
 ```
 
 - Manifest format: YAML.
 - Versions are pinned by image digest, not tag.
 - `domain` is optional, and absent is what makes a bundle nameless (INIT-005, spec.md "Instances without a name"). A nameless manifest carries no `acme` section either, and the two must agree: a named bundle states the DNS-01 provider its zone was proven through, a nameless one states nothing.
+- `webPort` is the host port `up` publishes Caddy on. Absent takes the tier's default: 443 for a named bundle, 8222 for a nameless one. Only the host side of the mapping moves; Caddy's container port is fixed.
+- `publicWebPort` is the port clients connect on when something already on the host holds the standard port and forwards to Farrier. Absent means Caddy is the edge, and the public URL uses `webPort`. A named bundle whose `webPort` is not 443 must set it — see spec.md "Reaching the forge" for why, and for the constraint that any such forwarder passes TCP through rather than terminating TLS.
 - `actions.colocatedRunner` is the CI runner config: `false` keeps the bundled Actions runner off the forge host, and the operator registers a remote runner against the bundle domain instead (spec.md "CI trust boundary"). Absent means enabled.
 - `sshHostKeyPublic` is the instance's SSH host key, public half, in OpenSSH authorized-keys format — the fingerprint `publish` renders into a `known_hosts` entry so a host answering with a different key fails the push. `init` writes it from the keystore, which keeps the private half and stays the source of truth. Absent is a manifest written before the field existed; readers fall back to the keystore rather than skipping the pin.
 - Key material is referenced by keystore driver config, never stored — the host key's public half above is the exception, and it is public by definition.

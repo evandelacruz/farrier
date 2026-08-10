@@ -31,6 +31,21 @@ const (
 	KeyPath    = "/etc/caddy/certs/tls.key"
 )
 
+// HTTPSPort and HTTPPort are the container-side ports Caddy binds: 443 for
+// the TLS-terminating site RenderCaddyfile produces, 80 for the plain-HTTP
+// one RenderPlainHTTPCaddyfile produces.
+//
+// They are fixed, the way forge.HTTPPort and forge.SSHListenPort are. Caddy
+// binds inside its own network namespace, where nothing of the operator's
+// is listening, so there is no contention here and nothing to configure.
+// What the operator chooses is the *host* port `up` publishes onto one of
+// these (bundle.Manifest.WebPort), and the mapping between the two is the
+// Compose definition's job.
+const (
+	HTTPSPort = 443
+	HTTPPort  = 80
+)
+
 // RenderCaddyfile renders a Caddyfile that terminates TLS for domain with
 // the certificate and key at CertPath/KeyPath and reverse-proxies every
 // request to upstream — typically forge.Service plus forge.HTTPPort, the

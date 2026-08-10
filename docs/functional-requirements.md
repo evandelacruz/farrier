@@ -84,12 +84,12 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 ## UP — deployment
 
 - **UP-001** · `up` must deploy the full stateless layer given only `ssh://user@host` and a bundle.
-- **UP-002** · Given a named bundle, `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately.
+- **UP-002** · Given a named bundle, `up` must complete with the forge serving HTTPS at the bundle domain and usable in a browser immediately. The host port it publishes that endpoint on must come from the manifest, defaulting to 443, and the URL the instance advertises must name the port clients connect to — which differs from the published one only when the operator declares that something on the host forwards to Farrier, and which `up` must refuse to guess.
 - **UP-003** · Re-running `up` against a live host must be safe and must converge that host to the bundle definition.
 - **UP-004** · `up` must place every stateful kind the forge itself serves — git repositories, the database, and LFS objects — on a host directory bind-mounted into the container that serves it, so recreating or replacing a container never destroys forge state. A `local` blob adapter's directory is created on the host but not mounted; no container reads it.
 - **UP-005** · `up` must serve git over SSH at the bundle domain, published on a host port the manifest declares and defaulting to 2222, using the bundle's SSH host key — so `git clone` and `git push` over SSH work against a fresh deployment, and the SSH clone URL Forgejo displays is the one that works. A restored or promoted instance must answer on the same port with the same key (RSTR-004).
 
-- **UP-006** · `up` on a nameless bundle must serve the forge over plain HTTP at an address the operator supplies — an IP or a hostname — with git over SSH unchanged, and must state through the event stream that the web UI is unencrypted and belongs on a trusted network.
+- **UP-006** · `up` on a nameless bundle must serve the forge over plain HTTP at an address the operator supplies — an IP or a hostname — on a manifest-declared host port defaulting to 8222 rather than 80, with git over SSH unchanged, and must state through the event stream that the web UI is unencrypted and belongs on a trusted network.
 - **UP-007** · Farrier must attach an FQDN to a nameless instance in place: prove the zone, issue the certificate, re-render configuration, and report the clone URLs that changed — without rebuilding the instance or losing repositories, history, pull requests, review comments, CI history, secrets, or the SSH host key.
 
 ## IMPT — repository import

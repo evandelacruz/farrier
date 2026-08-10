@@ -233,6 +233,22 @@ type Params struct {
 	// re-run of `up` rather than a re-run of init.
 	GitSSHPort int
 
+	// WebPort is the host port `up` publishes the instance's web endpoint
+	// on (UP-002, UP-006). Zero takes the default for the tier the bundle
+	// is in — bundle.DefaultNamedWebPort with a domain,
+	// bundle.DefaultNamelessWebPort without one — and an operator whose
+	// host already serves something there sets their own. Like GitSSHPort,
+	// the resolved value is written into the manifest explicitly.
+	WebPort int
+
+	// PublicWebPort is the port clients reach the instance on when
+	// something on the host holds the standard port and forwards to
+	// Farrier (bundle.Manifest.PublicWebPort). Zero means Caddy is the
+	// edge, which is the ordinary case; unlike the two ports above it is
+	// written into the manifest only when set, since a value that always
+	// equals WebPort would suggest a knob where there is no choice.
+	PublicWebPort int
+
 	// Resolver resolves image refs to digests; nil uses registry.Resolve.
 	Resolver Resolver
 	// Prover proves ACME DNS-01 zone control; nil uses a real ACME exchange
@@ -304,6 +320,19 @@ func Run(ctx context.Context, job *events.Job, params Params) (b *bundle.Bundle,
 	// The ACME DNS-01 provider is checked in validateName, not here: it is
 	// required alongside a domain and refused without one (INIT-005).
 	if err := bundle.ValidateGitSSHPort(params.GitSSHPort); err != nil {
+		return fail(job, StepValidate, fmt.Errorf("initialize: %w", err))
+	}
+	// Both web ports, and the rule that ties them together: a named bundle
+	// published somewhere other than the standard port has to say what
+	// clients connect to. Checked here, before any key material is
+	// generated, rather than when the assembled manifest is validated on
+	// its way to disk.
+	probe := bundle.Manifest{
+		Domain:        strings.TrimSpace(params.Domain),
+		WebPort:       params.WebPort,
+		PublicWebPort: params.PublicWebPort,
+	}
+	if err := probe.ValidateWebPorts(); err != nil {
 		return fail(job, StepValidate, fmt.Errorf("initialize: %w", err))
 	}
 	keystoreWriter, ok := keystoreDriver.(keystore.Writer)
@@ -507,6 +536,19 @@ func buildManifest(params Params, images map[string]string, named bool) *bundle.
 	if manifest.GitSSHPort == 0 {
 		manifest.GitSSHPort = bundle.DefaultGitSSHPort
 	}
+	// And again for the web port, which is the one an operator is most
+	// likely to have to change: the host is theirs and may already be
+	// serving something on 443 or 8222. Written at the tier's default so
+	// farrier.yaml names the port the instance is published on rather than
+	// leaving the operator to infer it (UP-002, UP-006).
+	manifest.WebPort = params.WebPort
+	if manifest.WebPort == 0 {
+		manifest.WebPort = manifest.WebPortOrDefault()
+	}
+	// Not written at a default: an unset public port means Caddy is the
+	// edge, and spelling that as a number equal to WebPort would read as a
+	// second endpoint rather than as the absence of one.
+	manifest.PublicWebPort = params.PublicWebPort
 	return manifest
 }
 

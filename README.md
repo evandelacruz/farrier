@@ -134,6 +134,8 @@ farrier up -bundle .farrier -target ssh://you@host
 farrier up -bundle .farrier -target ssh://you@localhost -address 192.168.1.5
 ```
 
+A nameless instance comes up at **`http://<address>:8222`**, and a named one at **`https://<domain>`**. Those ports are the bundle's, not Farrier's: your host may already be serving something on 80 or 443, so set `-web-port` at `init` if you need it somewhere else. If something on the host holds the standard port and forwards to Farrier, add `-public-web-port` so every URL the forge renders names the port your clients actually connect to — and make sure that forwarder passes TCP through, since Farrier terminates TLS with the bundle's own certificate.
+
 **Deploying to your own machine? Add `-remote-dir`.** `up` writes configuration and forge state into `/opt/farrier` by default — fine on a dedicated host you reach as root, and not writable by an ordinary user:
 
 ```bash
@@ -157,11 +159,11 @@ Create an access token in the forge's web UI, then:
 ```bash
 export FARRIER_TARGET_TOKEN=...        # never passed as a flag
 
-# Named instance — the target defaults to https://<the bundle's domain>
+# Named instance — the target defaults to the bundle's own public URL
 farrier publish
 
 # Nameless instance — name the address you deployed at
-farrier publish -target http://192.168.1.5
+farrier publish -target http://192.168.1.5:8222
 ```
 
 That creates the repository, pushes your existing history, and points `origin` at the instance. `git push` works normally from here on.
@@ -177,7 +179,7 @@ Then prove it restores, before you need it to: `farrier drill -bundle .farrier -
 
 ### Later: give a nameless instance a name
 
-In place, losing nothing but the clone URLs — which it reports, so you can tell your team what to re-point.
+In place, losing nothing but the clone URLs — which it reports, so you can tell your team what to re-point. The web port moves with the name: `http://<address>:8222` becomes `https://<domain>`.
 
 ```bash
 farrier attach -bundle .farrier -target ssh://you@host \

@@ -189,3 +189,36 @@ func TestParseInitFlagsGitSSHPort(t *testing.T) {
 		t.Errorf("parseInitFlags with an unusable -git-ssh-port: exit code = %d, want 2", code)
 	}
 }
+
+// The web ports default to zero out of the flag set, not to a number: the
+// tier's default is the core's to resolve, and which tier this is depends
+// on whether -domain was given (bundle.Manifest.WebPortOrDefault).
+func TestParseInitFlagsWebPorts(t *testing.T) {
+	base := []string{"-domain", "example.com", "-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"}
+
+	params, code := parseInitFlags(base)
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.WebPort != 0 || params.PublicWebPort != 0 {
+		t.Errorf("WebPort = %d, PublicWebPort = %d, want both unset", params.WebPort, params.PublicWebPort)
+	}
+
+	params, code = parseInitFlags(append(append([]string{}, base...), "-web-port", "8443", "-public-web-port", "443"))
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.WebPort != 8443 || params.PublicWebPort != 443 {
+		t.Errorf("WebPort = %d, PublicWebPort = %d, want 8443 and 443", params.WebPort, params.PublicWebPort)
+	}
+
+	for _, flag := range []string{"-web-port", "-public-web-port"} {
+		code := withSilencedStderr(t, func() int {
+			_, code := parseInitFlags(append(append([]string{}, base...), flag, "70000"))
+			return code
+		})
+		if code != 2 {
+			t.Errorf("parseInitFlags with an unusable %s: exit code = %d, want 2", flag, code)
+		}
+	}
+}

@@ -126,6 +126,13 @@ func (s Secrets) validate() error {
 // bundle domain for a named bundle (UP-002), and `http://` at the
 // operator-supplied address for a nameless one (UP-006).
 //
+// The port comes from the manifest's public web port, not from the port
+// Caddy is published on, and is left out when it is the scheme's own — see
+// bundle.Manifest.PublicURLAt. Those two are the same number unless
+// something on the host fronts the instance, and this URL has to name what
+// clients connect to rather than what Caddy binds: it becomes ROOT_URL,
+// every clone URL Forgejo displays, and the runner's registration address.
+//
 // It is deliberately the external URL rather than the forgejo service's
 // name on the Compose network, and that matters most to the colocated
 // Actions runner: its job containers are started on the host's Docker
@@ -141,9 +148,9 @@ func (s Secrets) validate() error {
 // It is spelled for a URL authority, so an IPv6 literal arrives bracketed.
 func InstanceURL(m *bundle.Manifest, address string) string {
 	if m.Named() {
-		return fmt.Sprintf("https://%s/", strings.TrimSpace(m.Domain))
+		return m.PublicURL()
 	}
-	return fmt.Sprintf("http://%s/", strings.TrimSpace(address))
+	return m.PublicURLAt(address)
 }
 
 // namelessAdminEmailDomain is the domain a nameless bundle's admin account
@@ -203,8 +210,9 @@ type AppINIOptions struct {
 // # Nameless bundles
 //
 // Every URL in the rendered file — ROOT_URL, DOMAIN, and the SSH_DOMAIN
-// Forgejo builds its clone URLs from — is built from one host and one
-// scheme. A named bundle supplies both: its domain, over HTTPS, because
+// Forgejo builds its clone URLs from — is built from one host, one scheme,
+// and (for ROOT_URL) the manifest's public web port. A named bundle
+// supplies the first two: its domain, over HTTPS, because
 // `up` completes with a certificate serving at it (UP-002). A nameless
 // bundle (INIT-005) supplies neither, so opts.Address does, over plain
 // HTTP (UP-006, spec.md "Instances without a name"). The two are mutually
@@ -282,15 +290,18 @@ func RenderAppINI(m *bundle.Manifest, secrets Secrets, opts AppINIOptions) ([]by
 		return nil, errors.New("forge: app.ini requires a domain, or for a nameless bundle the address the operator serves it at")
 	}
 
-	// host is what every URL below is addressed at, and scheme is how
-	// browsers reach it. Forgejo's own PROTOCOL key is unrelated and stays
-	// http in both cases: Caddy is what terminates, and it proxies to
-	// Forgejo in plaintext on the Compose network either way.
-	host, scheme := strings.TrimSpace(m.Domain), "https"
+	// host is what every URL below is addressed at. Forgejo's own PROTOCOL
+	// key is unrelated and stays http in both cases: Caddy is what
+	// terminates, and it proxies to Forgejo in plaintext on the Compose
+	// network either way.
+	host := strings.TrimSpace(m.Domain)
 	if !m.Named() {
-		host, scheme = address, "http"
+		host = address
 	}
-	rootURL := fmt.Sprintf("%s://%s/", scheme, host)
+	// The scheme and the port are the manifest's — ROOT_URL has to name
+	// the endpoint clients connect to, which is the public web port and
+	// not necessarily the port Caddy is published on (InstanceURL).
+	rootURL := m.PublicURLAt(host)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "APP_NAME = Farrier\n")

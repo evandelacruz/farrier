@@ -100,10 +100,10 @@ type Options struct {
 	// the push against, via the manifest's keystore driver. Required.
 	Manifest *bundle.Manifest
 
-	// TargetBaseURL is the instance's API base URL. Empty derives
-	// https://<manifest domain>, which is the address a named bundle
-	// serves; it exists as an override for reaching an instance by some
-	// other address.
+	// TargetBaseURL is the instance's API base URL. Empty derives the
+	// bundle's own public URL (bundle.Manifest.PublicURL) — its domain,
+	// over HTTPS, at the port clients connect to; it exists as an override
+	// for reaching an instance by some other address.
 	TargetBaseURL string
 	// TargetToken authenticates to the instance's API. Required.
 	TargetToken keystore.Secret
@@ -335,9 +335,13 @@ func resolve(opts Options) (*settings, error) {
 		dir = wd
 	}
 
+	// The instance's own public URL when the operator names no target:
+	// the bundle's domain at the port clients connect to, which is not
+	// necessarily 443 (bundle.Manifest.PublicURL). Trailing slash trimmed
+	// because every path this client requests carries its own leading one.
 	baseURL := strings.TrimRight(strings.TrimSpace(opts.TargetBaseURL), "/")
 	if baseURL == "" {
-		baseURL = "https://" + opts.Manifest.Domain
+		baseURL = strings.TrimRight(opts.Manifest.PublicURL(), "/")
 	}
 
 	remoteName := strings.TrimSpace(opts.RemoteName)

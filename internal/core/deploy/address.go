@@ -72,10 +72,13 @@ func serveAddress(m *bundle.Manifest, address string) (string, error) {
 // that does not belong, is the only point where the operator can still fix
 // it cheaply.
 //
-// The port in particular is not an oversight: `up` publishes the nameless
-// instance's web UI on port 80 (see plainHTTPPort), the same way it
-// publishes a named one's on 443, so there is no port for the operator to
-// choose and an address carrying one would be silently ignored.
+// The port in particular is not an oversight, even though a nameless
+// instance's web UI does answer on a non-standard port by default. That
+// port is the manifest's (bundle.Manifest.WebPort), it is bundle content
+// that survives a copy to another machine, and `up` publishes it and
+// renders it into every URL from there — so a port supplied alongside the
+// address would be a second, conflicting answer that Caddy's site address
+// and Forgejo's DOMAIN cannot even hold.
 func NormalizeAddress(address string) (string, error) {
 	switch {
 	case strings.Contains(address, "://"):
@@ -125,7 +128,7 @@ func validHostname(address string) error {
 		return fmt.Errorf("deploy: address %q is longer than %d characters", address, maxHostnameLength)
 	}
 	if strings.Contains(address, ":") {
-		return fmt.Errorf("deploy: address %q carries a port; up publishes a nameless instance's web UI on port %s, so there is no port to choose", address, plainHTTPPort)
+		return fmt.Errorf("deploy: address %q carries a port; the port the web UI is published on is a bundle setting (webPort in %s), not part of the address", address, bundle.ManifestFile)
 	}
 	for _, label := range strings.Split(address, ".") {
 		if label == "" {

@@ -1007,6 +1007,70 @@ func TestRunHonorsAnExplicitGitSSHPort(t *testing.T) {
 	}
 }
 
+// The published web port is written into the manifest the same way, and at
+// the default for the tier the bundle is in: 443 with a domain, 8222
+// without one. It is the setting an operator is most likely to have to
+// change — the host is theirs, and may already be serving something there
+// (UP-002, UP-006).
+func TestRunRecordsTheWebPortAtTheTiersDefault(t *testing.T) {
+	named, err := Run(context.Background(), events.NewJob(), validParams(t, &fakeResolver{}))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if named.Manifest.WebPort != bundle.DefaultNamedWebPort {
+		t.Errorf("named manifest web port = %d, want %d written out explicitly", named.Manifest.WebPort, bundle.DefaultNamedWebPort)
+	}
+	// Unset means Caddy is the edge; writing a number equal to WebPort
+	// would read as a second endpoint rather than the absence of one.
+	if named.Manifest.PublicWebPort != 0 {
+		t.Errorf("named manifest public web port = %d, want it left unset", named.Manifest.PublicWebPort)
+	}
+
+	nameless, err := Run(context.Background(), events.NewJob(), namelessParams(t, &fakeResolver{}))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if nameless.Manifest.WebPort != bundle.DefaultNamelessWebPort {
+		t.Errorf("nameless manifest web port = %d, want %d", nameless.Manifest.WebPort, bundle.DefaultNamelessWebPort)
+	}
+}
+
+func TestRunHonorsExplicitWebPorts(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.WebPort = 8443
+	params.PublicWebPort = 443
+
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := b.Manifest.PublicURL(), "https://example.com/"; got != want {
+		t.Errorf("public URL = %q, want %q — the port a proxy on 443 forwards from is not in the URL", got, want)
+	}
+	if got := b.Manifest.WebPortOrDefault(); got != 8443 {
+		t.Errorf("published port = %d, want the operator's 8443", got)
+	}
+}
+
+// A named bundle whose published port has moved has to say what clients
+// connect to, and `init` is the first place that can be refused — before an
+// ACME exchange is spent (bundle.Manifest.ValidateWebPorts).
+func TestRunRefusesANamedBundleOnAMovedPortWithNoPublicPort(t *testing.T) {
+	prover := &fakeProver{}
+	params := validParams(t, &fakeResolver{})
+	params.Prover = prover
+	params.WebPort = 8443
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err == nil {
+		t.Fatal("Run() = nil, want a refusal")
+	} else if !strings.Contains(err.Error(), "publicWebPort") {
+		t.Errorf("error = %v, want it to name the field that resolves it", err)
+	}
+	if len(prover.calls) != 0 {
+		t.Errorf("a refused init spent %d zone-control proof(s)", len(prover.calls))
+	}
+}
+
 // An unusable port is caught in the validate step, before an ACME exchange
 // is spent and key material generated — the same place every other
 // unusable input is caught.

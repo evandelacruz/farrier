@@ -79,7 +79,7 @@ func TestUpServesANamelessBundleOverPlainHTTPAtTheSuppliedAddress(t *testing.T) 
 
 	appINI := host.files["/opt/farrier/"+hostConfigDir+"/"+appINIFilename]
 	for _, want := range []string{
-		"ROOT_URL = http://" + namelessAddress + "/",
+		fmt.Sprintf("ROOT_URL = http://%s:%d/", namelessAddress, bundle.DefaultNamelessWebPort),
 		"DOMAIN = " + namelessAddress,
 		"SSH_DOMAIN = " + namelessAddress,
 	} {
@@ -88,8 +88,9 @@ func TestUpServesANamelessBundleOverPlainHTTPAtTheSuppliedAddress(t *testing.T) 
 		}
 	}
 
-	if got := caddyPorts(t, host, "/opt/farrier"); len(got) != 1 || got[0] != plainHTTPPort+":"+plainHTTPPort {
-		t.Errorf("caddy ports = %v, want [%s:%s] — a nameless instance publishes plain HTTP and nothing else", got, plainHTTPPort, plainHTTPPort)
+	want := fmt.Sprintf("%d:%d", bundle.DefaultNamelessWebPort, caddy.HTTPPort)
+	if got := caddyPorts(t, host, "/opt/farrier"); len(got) != 1 || got[0] != want {
+		t.Errorf("caddy ports = %v, want [%s] — a nameless instance publishes plain HTTP and nothing else", got, want)
 	}
 }
 
@@ -204,7 +205,8 @@ func TestUpStatesTheWebUIIsUnencryptedThroughTheEventStream(t *testing.T) {
 	// The last thing Up says is the URL to open, and for a nameless
 	// instance the caveat rides along with it.
 	ready := stepDetail(t, evs, StepWaitCaddy)
-	if !strings.Contains(ready, "http://"+namelessAddress+"/") || strings.Contains(ready, "https://") {
+	namelessURL := fmt.Sprintf("http://%s:%d/", namelessAddress, bundle.DefaultNamelessWebPort)
+	if !strings.Contains(ready, namelessURL) || strings.Contains(ready, "https://") {
 		t.Errorf("wait-caddy detail = %q, want the plain-HTTP endpoint", ready)
 	}
 	if !strings.Contains(ready, "unencrypted") {
@@ -242,8 +244,9 @@ func TestUpPointsTheRunnerAtTheNamelessInstanceURL(t *testing.T) {
 		t.Fatalf("converged compose declares no %q service", forge.RunnerService)
 	}
 	command := fmt.Sprint(svc["command"])
-	if !strings.Contains(command, "http://"+namelessAddress+"/") {
-		t.Errorf("runner command is not pointed at http://%s/:\n%s", namelessAddress, command)
+	want := fmt.Sprintf("http://%s:%d/", namelessAddress, bundle.DefaultNamelessWebPort)
+	if !strings.Contains(command, want) {
+		t.Errorf("runner command is not pointed at %s:\n%s", want, command)
 	}
 	if strings.Contains(command, "https://") {
 		t.Errorf("runner command reaches for HTTPS on a nameless instance:\n%s", command)
