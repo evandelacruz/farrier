@@ -320,6 +320,76 @@ func TestManifestNamed(t *testing.T) {
 	}
 }
 
+// TestGitSSHPortDefaultsTo2222 pins UP-005's default: a manifest that names
+// no port serves git over SSH on 2222, and NewManifest leaves the field
+// unset rather than writing the default in — what a bundle publishes is
+// init's call to record, not the constructor's.
+func TestGitSSHPortDefaultsTo2222(t *testing.T) {
+	m := validManifest()
+	if m.GitSSHPort != 0 {
+		t.Errorf("NewManifest wrote GitSSHPort = %d; that is init's call", m.GitSSHPort)
+	}
+	if got := m.GitSSHPortOrDefault(); got != DefaultGitSSHPort {
+		t.Errorf("GitSSHPortOrDefault() = %d, want %d", got, DefaultGitSSHPort)
+	}
+	if DefaultGitSSHPort != 2222 {
+		t.Errorf("DefaultGitSSHPort = %d, want 2222 (spec.md \"Reaching the forge\")", DefaultGitSSHPort)
+	}
+
+	m.GitSSHPort = 22
+	if got := m.GitSSHPortOrDefault(); got != 22 {
+		t.Errorf("GitSSHPortOrDefault() = %d, want the manifest's own 22", got)
+	}
+}
+
+// TestGitSSHPortValidation covers the range a manifest may declare: zero is
+// unset, real ports pass, anything unpublishable is refused before a
+// deployment can try to bind it.
+func TestGitSSHPortValidation(t *testing.T) {
+	cases := []struct {
+		port    int
+		wantErr bool
+	}{
+		{0, false},
+		{22, false},
+		{2222, false},
+		{65535, false},
+		{-1, true},
+		{65536, true},
+	}
+	for _, tc := range cases {
+		if err := ValidateGitSSHPort(tc.port); (err != nil) != tc.wantErr {
+			t.Errorf("ValidateGitSSHPort(%d) = %v, wantErr %v", tc.port, err, tc.wantErr)
+		}
+		m := validManifest()
+		m.GitSSHPort = tc.port
+		if err := m.Validate(); (err != nil) != tc.wantErr {
+			t.Errorf("Validate() with GitSSHPort=%d = %v, wantErr %v", tc.port, err, tc.wantErr)
+		}
+	}
+}
+
+// TestGitSSHPortSurvivesSaveAndLoad is the bundle-identity half of UP-005:
+// the port is carried by the bundle, so any machine holding the bundle
+// deploys the same endpoint, and a restored instance answers where the
+// original did (RSTR-004, XCUT-001).
+func TestGitSSHPortSurvivesSaveAndLoad(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	b.Manifest.GitSSHPort = 22
+
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Manifest.GitSSHPortOrDefault(); got != 22 {
+		t.Errorf("loaded git-over-ssh port = %d, want the saved 22", got)
+	}
+}
+
 // INIT-004: Exists is what stands between a re-run of `init` and a live
 // instance's identity, so it has to answer for every shape a bundle
 // directory turns up in — including the torn ones.

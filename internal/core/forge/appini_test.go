@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -274,5 +275,80 @@ func TestRenderAppINIRejectsANamelessBundle(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "UP-006") {
 		t.Errorf("error = %v, want it to point at UP-006", err)
+	}
+}
+
+// TestRenderAppINIAdvertisesTheManifestSSHPort is UP-005's "the SSH clone
+// URL Forgejo displays is the one that works": SSH_PORT, which is what
+// Forgejo renders into displayed clone URLs, is the *host* port the
+// manifest declares, while SSH_LISTEN_PORT is the container-side port the
+// builtin server actually binds — the port `up` publishes that host port
+// onto.
+func TestRenderAppINIAdvertisesTheManifestSSHPort(t *testing.T) {
+	cases := []struct {
+		name     string
+		declared int
+		want     int
+	}{
+		{"unset takes the bundle default", 0, bundle.DefaultGitSSHPort},
+		{"explicit 22", 22, 22},
+		{"explicit high port", 2022, 2022},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := validManifest()
+			m.GitSSHPort = tc.declared
+
+			out, err := RenderAppINI(m, validSecrets(), AppINIOptions{})
+			if err != nil {
+				t.Fatalf("RenderAppINI() error = %v", err)
+			}
+			text := string(out)
+
+			for _, want := range []string{
+				fmt.Sprintf("SSH_PORT = %d\n", tc.want),
+				fmt.Sprintf("SSH_LISTEN_PORT = %d\n", SSHListenPort),
+				"START_SSH_SERVER = true",
+				"SSH_DOMAIN = forge.example.com",
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("rendered app.ini missing %q:\n%s", want, text)
+				}
+			}
+		})
+	}
+}
+
+// TestSSHListenPortIsUnprivileged guards the reason SSHListenPort is not 22:
+// Forgejo's builtin SSH server runs as RUN_USER inside the container, and a
+// non-root process cannot bind a privileged port — so a container-side port
+// below 1024 would fail to listen whatever host port were published onto it.
+func TestSSHListenPortIsUnprivileged(t *testing.T) {
+	if SSHListenPort <= 1024 {
+		t.Errorf("SSHListenPort = %d, want an unprivileged port the container's non-root RUN_USER can bind", SSHListenPort)
+	}
+}
+
+// TestRenderAppINIQuarantineKeepsTheSSHEndpoint pins that drill mode does
+// not move the git-over-SSH endpoint: a drill rehearses the snapshot's own
+// identity, and where it is reachable *from* is the deploy step's job
+// (deploy.publishGitSSH binds it to loopback), not this renderer's.
+func TestRenderAppINIQuarantineKeepsTheSSHEndpoint(t *testing.T) {
+	m := validManifest()
+	m.GitSSHPort = 2022
+
+	ordinary, err := RenderAppINI(m, validSecrets(), AppINIOptions{})
+	if err != nil {
+		t.Fatalf("RenderAppINI() error = %v", err)
+	}
+	quarantined, err := RenderAppINI(m, validSecrets(), AppINIOptions{Quarantine: true})
+	if err != nil {
+		t.Fatalf("RenderAppINI(quarantine) error = %v", err)
+	}
+
+	for _, want := range []string{"SSH_PORT = 2022\n", "SSH_DOMAIN = forge.example.com", "SSH_SERVER_HOST_KEYS = " + SSHHostKeyPath} {
+		if !strings.Contains(string(ordinary), want) || !strings.Contains(string(quarantined), want) {
+			t.Errorf("quarantine changed the git-over-ssh identity: %q not in both renders", want)
+		}
 	}
 }

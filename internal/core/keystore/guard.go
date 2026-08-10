@@ -46,7 +46,20 @@ func (g guardedDriver) Store(ctx context.Context, keyName string, secret Secret)
 	return g.writer.Store(ctx, keyName, secret)
 }
 
+// DescribeTarget forwards to the wrapped driver when that driver
+// describes itself, so wrapping it in the rotation guard never costs a
+// caller the location report INIT-006 depends on. A wrapped driver that
+// is not a Describer answers with an empty string — the same "unknown
+// here" Target reads from a bare driver.
+func (g guardedDriver) DescribeTarget(keyName string) string {
+	if describer, ok := g.Driver.(Describer); ok {
+		return describer.DescribeTarget(keyName)
+	}
+	return ""
+}
+
 var (
-	_ Driver = guardedDriver{}
-	_ Writer = guardedDriver{}
+	_ Driver    = guardedDriver{}
+	_ Writer    = guardedDriver{}
+	_ Describer = guardedDriver{}
 )

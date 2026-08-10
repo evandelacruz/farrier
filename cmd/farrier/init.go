@@ -46,6 +46,7 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
 	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required with -domain); reads that provider's credentials from the environment")
 	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
+	gitSSHPort := fs.Int("git-ssh-port", bundle.DefaultGitSSHPort, "host port the instance serves git over SSH on; 22 gives bare git@domain:owner/repo.git clone URLs, but the host's own sshd usually owns it")
 	colocatedRunner := fs.Bool("colocated-runner", true, "deploy a Forgejo Actions runner on the forge host; false keeps CI off the machine holding git data and the database, and the operator registers a remote runner instead")
 	var keystoreConfig, blobConfig, images keyValueFlag
 	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
@@ -77,6 +78,10 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		fmt.Fprintln(os.Stderr, "farrier: init: -acme-dns-provider is required with -domain")
 		return initialize.Params{}, 2
 	}
+	if err := bundle.ValidateGitSSHPort(*gitSSHPort); err != nil {
+		fmt.Fprintf(os.Stderr, "farrier: init: -git-ssh-port: %v\n", err)
+		return initialize.Params{}, 2
+	}
 
 	return initialize.Params{
 		Domain:          *domain,
@@ -88,6 +93,7 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		ACMEEmail:       *acmeEmail,
 		Images:          images.asStrings(),
 		ColocatedRunner: colocatedRunner,
+		GitSSHPort:      *gitSSHPort,
 	}, 0
 }
 

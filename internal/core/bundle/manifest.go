@@ -19,6 +19,21 @@ import (
 // DefaultChecksumAlgorithm is the checksum algorithm new manifests use.
 const DefaultChecksumAlgorithm = "sha256"
 
+// DefaultGitSSHPort is the host port `up` publishes the forge's
+// git-over-SSH server on when a manifest names none (UP-005).
+//
+// 2222 rather than 22 because the host's own sshd normally owns 22:
+// Farrier reaches hosts over it (ORCH-001), and taking it would mean asking
+// the operator to reconfigure their host, which the design deliberately
+// does not do (spec.md "Reaching the forge"). The cost is a port in the SSH
+// clone URL, which Forgejo renders into the URLs it displays — an operator
+// whose host sshd lives elsewhere sets 22 here and gets bare
+// `git@domain:owner/repo.git` URLs back.
+const DefaultGitSSHPort = 2222
+
+// maxPort is the highest TCP port number a manifest may declare.
+const maxPort = 65535
+
 // StateKind identifies one of the four kinds of state a bundle declares.
 type StateKind string
 
@@ -99,10 +114,10 @@ type ActionsConfig struct {
 	ColocatedRunner *bool `yaml:"colocatedRunner,omitempty"`
 }
 
-// Manifest is the bundle's farrier.yaml: domain, pinned image digests,
-// driver config, ACME DNS-01 config, CI runner config, state-kind
-// declarations, and the checksum algorithm used throughout backup and
-// restore.
+// Manifest is the bundle's farrier.yaml: domain, git-over-SSH host port,
+// pinned image digests, driver config, ACME DNS-01 config, CI runner
+// config, state-kind declarations, and the checksum algorithm used
+// throughout backup and restore.
 type Manifest struct {
 	// Domain is the DNS name the instance's identity derives from
 	// (spec.md "The domain"). It is optional: an absent domain is what
@@ -112,7 +127,20 @@ type Manifest struct {
 	// no certificate and no ACME section; `up` serves it over plain HTTP at
 	// an address the operator supplies (UP-006), and attaching a domain
 	// later fills this field in place (UP-007).
-	Domain            string             `yaml:"domain,omitempty"`
+	Domain string `yaml:"domain,omitempty"`
+
+	// GitSSHPort is the host port `up` publishes the forge's git-over-SSH
+	// server on, and the port Forgejo advertises in the SSH clone URLs it
+	// displays (UP-005). Zero means unset and resolves to
+	// DefaultGitSSHPort — see GitSSHPortOrDefault.
+	//
+	// The port belongs to the instance, not to a repository: one bundle
+	// owns one domain, and every repository on it answers at the same
+	// endpoint (spec.md "Reaching the forge"). It is bundle identity, so a
+	// restored or promoted instance answers on the same port with the same
+	// host key and existing remotes keep working (RSTR-004).
+	GitSSHPort int `yaml:"gitSshPort,omitempty"`
+
 	Images            map[string]string  `yaml:"images"`
 	Drivers           DriverConfig       `yaml:"drivers"`
 	ACME              ACMEConfig         `yaml:"acme,omitempty"`
@@ -128,6 +156,32 @@ type Manifest struct {
 // this rather than comparing Domain to the empty string in a dozen places.
 func (m *Manifest) Named() bool {
 	return strings.TrimSpace(m.Domain) != ""
+}
+
+// GitSSHPortOrDefault reports the host port this bundle's git-over-SSH
+// endpoint answers on: the manifest's own GitSSHPort, or DefaultGitSSHPort
+// when it declares none. A manifest written before the field existed, or one
+// an operator never touched, still resolves to the port UP-005 requires by
+// default — the default is spelled in exactly one place, and every caller
+// that publishes the port (deploy) or advertises it (forge's app.ini) reads
+// it through here so the two can never disagree.
+func (m *Manifest) GitSSHPortOrDefault() int {
+	if m.GitSSHPort == 0 {
+		return DefaultGitSSHPort
+	}
+	return m.GitSSHPort
+}
+
+// ValidateGitSSHPort checks that port is one a manifest may carry: zero,
+// meaning unset (GitSSHPortOrDefault), or a real TCP port. Exported so a
+// frontend collecting the operator's choice can reject an impossible one
+// up front — `init` checks it before spending an ACME exchange — rather
+// than only when the assembled manifest is validated on its way to disk.
+func ValidateGitSSHPort(port int) error {
+	if port < 0 || port > maxPort {
+		return fmt.Errorf("bundle: git-over-ssh port %d is not a valid TCP port", port)
+	}
+	return nil
 }
 
 // ColocatedRunnerEnabled reports whether this bundle wants the colocated
@@ -153,12 +207,12 @@ func (m *Manifest) ColocatedRunnerDeclared() bool {
 // a nameless bundle (INIT-005); the two go together, and Validate rejects
 // one without the other.
 //
-// It leaves Actions.ColocatedRunner unset rather than writing the default
-// in: what a bundle deploys is init's policy, not this constructor's, and
-// initialize.Run writes the operator's choice out explicitly so farrier.yaml
-// shows the knob. An unset field still means enabled
-// (ColocatedRunnerEnabled) — the default only ever has to be spelled in one
-// place.
+// It leaves Actions.ColocatedRunner and GitSSHPort unset rather than
+// writing the defaults in: what a bundle deploys is init's policy, not this
+// constructor's, and initialize.Run writes the operator's choices out
+// explicitly so farrier.yaml shows both knobs. Unset still resolves to the
+// same behavior (ColocatedRunnerEnabled, GitSSHPortOrDefault) — each
+// default only ever has to be spelled in one place.
 func NewManifest(domain string, images map[string]string, drivers DriverConfig, acmeCfg ACMEConfig) *Manifest {
 	state := make([]StateDeclaration, len(AllStateKinds))
 	for i, kind := range AllStateKinds {
@@ -200,6 +254,9 @@ func (m *Manifest) Validate() error {
 		if !digestPinned.MatchString(ref) {
 			return fmt.Errorf("bundle: image %q must be pinned by digest (@sha256:...), got %q", component, ref)
 		}
+	}
+	if err := ValidateGitSSHPort(m.GitSSHPort); err != nil {
+		return err
 	}
 	if strings.TrimSpace(m.Drivers.Keystore.Driver) == "" {
 		return fmt.Errorf("bundle: keystore driver is required")

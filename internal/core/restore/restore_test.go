@@ -741,7 +741,7 @@ func TestRestoreEndToEnd(t *testing.T) {
 	wantSteps := []string{
 		StepFetch, StepDecrypt, StepVerify, StepInstallKeys, StepPlaceState, StepRestoreBlobs,
 		deploy.StepCheckHost, deploy.StepConfigureForge, deploy.StepConfigureTLS,
-		deploy.StepConfigureState, deploy.StepConfigureSSHKey, deploy.StepCheckVersion, deploy.StepConverge,
+		deploy.StepConfigureState, deploy.StepConfigureGitSSH, deploy.StepCheckVersion, deploy.StepConverge,
 		deploy.StepWaitForge, deploy.StepWaitCaddy,
 	}
 	started := map[string]int{}
@@ -993,5 +993,23 @@ func TestRestoreQuarantinePassesThroughToDeploy(t *testing.T) {
 				t.Errorf("compose binds https to loopback = %v, want %v:\n%s", gotLoopback, tc.quarantine, composed)
 			}
 		})
+	}
+}
+
+// TestPinnedBundleKeepsTheGitSSHPort is RSTR-004 for the endpoint UP-005
+// publishes: a restored instance answers on the same git-over-SSH port as
+// the original, because the port is bundle identity and restore only ever
+// overrides the forge image on its way to deploy.Up.
+func TestPinnedBundleKeepsTheGitSSHPort(t *testing.T) {
+	b := testBundle(t, t.TempDir())
+	b.Manifest.GitSSHPort = 22
+	pin := "codeberg.org/forgejo/forgejo@sha256:" + strings.Repeat("d", 64)
+
+	got, err := pinnedBundle(b, pin)
+	if err != nil {
+		t.Fatalf("pinnedBundle: %v", err)
+	}
+	if port := got.Manifest.GitSSHPortOrDefault(); port != 22 {
+		t.Errorf("restored bundle's git-over-ssh port = %d, want the original 22", port)
 	}
 }
