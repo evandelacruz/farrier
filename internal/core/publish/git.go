@@ -109,7 +109,7 @@ func inspectRepo(ctx context.Context, git Git, dir, remoteName string) (localRep
 // in ahead of the operator's own, so a wrapper that sets them cannot
 // defeat the pin (see sshCommand).
 func (s *settings) sshEnv(ctx context.Context) ([]string, func(), error) {
-	line, err := knownHostsLine(ctx, s.manifest)
+	line, err := knownHostsLine(ctx, s.manifest, s.host)
 	if err != nil {
 		return nil, func() {}, err
 	}

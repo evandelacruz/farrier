@@ -73,7 +73,7 @@ func TestHandlePublishStartsAJob(t *testing.T) {
 		return publish.Result{}, nil
 	}
 
-	rec := doPublish(t, s, `{"dir":"/src/thing","owner":"acme","name":"widgets","remote":"farrier","publicKey":"/keys/id.pub"}`)
+	rec := doPublish(t, s, `{"dir":"/src/thing","owner":"acme","name":"widgets","remote":"farrier","publicKey":"/keys/id.pub","target":"http://192.168.1.5:8222","address":"box.local"}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
@@ -94,6 +94,11 @@ func TestHandlePublishStartsAJob(t *testing.T) {
 	}
 	if gotOpts.RemoteName != "farrier" || gotOpts.PublicKeyPath != "/keys/id.pub" {
 		t.Errorf("opts = %+v, want the request's remote and public key", gotOpts)
+	}
+	// Where the instance is comes through the wire unchanged; the core
+	// decides what to do with it (UP-006).
+	if gotOpts.TargetBaseURL != "http://192.168.1.5:8222" || gotOpts.Address != "box.local" {
+		t.Errorf("opts = %+v, want the request's target and address", gotOpts)
 	}
 	if !gotOpts.Private {
 		t.Error("private defaulted to false, want true")

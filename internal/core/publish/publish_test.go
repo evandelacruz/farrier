@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -603,7 +604,6 @@ func TestResolveRejectsIncompleteOptions(t *testing.T) {
 		want string
 	}{
 		{"no manifest", Options{TargetToken: keystore.NewSecret("t")}, "manifest is required"},
-		{"no domain", Options{Manifest: &bundle.Manifest{}, TargetToken: keystore.NewSecret("t")}, "no domain"},
 		{"no token", Options{Manifest: &bundle.Manifest{Domain: "git.example.com"}}, "token is required"},
 	}
 	for _, tc := range tests {
@@ -635,8 +635,209 @@ func TestResolveDefaults(t *testing.T) {
 	}
 }
 
+// --- the nameless tier (UP-006) -------------------------------------------
+
+// namelessManifest is testManifest with the domain taken off: the bundle
+// `init` produces by default, whose identity is the address the operator
+// deployed it at rather than a name it owns.
+func namelessManifest(t *testing.T, port int) *bundle.Manifest {
+	t.Helper()
+	m := testManifest(t, port)
+	m.Domain = ""
+	return m
+}
+
+// The command the README documents for a nameless instance, resolved: the
+// operator names the API and nothing else, and the git-over-SSH endpoint
+// follows from it, on the manifest's own port.
+func TestResolveDerivesTheHostFromTheTarget(t *testing.T) {
+	m := namelessManifest(t, 2222)
+	s, err := resolve(Options{
+		Dir:           "/src/thing",
+		Manifest:      m,
+		TargetBaseURL: "http://127.0.0.1:8222",
+		TargetToken:   keystore.NewSecret("t"),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if s.host != "127.0.0.1" {
+		t.Errorf("host = %q, want the target's host", s.host)
+	}
+	if want := "ssh://git@127.0.0.1:2222/acme/widgets.git"; m.GitSSHCloneURLAt(s.host, "acme", "widgets") != want {
+		t.Errorf("clone URL = %q, want %q", m.GitSSHCloneURLAt(s.host, "acme", "widgets"), want)
+	}
+	if want := "[127.0.0.1]:2222"; m.GitSSHKnownHostsHostAt(s.host) != want {
+		t.Errorf("known_hosts host = %q, want %q", m.GitSSHKnownHostsHostAt(s.host), want)
+	}
+}
+
+// End to end against the tier the quick start walks a first-time operator
+// through, with no address given: both URLs publish writes — the remote and
+// the pin — name the host the operator addressed the API at.
+func TestRunPublishesToANamelessInstance(t *testing.T) {
+	forge := &fakeForge{user: "admin", keys: []string{"ssh-ed25519 AAAAoperator"}}
+	srv := forge.server(t)
+	// httptest serves on a loopback literal, which is exactly the shape a
+	// nameless instance is reached at.
+	target, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	host := target.Hostname()
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+
+	git := &fakeGit{root: "/home/evan/my-project", branch: "main"}
+	job := events.NewJob()
+
+	var knownHosts []byte
+	result, err := Run(context.Background(), job, Options{
+		Dir:           "/home/evan/my-project",
+		Manifest:      namelessManifest(t, 2222),
+		TargetBaseURL: srv.URL,
+		TargetToken:   keystore.NewSecret("token"),
+		Git: gitFunc(func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+			if strings.HasPrefix(strings.Join(args, " "), "push") && knownHosts == nil {
+				knownHosts, _ = os.ReadFile(knownHostsFrom(env))
+			}
+			return git.Run(ctx, dir, env, args...)
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantURL := fmt.Sprintf("ssh://git@%s:2222/admin/my-project.git", host)
+	if result.RemoteURL != wantURL {
+		t.Errorf("remote URL = %q, want %q", result.RemoteURL, wantURL)
+	}
+	if !git.ran("remote add origin " + wantURL) {
+		t.Errorf("origin was not set to the address; calls: %v", git.calls)
+	}
+	wantPin := fmt.Sprintf("[%s]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPublishTestHostKeyBlobAAAAAAAAAAAAAAAAAAAA\n", target.Hostname())
+	if string(knownHosts) != wantPin {
+		t.Errorf("known_hosts = %q, want %q", knownHosts, wantPin)
+	}
+	// The operator is told where the repository is being created, which is
+	// the address — a nameless bundle has no domain to name there.
+	if detail := detailFor(job, StepCreate, events.StateStarted); !strings.Contains(detail, host) {
+		t.Errorf("create detail = %q, want the address the publish is addressing", detail)
+	}
+}
+
+// The API and git over SSH can answer at different hosts — a tunnel or a
+// proxy in front of the API — so the derived default is overridable.
+func TestResolveAddressOverridesTheTargetHost(t *testing.T) {
+	s, err := resolve(Options{
+		Dir:           "/src/thing",
+		Manifest:      &bundle.Manifest{},
+		Address:       "box.local",
+		TargetBaseURL: "http://127.0.0.1:9999",
+		TargetToken:   keystore.NewSecret("t"),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if s.host != "box.local" {
+		t.Errorf("host = %q, want the address rather than the target's host", s.host)
+	}
+	if s.client.baseURL != "http://127.0.0.1:9999" {
+		t.Errorf("base URL = %q, want the target the operator named", s.client.baseURL)
+	}
+}
+
+// An address with no target is a complete instruction on its own: the
+// instance's API is reached at the same address, over plain HTTP, at the
+// manifest's public web port.
+func TestResolveDerivesTheAPIURLFromTheAddress(t *testing.T) {
+	s, err := resolve(Options{
+		Dir:         "/src/thing",
+		Manifest:    &bundle.Manifest{},
+		Address:     "192.168.1.5",
+		TargetToken: keystore.NewSecret("t"),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if s.host != "192.168.1.5" {
+		t.Errorf("host = %q, want the address", s.host)
+	}
+	if s.client.baseURL != "http://192.168.1.5:8222" {
+		t.Errorf("base URL = %q, want the nameless instance's own URL", s.client.baseURL)
+	}
+}
+
+// An IPv6 address survives both spellings: bracketed in the URL authority
+// the remote is built from, and bracketed once — around the port, not
+// around the literal — in the known_hosts entry.
+func TestResolveSpellsAnIPv6AddressForBothURLs(t *testing.T) {
+	m := &bundle.Manifest{}
+	s, err := resolve(Options{
+		Dir:         "/src/thing",
+		Manifest:    m,
+		Address:     "fd00::1",
+		TargetToken: keystore.NewSecret("t"),
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if want := "ssh://git@[fd00::1]:2222/acme/widgets.git"; m.GitSSHCloneURLAt(s.host, "acme", "widgets") != want {
+		t.Errorf("clone URL = %q, want %q", m.GitSSHCloneURLAt(s.host, "acme", "widgets"), want)
+	}
+	if want := "[fd00::1]:2222"; m.GitSSHKnownHostsHostAt(s.host) != want {
+		t.Errorf("known_hosts host = %q, want %q", m.GitSSHKnownHostsHostAt(s.host), want)
+	}
+}
+
+// Neither flag is the one case publish cannot guess its way out of, so it
+// names both ways out rather than failing on an empty host.
+func TestResolveRejectsANamelessBundleWithNoAddressAndNoTarget(t *testing.T) {
+	_, err := resolve(Options{
+		Dir:         "/src/thing",
+		Manifest:    &bundle.Manifest{},
+		TargetToken: keystore.NewSecret("t"),
+	})
+	if err == nil {
+		t.Fatal("resolve = nil error, want a refusal when nothing says where the instance is")
+	}
+	for _, flag := range []string{"-address", "-target"} {
+		if !strings.Contains(err.Error(), flag) {
+			t.Errorf("error = %q, want it to name %s", err, flag)
+		}
+	}
+}
+
+// A named bundle already answers where the instance is. A second answer is
+// a disagreement, not an override — the pairing deploy and app.ini enforce.
+func TestResolveRejectsAnAddressForANamedBundle(t *testing.T) {
+	_, err := resolve(Options{
+		Dir:         "/src/thing",
+		Manifest:    &bundle.Manifest{Domain: "git.example.com"},
+		Address:     "192.168.1.5",
+		TargetToken: keystore.NewSecret("t"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "nameless bundle only") {
+		t.Errorf("resolve = %v, want an address rejected for a named bundle", err)
+	}
+}
+
+// A target with no host cannot stand in for the address, and says so.
+func TestResolveRejectsATargetWithNoHost(t *testing.T) {
+	_, err := resolve(Options{
+		Dir:           "/src/thing",
+		Manifest:      &bundle.Manifest{},
+		TargetBaseURL: "/api/v1",
+		TargetToken:   keystore.NewSecret("t"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "-address") {
+		t.Errorf("resolve = %v, want a refusal naming the address flag", err)
+	}
+}
+
 func TestKnownHostsLineOmitsThePortOn22(t *testing.T) {
-	line, err := knownHostsLine(context.Background(), testManifest(t, 22))
+	line, err := knownHostsLine(context.Background(), testManifest(t, 22), "git.example.com")
 	if err != nil {
 		t.Fatalf("knownHostsLine: %v", err)
 	}
@@ -658,7 +859,7 @@ func TestKnownHostsLineComesFromTheManifestWithoutTheKeystore(t *testing.T) {
 	m := testManifest(t, 2222)
 	m.Drivers.Keystore = bundle.DriverRef{}
 
-	line, err := knownHostsLine(context.Background(), m)
+	line, err := knownHostsLine(context.Background(), m, "git.example.com")
 	if err != nil {
 		t.Fatalf("knownHostsLine: %v", err)
 	}
@@ -671,11 +872,11 @@ func TestKnownHostsLineComesFromTheManifestWithoutTheKeystore(t *testing.T) {
 // keystore, so its push keeps the same pin it has always had rather than
 // losing it to an upgrade.
 func TestKnownHostsLineFallsBackToTheKeystore(t *testing.T) {
-	fromKeystore, err := knownHostsLine(context.Background(), legacyManifest(t, 2222))
+	fromKeystore, err := knownHostsLine(context.Background(), legacyManifest(t, 2222), "git.example.com")
 	if err != nil {
 		t.Fatalf("knownHostsLine: %v", err)
 	}
-	fromManifest, err := knownHostsLine(context.Background(), testManifest(t, 2222))
+	fromManifest, err := knownHostsLine(context.Background(), testManifest(t, 2222), "git.example.com")
 	if err != nil {
 		t.Fatalf("knownHostsLine: %v", err)
 	}
@@ -691,7 +892,7 @@ func TestKnownHostsLineFailsWhenNeitherSourceHasTheKey(t *testing.T) {
 	m := testManifest(t, 2222)
 	m.SSHHostKeyPublic = ""
 
-	if _, err := knownHostsLine(context.Background(), m); err == nil {
+	if _, err := knownHostsLine(context.Background(), m, "git.example.com"); err == nil {
 		t.Fatal("knownHostsLine = nil error, want a refusal when nothing holds the host key")
 	}
 }

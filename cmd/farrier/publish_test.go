@@ -26,6 +26,19 @@ func TestRunPublishRequiresABundle(t *testing.T) {
 	}
 }
 
+// A nameless instance is reached at an address rather than a domain
+// (UP-006), so the flag that carries one is part of the command's surface.
+func TestRunPublishAcceptsAnAddress(t *testing.T) {
+	t.Setenv("FARRIER_TARGET_TOKEN", "t")
+	code := withSilencedStderr(t, func() int {
+		return runPublish([]string{"-dir", t.TempDir(), "-address", "192.168.1.5"})
+	})
+	// 1, not 2: the flag parsed, and the run failed on the missing bundle.
+	if code != 1 {
+		t.Errorf("runPublish with -address: exit code = %d, want 1", code)
+	}
+}
+
 func TestPublishIsARegisteredCommand(t *testing.T) {
 	if _, ok := commands["publish"]; !ok {
 		t.Error("publish is not in the command table")

@@ -23,6 +23,11 @@ import (
 // addressed by the bundle's own domain, and the repository private. The
 // intended invocation is `cd my-project && farrier publish`.
 //
+// A nameless instance has no domain to be addressed by, so it is reached at
+// the address it was deployed to: `-address`, or by default the host of
+// `-target`, which makes `farrier publish -target http://192.168.1.5:8222`
+// work as typed.
+//
 // The instance API token is read from FARRIER_TARGET_TOKEN in the process
 // environment, never from a flag, for the reason `import` reads its tokens
 // there: argv is visible to any local user via ps and lands in shell
@@ -32,6 +37,7 @@ func runPublish(args []string) int {
 	dir := fs.String("dir", ".", "project folder to publish")
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (default: .farrier inside -dir)")
 	targetURL := fs.String("target", "", "base URL of the instance's API (default: the bundle's own public URL — its domain over HTTPS, at the port clients connect on)")
+	address := fs.String("address", "", "address a nameless instance is reached at, for the git remote and the host key check (default: the host of -target); a named instance is reached at its domain and takes no address")
 	owner := fs.String("owner", "", "owner (user or organization) the repository lands under on the instance (default: the account the token belongs to)")
 	name := fs.String("name", "", "repository name on the instance (default: the project folder's name)")
 	private := fs.Bool("private", true, "create the repository private")
@@ -62,6 +68,7 @@ func runPublish(args []string) int {
 		_, runErr := publish.Run(context.Background(), job, publish.Options{
 			Dir:           *dir,
 			Manifest:      &b.Manifest,
+			Address:       *address,
 			TargetBaseURL: *targetURL,
 			TargetToken:   keystore.NewSecret(token),
 			Owner:         *owner,

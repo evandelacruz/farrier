@@ -122,6 +122,8 @@ What that costs, stated plainly:
 - **The web UI is unencrypted.** Git over SSH is encrypted regardless — pushing to a nameless instance across the internet is safe — but pull requests, review, and login travel in the clear, so a nameless instance belongs on a LAN, a VPN, or a tailnet.
 - **The address is the identity, so moving breaks remotes.** A named instance relocates by DNS flip and no remote ever changes; that is what identity-in-the-bundle buys, and a nameless instance is the one case that opts out. Attaching a domain later is supported and in-place — repositories, history, pull requests, review comments, CI history, secrets, and the SSH host key all survive, because they are bundle and host state rather than identity. Consumers re-point their remote once.
 
+Every command that addresses the instance takes the address in the domain's place, `publish` included: it points `origin` at that address and pins the push to the host key there, taking the address from the operator or, by default, from the host of the API URL they already named. The two can differ when the API is reached through a tunnel or a proxy, which is why the address stays statable on its own.
+
 A tailnet name is the best of the nameless options: stable, private, reachable from anywhere the operator is logged in, and it does not drift the way an IP does.
 
 Named from the start remains the recommendation for anything that will outlive the experiment. The nameless tier exists so the first minute costs nothing, not so the domain can be avoided forever.

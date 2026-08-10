@@ -391,11 +391,38 @@ func (m *Manifest) GitSSHCloneURLAt(host, owner, repo string) string {
 // hostname on port 22, and `[domain]:port` on any other port, matching how
 // OpenSSH itself keys non-default ports.
 func (m *Manifest) GitSSHKnownHostsHost() string {
+	return m.GitSSHKnownHostsHostAt(m.Domain)
+}
+
+// GitSSHKnownHostsHostAt is GitSSHKnownHostsHost for an instance reached at
+// host rather than at the bundle domain — the nameless case (UP-006), where
+// the address is the identity. It exists for the same reason
+// GitSSHCloneURLAt does, and the two must agree: `publish` pins the push
+// with a known_hosts line and points `origin` at a clone URL, and a line
+// naming one host while the URL names another fails the push with an opaque
+// host-key error (IMPT-004).
+//
+// host is spelled for a URL authority, so an IPv6 literal arrives
+// bracketed. Those brackets are stripped first: a known_hosts entry's
+// brackets belong to the port, so OpenSSH keys `fd00::1` on port 22 and
+// `[fd00::1]:2222` on any other — never `[[fd00::1]]:2222`. The default git
+// SSH port is 2222, so a nameless instance always takes the bracketed form.
+func (m *Manifest) GitSSHKnownHostsHostAt(host string) string {
+	host = unbracketHost(host)
 	port := m.GitSSHPortOrDefault()
 	if port == 22 {
-		return m.Domain
+		return host
 	}
-	return fmt.Sprintf("[%s]:%d", m.Domain, port)
+	return fmt.Sprintf("[%s]:%d", host, port)
+}
+
+// unbracketHost removes the brackets a URL authority puts around an IPv6
+// literal, leaving every other host untouched.
+func unbracketHost(host string) string {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		return host[1 : len(host)-1]
+	}
+	return host
 }
 
 // SSHKnownHostsLineFor renders publicKey as an OpenSSH known_hosts entry
@@ -411,11 +438,19 @@ func (m *Manifest) GitSSHKnownHostsHost() string {
 // existed gets a line rendered by the same code. One renderer means the two
 // sources cannot produce entries that differ.
 func (m *Manifest) SSHKnownHostsLineFor(publicKey string) (string, error) {
+	return m.SSHKnownHostsLineAt(m.Domain, publicKey)
+}
+
+// SSHKnownHostsLineAt is SSHKnownHostsLineFor for an instance reached at
+// host rather than at the bundle domain (UP-006). It is the one renderer
+// both cases go through, so the entry a nameless instance is pinned with
+// and the entry a named one is pinned with differ only in the host.
+func (m *Manifest) SSHKnownHostsLineAt(host, publicKey string) (string, error) {
 	keyType, blob, err := SplitSSHPublicKey(publicKey)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s %s %s\n", m.GitSSHKnownHostsHost(), keyType, blob), nil
+	return fmt.Sprintf("%s %s %s\n", m.GitSSHKnownHostsHostAt(host), keyType, blob), nil
 }
 
 // SplitSSHPublicKey pulls the type and base64 blob out of an OpenSSH
