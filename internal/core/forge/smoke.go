@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -144,13 +143,18 @@ func SmokeCI(ctx context.Context, runner Runner, job *events.Job, opts SmokeOpti
 		return SmokeResult{}, fmt.Errorf("forge: smoke ci: %w", err)
 	}
 
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	command := smokeCommand(repo, "farrier-drill-smoke-"+tokenSuffix, opts.timeout(), opts.poll())
-	if err := runner.Run(ctx, command, io.Discard, &stderr); err != nil {
-		detail := "command failed with no output"
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			detail = lastLine(msg)
-		}
+	if err := runner.Run(ctx, command, &stdout, &stderr); err != nil {
+		// Both streams, for the same reason Bootstrap reads both: a drill
+		// that reports "no output" tells the operator nothing about why the
+		// instance it just restored cannot run a job. The script routes
+		// every command's output through a substitution and writes its own
+		// failures to stderr, so stdout is normally empty and lastLine lands
+		// on the message naming what broke; when stdout does carry something
+		// it came from the CLI aborting under the script, and failureDetail
+		// puts it last, which is where lastLine looks.
+		detail := lastLine(failureDetail(&stdout, &stderr))
 		job.Emit(StepSmokeCI, events.StateFailed, fmt.Sprintf("smoke ci: %s", detail))
 		return SmokeResult{}, fmt.Errorf("forge: smoke ci: %s", detail)
 	}

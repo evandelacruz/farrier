@@ -185,6 +185,21 @@ func TestSmokeCIFailureReportsTheScriptsOwnLastMessage(t *testing.T) {
 	}
 }
 
+// The script writes its own failures to stderr, but a CLI aborting under it
+// can print to stdout instead — a drill that reported "no output" for that
+// would say nothing about why the restored instance cannot run a job.
+func TestSmokeCIFailureReportsAMessageArrivingOnStdout(t *testing.T) {
+	runner := &fakeRunner{stdout: "Forgejo is not supposed to be run as root. Sorry.", err: errors.New("exit status 1")}
+
+	_, err := SmokeCI(context.Background(), runner, events.NewJob(), SmokeOptions{})
+	if err == nil {
+		t.Fatal("SmokeCI succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "not supposed to be run as root") {
+		t.Errorf("error %q does not carry what the command printed", err)
+	}
+}
+
 func TestSmokeCIFailureWithNoOutputStillReportsSomething(t *testing.T) {
 	runner := &fakeRunner{err: errors.New("ssh: connection lost")}
 

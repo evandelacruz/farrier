@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/events"
@@ -180,16 +179,15 @@ func RegisterRunner(ctx context.Context, runner Runner, job *events.Job, secretP
 		return fmt.Errorf("forge: register runner: %s", detail)
 	}
 
-	var stderr bytes.Buffer
-	if err := runner.Run(ctx, registerRunnerCommand(secretPath), io.Discard, &stderr); err != nil {
-		// err.Error() is deliberately unused when stderr carries something:
-		// the transport embeds the whole command in its error text, and
-		// while the secret is not in that command, the redirection names the
-		// path it lives at — no reason to widen what a failure prints.
-		detail := "command failed with no output"
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			detail = msg
-		}
+	var stdout, stderr bytes.Buffer
+	if err := runner.Run(ctx, registerRunnerCommand(secretPath), &stdout, &stderr); err != nil {
+		// err.Error() is deliberately unused when the command said anything
+		// itself: the transport embeds the whole command in its error text,
+		// and while the secret is not in that command, the redirection names
+		// the path it lives at — no reason to widen what a failure prints.
+		// Both output streams are read, since Forgejo's CLI does not commit
+		// to writing a fatal to stderr.
+		detail := failureDetail(&stdout, &stderr)
 		if strings.Contains(detail, runnerAlreadyRegisteredMarker) {
 			job.Emit(StepRunnerRegister, events.StateSucceeded, fmt.Sprintf(
 				"runner %s is already registered, leaving it as-is", RunnerName,
