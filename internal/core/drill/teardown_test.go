@@ -10,6 +10,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/forge"
+	"github.com/evandelacruz/farrier/internal/core/restore"
 )
 
 // assertScratchTargetClean asserts DRIL-003's observable outcome on the
@@ -280,8 +281,10 @@ func TestDrillReportsAFailedTeardown(t *testing.T) {
 // act on.
 func TestDrillReportsBothFailures(t *testing.T) {
 	f := newFixture(t)
-	// Fails deploy.Up's very first command and the teardown's compose call
-	// alike: both contain "docker".
+	// Fails the rehearsal's first docker command and the teardown's compose
+	// call alike: both contain "docker". The rehearsal reaches docker first
+	// while placing state, where restore checks that the forge can use the
+	// repositories and database it just wrote, before deploy.Up runs at all.
 	f.host().failOn = "docker"
 
 	job := events.NewJob()
@@ -294,8 +297,8 @@ func TestDrillReportsBothFailures(t *testing.T) {
 	if !errors.As(err, &failure) {
 		t.Fatalf("Drill returned %T, want a *Failure", err)
 	}
-	if failure.Step != deploy.StepCheckHost {
-		t.Errorf("failure.Step = %q, want the rehearsal's own step %q", failure.Step, deploy.StepCheckHost)
+	if failure.Step != restore.StepPlaceState {
+		t.Errorf("failure.Step = %q, want the rehearsal's own step %q", failure.Step, restore.StepPlaceState)
 	}
 	if report.Failure == nil || report.Teardown == nil {
 		t.Fatalf("report.Failure = %+v, report.Teardown = %+v, want both", report.Failure, report.Teardown)
@@ -305,7 +308,7 @@ func TestDrillReportsBothFailures(t *testing.T) {
 	if terminal.State != events.StateFailed {
 		t.Fatalf("terminal event state = %q, want %q", terminal.State, events.StateFailed)
 	}
-	if !strings.Contains(terminal.Detail, deploy.StepCheckHost) {
+	if !strings.Contains(terminal.Detail, restore.StepPlaceState) {
 		t.Errorf("terminal detail %q does not name the failing rehearsal step", terminal.Detail)
 	}
 	if !strings.Contains(terminal.Detail, "dirty") {

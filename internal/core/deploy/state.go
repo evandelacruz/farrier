@@ -59,11 +59,21 @@ func BlobsStatePath(remoteDir string) string {
 // Like every other chown in this package it is best-effort (access.go): on
 // a host whose container runtime maps ownership across the mount boundary
 // it cannot succeed and does not need to, and refusing to restore over that
-// would be refusing over a mechanism rather than an outcome. What the
-// outcome is gets decided in one place — the deploy.Up that every restore
-// runs next verifies the forge can actually read and write this state, and
-// fails there if it cannot. The error return is kept for a failure that is
-// about the host rather than about ownership.
+// would be refusing over a mechanism rather than an outcome. What is
+// insisted on instead is the outcome, checked by whoever placed the
+// content over the paths they placed: restore.placeState calls
+// VerifyForgeCanUsePlacedState on the repository directories and the
+// database file it just wrote, and fails the restore if the forge cannot
+// use them.
+//
+// The deploy.Up that runs next is not that check and does not cover this.
+// Its own probe (configureState) touches the top of each state directory
+// and nothing beneath, which is right for `up` — it creates nothing else —
+// but on a target whose state directories already exist and are already
+// forge-owned it passes while everything this chown failed to reach stays
+// unusable. access.go "Each caller verifies what it placed" has the whole
+// division. The error return is kept for a failure that is about the host
+// rather than about ownership.
 func ChownState(ctx context.Context, host Host, remoteDir string) error {
 	chownBestEffort(ctx, host, true, GitStatePath(remoteDir), GiteaStatePath(remoteDir))
 	return nil

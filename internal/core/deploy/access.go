@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"slices"
+	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/forge"
 )
@@ -42,6 +44,28 @@ import (
 // model of it. Inspecting the mode bits or the owner would answer a
 // different question, and answer it wrong on macOS, where the bits look
 // wrong and the access works.
+//
+// Each caller verifies what it placed
+//
+// A probe covers the paths it is handed and nothing else, so the caller
+// that created state is the one that checks it. `up` creates the two state
+// directories and nothing beneath them, and verifies exactly those
+// (verifyForgeCanUseState). `restore` writes a directory per repository
+// under state/git and the database file under state/gitea, before `up`
+// runs at all, and verifies those
+// (VerifyForgeCanUsePlacedState) — it is the only caller that knows those
+// paths, and it has them in hand rather than having to walk the host for
+// them.
+//
+// Neither substitutes for the other. On a fresh host the two rise and fall
+// together, because one `mkdir -p` creates a state directory and its new
+// children with the same ownership. They come apart on a target whose
+// state directories already exist and are already forge-owned from an
+// earlier `up` — a restore re-run, a drill whose teardown did not finish,
+// disaster recovery onto a previously-provisioned host. There a failed
+// recursive chown leaves the top of each directory fine and everything
+// restore just extracted owned by the SSH session's user, which the
+// top-level probe passes straight over.
 
 // accessProbeFile is the file the probe writes and removes inside each
 // state directory. A dotfile so a probe that somehow outlives its own
@@ -75,6 +99,94 @@ func verifyForgeCanUseState(ctx context.Context, host Host, image, remoteDir str
 			forgeUID, forgeGID, forgeUID, forgeGID)
 	}
 	return nil
+}
+
+// VerifyForgeCanUsePlacedState reports whether the forge can use state a
+// caller placed on host itself — dirs it created under the state
+// directories, and files it wrote there — as the uid the forge runs as.
+// restore.placeState is the caller: it extracts a directory per repository
+// under GitStatePath and writes the database under GiteaStatePath over an
+// SSH session that generally isn't forgeUID:forgeGID, and its recursive
+// chown is best-effort like every other one here. This is what turns that
+// into an outcome the restore refuses to succeed past, and it is the only
+// thing standing where the chown's own failure used to: without it, a
+// restore onto an already-provisioned host reports success and leaves
+// Forgejo unable to write the repositories it just restored.
+//
+// Every path must be under GitStatePath or GiteaStatePath — those are the
+// two directories the probe mounts, and a path outside them is a caller
+// bug rather than an access failure, so it is refused as such.
+//
+// It leaves nothing behind, on the success path and on a failure partway
+// alike. Directories get the same write-read-remove probe file `up` uses.
+// Files are opened for reading and for writing and then closed, without a
+// byte going either way, so a database restore just placed comes out of
+// the check exactly as it went in and there is nothing to clean up.
+func VerifyForgeCanUsePlacedState(ctx context.Context, host Host, image, remoteDir string, dirs, files []string) error {
+	probeDirs, err := probePaths(remoteDir, dirs)
+	if err != nil {
+		return err
+	}
+	probeFiles, err := probePaths(remoteDir, files)
+	if err != nil {
+		return err
+	}
+
+	script := stateProbeScript(probeDirs) + "; " + fileProbeScript(probeFiles)
+	if err := runAsForge(ctx, host, image, remoteDir, script); err != nil {
+		return fmt.Errorf(
+			"the forge cannot read and write the state just placed on this host: running as uid %d it was denied access under %s: %w. "+
+				"Re-run as a user that can change those paths to owner %d:%d, or clear %s on the target and restore onto an empty host",
+			forgeUID, summarizePaths(slices.Concat(dirs, files)), err,
+			forgeUID, forgeGID, path.Join(remoteDir, stateDir))
+	}
+	return nil
+}
+
+// probePaths pairs each host path with the path the probe sees for it
+// inside the container.
+func probePaths(remoteDir string, hostPaths []string) ([]probeDir, error) {
+	out := make([]probeDir, 0, len(hostPaths))
+	for _, p := range hostPaths {
+		container, err := containerPath(remoteDir, p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, probeDir{container: container, host: p})
+	}
+	return out, nil
+}
+
+// containerPath maps a host path under GitStatePath or GiteaStatePath to
+// the path the probe sees for it inside the container — the inverse of the
+// two bind mounts runAsForge sets up, kept next to them so the two cannot
+// drift apart.
+func containerPath(remoteDir, hostPath string) (string, error) {
+	for _, m := range []probeDir{
+		{host: GitStatePath(remoteDir), container: forge.RepoRoot},
+		{host: GiteaStatePath(remoteDir), container: forge.DataPath},
+	} {
+		if hostPath == m.host {
+			return m.container, nil
+		}
+		if rest, ok := strings.CutPrefix(hostPath, m.host+"/"); ok {
+			return m.container + "/" + rest, nil
+		}
+	}
+	return "", fmt.Errorf("cannot check %s: it is not under %s or %s", hostPath, GitStatePath(remoteDir), GiteaStatePath(remoteDir))
+}
+
+// summarizePaths renders paths for a failure message: all of them when a
+// restore placed few, and the first few plus a count when it placed more
+// than an error line can usefully carry. The probe's own stderr, which the
+// wrapped error carries, names the single path that actually failed; this
+// says what was covered.
+func summarizePaths(paths []string) string {
+	const shown = 3
+	if len(paths) <= shown {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(paths[:shown], ", "), len(paths)-shown)
 }
 
 // verifyForgeCanReadSSHHostKey reports whether the forge can read the SSH
@@ -130,6 +242,32 @@ func stateProbeScript(dirs []probeDir) string {
 	)
 	for _, d := range dirs {
 		script += fmt.Sprintf("; probe %s %s", stateShQuote(d.container), stateShQuote(d.host))
+	}
+	return script
+}
+
+// fileProbeScript builds the /bin/sh program that checks each of files is
+// there and can be opened for reading and for writing, printing the host
+// path of the first one that fails to stderr and exiting non-zero.
+//
+// It opens and closes, rather than reading or writing bytes: opening is
+// where permission is decided, and a file restore just placed — the
+// database above all — must come out of a check byte-for-byte what it went
+// in as. The existence test in front of the append matters for the same
+// reason: without it a database that never arrived would be created empty
+// here and pass.
+//
+// `true` rather than `:` because `:` is a POSIX special built-in, and a
+// redirection error on one of those exits a non-interactive shell outright
+// — before the handler that names the failing path could run.
+func fileProbeScript(files []probeDir) string {
+	// Each redirection is grouped under its own 2>/dev/null so the shell's
+	// own complaint about the redirection it refused is silenced too:
+	// stderr is what names the failing path, and nothing else may reach it.
+	script := "probefile() { [ -f \"$1\" ] && { true < \"$1\"; } 2>/dev/null && { true >> \"$1\"; } 2>/dev/null || " +
+		"{ echo \"$2\" >&2; exit 1; }; }"
+	for _, f := range files {
+		script += fmt.Sprintf("; probefile %s %s", stateShQuote(f.container), stateShQuote(f.host))
 	}
 	return script
 }
