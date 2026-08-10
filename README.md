@@ -2,7 +2,7 @@
 
 *A farrier travels with a portable forge — the whole shop packed to move, set up wherever the work is.*
 
-Point Farrier at a project folder and it stands up a self-hosted forge for it — git hosting, pull requests, code review, secrets, and CI/CD with runners — with a remote ready to push to. Each project gets its own portable forge, not a shared central server. One command brings it up. One command backs it up. One command restores it onto a fresh host anywhere.
+Farrier is a single-binary orchestrator that stands up a self-hosted Forgejo instance per project — Forgejo (and its Actions runner) does the actual git hosting, pull requests, code review, and CI, while Farrier pins it into a versioned bundle, deploys it onto any Docker-plus-SSH host, and owns everything Forgejo doesn't: backup, restore, upgrade, drill, and DNS failover.
 
 ## Quick start
 
