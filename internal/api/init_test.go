@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -39,10 +40,11 @@ func TestHandleInitMissingRequiredFields(t *testing.T) {
 		name string
 		body string
 	}{
-		{"missing domain", `{"keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
-		{"missing keystore driver", `{"domain":"example.com","blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
-		{"missing blob driver", `{"domain":"example.com","keystore":{"driver":"file"},"acmeDnsProvider":"manual"}`},
-		{"missing acme dns provider", `{"domain":"example.com","keystore":{"driver":"file"},"blob":{"driver":"local"}}`},
+		{"missing domain", `{"project":"/srv/p","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
+		{"missing project", `{"domain":"example.com","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
+		{"missing keystore driver", `{"domain":"example.com","project":"/srv/p","blob":{"driver":"local"},"acmeDnsProvider":"manual"}`},
+		{"missing blob driver", `{"domain":"example.com","project":"/srv/p","keystore":{"driver":"file"},"acmeDnsProvider":"manual"}`},
+		{"missing acme dns provider", `{"domain":"example.com","project":"/srv/p","keystore":{"driver":"file"},"blob":{"driver":"local"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,6 +71,7 @@ func TestHandleInitStartsJobAndReturnsID(t *testing.T) {
 
 	rec := doInit(t, s, `{
 		"domain": "example.com",
+		"project": "/srv/my-project",
 		"dir": "/tmp/bundle",
 		"keystore": {"driver": "file", "config": {"path": "/tmp/keys"}},
 		"blob": {"driver": "local", "config": {"path": "/tmp/blobs"}},
@@ -99,6 +102,9 @@ func TestHandleInitStartsJobAndReturnsID(t *testing.T) {
 	if gotParams.Domain != "example.com" {
 		t.Errorf("Domain = %q, want example.com", gotParams.Domain)
 	}
+	if gotParams.Project != "/srv/my-project" {
+		t.Errorf("Project = %q, want /srv/my-project", gotParams.Project)
+	}
 	if gotParams.Dir != "/tmp/bundle" {
 		t.Errorf("Dir = %q, want /tmp/bundle", gotParams.Dir)
 	}
@@ -124,23 +130,29 @@ func TestHandleInitStartsJobAndReturnsID(t *testing.T) {
 	}
 }
 
-func TestHandleInitDefaultsDir(t *testing.T) {
+// An omitted "dir" stays empty through the handler: the default bundle
+// location is initialize's to decide (INIT-001), not something the thin API
+// skin substitutes on its way past.
+func TestHandleInitLeavesTheBundleLocationToTheCore(t *testing.T) {
 	s := newTestServer()
-	var gotDir string
+	var gotParams initialize.Params
 	done := make(chan struct{})
 	s.initRun = func(ctx context.Context, job *events.Job, params initialize.Params) (*bundle.Bundle, error) {
-		gotDir = params.Dir
+		gotParams = params
 		job.Succeeded("done")
 		close(done)
 		return nil, nil
 	}
 
-	rec := doInit(t, s, `{"domain":"example.com","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`)
+	rec := doInit(t, s, `{"domain":"example.com","project":"/srv/my-project","keystore":{"driver":"file"},"blob":{"driver":"local"},"acmeDnsProvider":"manual"}`)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
 	<-done
-	if gotDir != "." {
-		t.Errorf("Dir = %q, want \".\"", gotDir)
+	if gotParams.Dir != "" {
+		t.Errorf("Dir = %q, want it left empty", gotParams.Dir)
+	}
+	if got, want := initialize.BundleDir(gotParams), filepath.Join("/srv/my-project", bundle.DirName); got != want {
+		t.Errorf("resolved bundle dir = %q, want %q", got, want)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -73,8 +74,11 @@ func fakeCertificate() *acme.Certificate {
 func validParams(t *testing.T, resolver Resolver) Params {
 	t.Helper()
 	return Params{
-		Domain:          "example.com",
-		Dir:             filepath.Join(t.TempDir(), "bundle"),
+		Domain: "example.com",
+		// Dir is deliberately left unset: the default location — the
+		// bundle inside the project folder — is the shape the design
+		// optimizes for, so it is what the bulk of these tests exercise.
+		Project:         t.TempDir(),
 		Keystore:        bundle.DriverRef{Driver: "file", Config: map[string]any{"path": t.TempDir()}},
 		Blob:            bundle.DriverRef{Driver: "local", Config: map[string]any{"path": t.TempDir()}},
 		ACMEDNSProvider: "manual",
@@ -121,7 +125,7 @@ func TestRunWritesAValidBundle(t *testing.T) {
 		t.Errorf("written manifest fails Validate: %v", err)
 	}
 
-	loaded, err := bundle.Load(params.Dir)
+	loaded, err := bundle.Load(BundleDir(params))
 	if err != nil {
 		t.Fatalf("bundle.Load: %v", err)
 	}
@@ -284,12 +288,107 @@ func TestRunRejectsMissingBlobDriver(t *testing.T) {
 	}
 }
 
-func TestRunRejectsMissingDir(t *testing.T) {
+// INIT-001: with no explicit location, the bundle lands in .farrier/
+// inside the project folder, so the forge definition sits beside the code
+// it serves.
+func TestRunWritesTheBundleInsideTheProjectFolderByDefault(t *testing.T) {
 	params := validParams(t, &fakeResolver{})
 	params.Dir = ""
 
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := filepath.Join(params.Project, bundle.DirName)
+	loaded, err := bundle.Load(want)
+	if err != nil {
+		t.Fatalf("bundle.Load(%s): %v", want, err)
+	}
+	if loaded.Manifest.Domain != "example.com" {
+		t.Errorf("loaded domain = %q", loaded.Manifest.Domain)
+	}
+}
+
+// INIT-001: the location is overridable, so a bundle whose instance serves
+// several projects can live in a folder of its own. The project folder is
+// then left untouched — nothing is written into it.
+func TestRunHonorsAnExplicitBundleDirOutsideTheProject(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.Dir = filepath.Join(t.TempDir(), "shared-forge")
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, err := bundle.Load(params.Dir); err != nil {
+		t.Fatalf("bundle.Load(%s): %v", params.Dir, err)
+	}
+	if _, err := os.Stat(filepath.Join(params.Project, bundle.DirName)); !os.IsNotExist(err) {
+		t.Errorf("project folder got a %s directory anyway: err = %v", bundle.DirName, err)
+	}
+}
+
+func TestBundleDir(t *testing.T) {
+	if got, want := BundleDir(Params{Project: "/srv/my-project"}), filepath.Join("/srv/my-project", bundle.DirName); got != want {
+		t.Errorf("BundleDir(default) = %q, want %q", got, want)
+	}
+	if got := BundleDir(Params{Project: "/srv/my-project", Dir: "/srv/forge"}); got != "/srv/forge" {
+		t.Errorf("BundleDir(override) = %q, want /srv/forge", got)
+	}
+}
+
+func TestRunRejectsMissingProject(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.Project = ""
+
 	if _, err := Run(context.Background(), events.NewJob(), params); err == nil {
-		t.Fatal("Run: want error for missing dir, got nil")
+		t.Fatal("Run: want error for missing project folder, got nil")
+	}
+}
+
+func TestRunRejectsAProjectFolderThatDoesNotExist(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	params.Project = filepath.Join(t.TempDir(), "nope")
+
+	_, err := Run(context.Background(), events.NewJob(), params)
+	if err == nil {
+		t.Fatal("Run: want error for a missing project folder, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error = %v, want it to say the folder does not exist", err)
+	}
+}
+
+func TestRunRejectsAProjectPathThatIsAFile(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	params.Project = file
+
+	_, err := Run(context.Background(), events.NewJob(), params)
+	if err == nil {
+		t.Fatal("Run: want error for a project path that is a file, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error = %v, want it to say the path is not a directory", err)
+	}
+}
+
+// A bad project folder must be caught in the validate step, before the
+// ACME exchange spends a proof and before key material is generated.
+func TestRunRejectsABadProjectBeforeProvingZoneControl(t *testing.T) {
+	prover := &fakeProver{}
+	params := validParams(t, &fakeResolver{})
+	params.Prover = prover
+	params.Project = filepath.Join(t.TempDir(), "nope")
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err == nil {
+		t.Fatal("Run: want error, got nil")
+	}
+	if len(prover.calls) != 0 {
+		t.Errorf("prover calls = %v, want none", prover.calls)
 	}
 }
 

@@ -21,7 +21,14 @@ type initDriverRef struct {
 
 // initRequest is the POST /init body, one field per initialize.Params.
 type initRequest struct {
-	Domain          string            `json:"domain"`
+	Domain string `json:"domain"`
+	// Project is the project folder the forge is for, resolved on the
+	// machine running the loopback server — the operator's own, since that
+	// is the only place Farrier runs (spec.md "operator's machine is the
+	// control plane").
+	Project string `json:"project"`
+	// Dir optionally overrides the bundle location; empty writes it inside
+	// Project (INIT-001).
 	Dir             string            `json:"dir"`
 	Keystore        initDriverRef     `json:"keystore"`
 	Blob            initDriverRef     `json:"blob"`
@@ -45,6 +52,10 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("domain is required"))
 		return
 	}
+	if strings.TrimSpace(req.Project) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("project is required"))
+		return
+	}
 	if strings.TrimSpace(req.Keystore.Driver) == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("keystore.driver is required"))
 		return
@@ -57,14 +68,10 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("acmeDnsProvider is required"))
 		return
 	}
-	dir := req.Dir
-	if dir == "" {
-		dir = "."
-	}
-
 	params := initialize.Params{
 		Domain:          req.Domain,
-		Dir:             dir,
+		Project:         req.Project,
+		Dir:             req.Dir,
 		Keystore:        bundle.DriverRef{Driver: req.Keystore.Driver, Config: req.Keystore.Config},
 		Blob:            bundle.DriverRef{Driver: req.Blob.Driver, Config: req.Blob.Config},
 		ACMEDNSProvider: req.ACMEDNSProvider,

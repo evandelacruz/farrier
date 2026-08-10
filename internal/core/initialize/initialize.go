@@ -1,6 +1,8 @@
-// Package initialize implements INIT-001: building a bundle from a DNS name
-// and a keystore target; INIT-002: proving control of that domain's DNS
-// zone via an ACME DNS-01 challenge before the bundle is written; and
+// Package initialize implements INIT-001: building a bundle from a project
+// folder, a DNS name, and a keystore target, written to bundle.DirName
+// inside that folder unless the operator points somewhere else; INIT-002:
+// proving control of that domain's DNS zone via an ACME DNS-01 challenge
+// before the bundle is written; and
 // INIT-003: generating every piece of bundle key material and persisting
 // it through the bundle's keystore driver. It is the core logic behind the
 // `init` CLI command — cmd/farrier's init command parses flags and calls
@@ -16,6 +18,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -102,16 +105,29 @@ func (acmeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, e
 	})
 }
 
-// Params are init's inputs: the DNS name and keystore target INIT-001
-// requires, plus the blob target and image references Manifest.Validate
-// also requires before a bundle can be saved (bundle/manifest.go).
-// Overriding Images is optional — any component left unset falls back to
-// DefaultImageRefs — but Keystore and Blob have no default: both point at
-// operator infrastructure Run cannot guess.
+// Params are init's inputs: the project folder, DNS name, and keystore
+// target INIT-001 requires, plus the blob target and image references
+// Manifest.Validate also requires before a bundle can be saved
+// (bundle/manifest.go). Overriding Images is optional — any component left
+// unset falls back to DefaultImageRefs — but Keystore and Blob have no
+// default: both point at operator infrastructure Run cannot guess.
 type Params struct {
 	// Domain is the bundle's DNS name (spec.md "The domain").
 	Domain string
-	// Dir is the directory Run writes the bundle to.
+
+	// Project is the project folder the forge is being stood up for. It
+	// must already exist: `init` turns a folder that holds code into a
+	// forge definition, so a path that isn't there is a typo rather than a
+	// folder to create.
+	Project string
+	// Dir overrides where the bundle is written. Empty — the shape the
+	// design optimizes for — writes it to bundle.DirFor(Project), so the
+	// forge definition is versioned with the code it serves. An explicit
+	// Dir is for the one bundle that belongs to no single project: an
+	// instance serving several of them, where making one project own the
+	// forge that hosts the other nine would be arbitrary (spec.md "The
+	// unit: one forge per project"). A location, not a mode — nothing else
+	// about the bundle differs.
 	Dir string
 
 	// ACMEDNSProvider is the lego-recognized DNS-01 provider name (e.g.
@@ -157,19 +173,22 @@ type Params struct {
 
 var domainPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 
-// Run builds a bundle from params and saves it to params.Dir, emitting
-// CORE-002 progress events on job as it goes. It returns the bundle it
-// wrote, or an error — with job carrying a StateFailed event either way, so
-// a caller only needs to check the returned error, not separately inspect
-// the event stream, to know whether init succeeded.
+// Run builds a bundle for params.Project and saves it to the bundle
+// directory params resolves to — bundle.DirFor(Project) by default, or
+// params.Dir when the operator names one — emitting CORE-002 progress
+// events on job as it goes. It returns the bundle it wrote, or an error —
+// with job carrying a StateFailed event either way, so a caller only needs
+// to check the returned error, not separately inspect the event stream, to
+// know whether init succeeded.
 func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, error) {
-	job.Started(StepValidate, "checking domain and driver targets")
+	job.Started(StepValidate, "checking the project folder, domain, and driver targets")
 	if err := validateDomain(params.Domain); err != nil {
 		return fail(job, StepValidate, err)
 	}
-	if strings.TrimSpace(params.Dir) == "" {
-		return fail(job, StepValidate, fmt.Errorf("initialize: bundle directory is required"))
+	if err := validateProject(params.Project); err != nil {
+		return fail(job, StepValidate, err)
 	}
+	dir := BundleDir(params)
 	keystoreDriver, err := keystore.New(params.Keystore.Driver, params.Keystore.Config)
 	if err != nil {
 		return fail(job, StepValidate, fmt.Errorf("initialize: keystore target: %w", err))
@@ -184,7 +203,7 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 	if !ok {
 		return fail(job, StepValidate, fmt.Errorf("initialize: keystore driver %q cannot store generated key material; use the file driver with init, or provision Forgejo's key material manually first", params.Keystore.Driver))
 	}
-	job.Emit(StepValidate, events.StateSucceeded, "domain and driver targets are valid")
+	job.Emit(StepValidate, events.StateSucceeded, fmt.Sprintf("project folder %s is ready; domain and driver targets are valid", params.Project))
 
 	job.Started(StepProveZoneControl, fmt.Sprintf("proving control of %s via ACME DNS-01", params.Domain))
 	cert, err := proverOrDefault(params.Prover).Prove(params.Domain, params.ACMEDNSProvider, params.ACMEEmail)
@@ -228,13 +247,24 @@ func Run(ctx context.Context, job *events.Job, params Params) (*bundle.Bundle, e
 		return fail(job, StepWrite, fmt.Errorf("initialize: %w", err))
 	}
 	b := &bundle.Bundle{Manifest: *manifest, Compose: compose}
-	if err := b.Save(params.Dir); err != nil {
+	if err := b.Save(dir); err != nil {
 		return fail(job, StepWrite, fmt.Errorf("initialize: %w", err))
 	}
-	job.Emit(StepWrite, events.StateSucceeded, fmt.Sprintf("bundle written to %s", params.Dir))
+	job.Emit(StepWrite, events.StateSucceeded, fmt.Sprintf("bundle written to %s", dir))
 
-	job.Succeeded(fmt.Sprintf("bundle for %s created at %s", params.Domain, params.Dir))
+	job.Succeeded(fmt.Sprintf("bundle for %s created at %s, serving %s", params.Domain, dir, params.Project))
 	return b, nil
+}
+
+// BundleDir reports where Run will write params' bundle: params.Dir when
+// the operator named one, otherwise bundle.DirFor(params.Project). Exported
+// so a frontend can tell the operator the path before the job runs, and so
+// there is exactly one place the default lives.
+func BundleDir(params Params) string {
+	if dir := strings.TrimSpace(params.Dir); dir != "" {
+		return dir
+	}
+	return bundle.DirFor(strings.TrimSpace(params.Project))
 }
 
 func fail(job *events.Job, step string, err error) (*bundle.Bundle, error) {
@@ -287,6 +317,29 @@ func resolveImages(ctx context.Context, r Resolver, overrides map[string]string)
 		resolved[component] = pinned
 	}
 	return resolved, nil
+}
+
+// validateProject checks the project folder exists and is a directory. The
+// bundle is written inside it by default, so a path that is missing or is a
+// regular file is caught here — before zone-control proof spends an ACME
+// exchange and before key material is generated — rather than at the write
+// step with the operator's inputs already half-consumed.
+func validateProject(project string) error {
+	p := strings.TrimSpace(project)
+	if p == "" {
+		return fmt.Errorf("initialize: project folder is required")
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("initialize: project folder %q does not exist", project)
+		}
+		return fmt.Errorf("initialize: project folder %q: %w", project, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("initialize: project folder %q is not a directory", project)
+	}
+	return nil
 }
 
 func validateDomain(domain string) error {

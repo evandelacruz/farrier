@@ -13,49 +13,9 @@ import (
 )
 
 func runInit(args []string) int {
-	fs := flag.NewFlagSet("init", flag.ContinueOnError)
-	domain := fs.String("domain", "", "the bundle's DNS name (required)")
-	dir := fs.String("dir", ".", "directory to write the bundle to")
-	keystoreDriver := fs.String("keystore-driver", "", "keystore driver name, e.g. file or command (required)")
-	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
-	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required); reads that provider's credentials from the environment")
-	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
-	colocatedRunner := fs.Bool("colocated-runner", true, "deploy a Forgejo Actions runner on the forge host; false keeps CI off the machine holding git data and the database, and the operator registers a remote runner instead")
-	var keystoreConfig, blobConfig, images keyValueFlag
-	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
-	fs.Var(&blobConfig, "blob-config", "blob driver config as key=value (repeatable)")
-	fs.Var(&images, "image", "image override as component=reference (repeatable); unset components default to their pinned latest")
-
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-
-	if strings.TrimSpace(*domain) == "" {
-		fmt.Fprintln(os.Stderr, "farrier: init: -domain is required")
-		return 2
-	}
-	if strings.TrimSpace(*keystoreDriver) == "" {
-		fmt.Fprintln(os.Stderr, "farrier: init: -keystore-driver is required")
-		return 2
-	}
-	if strings.TrimSpace(*blobDriver) == "" {
-		fmt.Fprintln(os.Stderr, "farrier: init: -blob-driver is required")
-		return 2
-	}
-	if strings.TrimSpace(*acmeDNSProvider) == "" {
-		fmt.Fprintln(os.Stderr, "farrier: init: -acme-dns-provider is required")
-		return 2
-	}
-
-	params := initialize.Params{
-		Domain:          *domain,
-		Dir:             *dir,
-		Keystore:        bundle.DriverRef{Driver: *keystoreDriver, Config: keystoreConfig.asAny()},
-		Blob:            bundle.DriverRef{Driver: *blobDriver, Config: blobConfig.asAny()},
-		ACMEDNSProvider: *acmeDNSProvider,
-		ACMEEmail:       *acmeEmail,
-		Images:          images.asStrings(),
-		ColocatedRunner: colocatedRunner,
+	params, code := parseInitFlags(args)
+	if code != 0 {
+		return code
 	}
 
 	job := events.NewJob()
@@ -69,6 +29,65 @@ func runInit(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// parseInitFlags turns init's flags into initialize.Params, returning a
+// nonzero exit code (and having reported why on stderr) when the operator's
+// invocation is unusable. Split out from runInit so the flag surface — in
+// particular that -project defaults to the working directory and an unset
+// -dir leaves the bundle location to the core — is testable without
+// standing up a real ACME exchange.
+func parseInitFlags(args []string) (initialize.Params, int) {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	domain := fs.String("domain", "", "the bundle's DNS name (required)")
+	project := fs.String("project", ".", "the project folder to make into a forge definition")
+	dir := fs.String("dir", "", "directory to write the bundle to (default: "+bundle.DirName+" inside the project folder)")
+	keystoreDriver := fs.String("keystore-driver", "", "keystore driver name, e.g. file or command (required)")
+	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
+	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required); reads that provider's credentials from the environment")
+	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
+	colocatedRunner := fs.Bool("colocated-runner", true, "deploy a Forgejo Actions runner on the forge host; false keeps CI off the machine holding git data and the database, and the operator registers a remote runner instead")
+	var keystoreConfig, blobConfig, images keyValueFlag
+	fs.Var(&keystoreConfig, "keystore-config", "keystore driver config as key=value (repeatable)")
+	fs.Var(&blobConfig, "blob-config", "blob driver config as key=value (repeatable)")
+	fs.Var(&images, "image", "image override as component=reference (repeatable); unset components default to their pinned latest")
+
+	if err := fs.Parse(args); err != nil {
+		return initialize.Params{}, 2
+	}
+
+	if strings.TrimSpace(*domain) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -domain is required")
+		return initialize.Params{}, 2
+	}
+	if strings.TrimSpace(*project) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -project cannot be empty")
+		return initialize.Params{}, 2
+	}
+	if strings.TrimSpace(*keystoreDriver) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -keystore-driver is required")
+		return initialize.Params{}, 2
+	}
+	if strings.TrimSpace(*blobDriver) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -blob-driver is required")
+		return initialize.Params{}, 2
+	}
+	if strings.TrimSpace(*acmeDNSProvider) == "" {
+		fmt.Fprintln(os.Stderr, "farrier: init: -acme-dns-provider is required")
+		return initialize.Params{}, 2
+	}
+
+	return initialize.Params{
+		Domain:          *domain,
+		Project:         *project,
+		Dir:             *dir,
+		Keystore:        bundle.DriverRef{Driver: *keystoreDriver, Config: keystoreConfig.asAny()},
+		Blob:            bundle.DriverRef{Driver: *blobDriver, Config: blobConfig.asAny()},
+		ACMEDNSProvider: *acmeDNSProvider,
+		ACMEEmail:       *acmeEmail,
+		Images:          images.asStrings(),
+		ColocatedRunner: colocatedRunner,
+	}, 0
 }
 
 // keyValueFlag collects repeated "key=value" flag occurrences into an
