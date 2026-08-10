@@ -95,6 +95,12 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
 <RemoteDir>/state/gitea    → forgejo:/data/gitea   (database, LFS, attachments,
                                                     avatars, CI artifacts, and the
                                                     bundle's SSH host key)
+<RemoteDir>/state/gitea/conf/app.ini
+                           the file the rendered `<RemoteDir>/forge/app.ini`
+                           mounts onto; it falls inside the mount above, so
+                           `up` creates it — empty, and only when absent —
+                           rather than leaving a container runtime to create
+                           it under a host mount, which not all of them can
 <RemoteDir>/state/blobs    created, not mounted — reserved for a `local` blob
                            adapter; no container reads it today
 <RemoteDir>/state/forgejo-version
