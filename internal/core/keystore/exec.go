@@ -16,9 +16,10 @@ var (
 
 // execDriver satisfies Driver for an out-of-tree keystore driver reached
 // through the CORE-003 exec protocol: one process per call, method
-// "resolve", params {"key": keyName}, result {"secret": <base64>}. Base64
-// lets an executable return arbitrary binary key material (a certificate,
-// a host key) through JSON, which is text-only.
+// "resolve", params {"key": keyName}, result {"secret": <base64>,
+// "found": true|false}. Base64 lets an executable return arbitrary binary
+// key material (a certificate, a host key) through JSON, which is
+// text-only.
 //
 // It is the resolve-only half of the driver: configured without
 // config.store, an exec keystore deliberately does not implement Writer,
@@ -33,8 +34,14 @@ type execResolveParams struct {
 	Key string `json:"key"`
 }
 
+// execResolveResult is a resolve call's result object. Found is a pointer
+// because its absence is meaningful: a response that omits the field is
+// malformed rather than an answer either way, and a non-pointer bool would
+// silently decode that into "not found" — the reading the rotation guard
+// acts on.
 type execResolveResult struct {
 	Secret string `json:"secret"`
+	Found  *bool  `json:"found"`
 }
 
 type execStoreParams struct {
@@ -45,17 +52,16 @@ type execStoreParams struct {
 // Resolve calls "resolve" and decodes the base64 secret the driver
 // executable returns.
 //
-// A successful call carrying no secret is the protocol's positive "not
-// found": the executable ran to completion, reported ok, and had no value
-// to give, so Resolve wraps ErrNotFound. That distinction is load-bearing
-// rather than cosmetic, and for the same reason it is in the command
-// driver — guardedDriver.Store treats only ErrNotFound as "safe to write"
-// (see keystore.go), so without it the guard would refuse every store of
-// freshly minted non-rotating key material and init could never mint
-// through an exec keystore at all. A failed call (nonzero exit, ok:false,
-// unparseable response) stays a hard failure: a secret manager that is
-// unreachable, unauthenticated, or simply broken must never read as an
-// empty slot.
+// Absence is stated, never inferred: the result carries "found", and only
+// found:false is a not-found — the one answer guardedDriver.Store accepts
+// as "safe to write" (see keystore.go), and the one that lets init mint
+// non-rotating key material through an out-of-tree driver at all.
+// Everything else is a failure, because the guard is fail-closed on this
+// lookup and a failed check must never read as an empty slot: a driver
+// that reports found:true and hands back nothing is malformed rather than
+// empty, a response omitting "found" says nothing rather than "no", and a
+// failed call (nonzero exit, ok:false, unparseable response) is a secret
+// manager that is unreachable, unauthenticated, or broken.
 func (d execDriver) Resolve(ctx context.Context, keyName string) (Secret, error) {
 	if strings.TrimSpace(keyName) == "" {
 		return Secret{}, fmt.Errorf("keystore: exec: key name is required")
@@ -65,15 +71,21 @@ func (d execDriver) Resolve(ctx context.Context, keyName string) (Secret, error)
 	if err := d.invoker.Invoke(ctx, "resolve", execResolveParams{Key: keyName}, &result); err != nil {
 		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: %w", keyName, err)
 	}
+	if result.Found == nil {
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: malformed response: the driver omitted %q", keyName, "found")
+	}
+	if !*result.Found {
+		return Secret{}, fmt.Errorf("keystore: exec: key %q not found: the driver reported found false: %w", keyName, ErrNotFound)
+	}
 	if strings.TrimSpace(result.Secret) == "" {
-		return Secret{}, fmt.Errorf("keystore: exec: key %q not found: the driver returned no secret: %w", keyName, ErrNotFound)
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: malformed response: the driver reported found true and returned no secret", keyName)
 	}
 	secret, err := base64.StdEncoding.DecodeString(result.Secret)
 	if err != nil {
 		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: decode secret: %w", keyName, err)
 	}
 	if len(secret) == 0 {
-		return Secret{}, fmt.Errorf("keystore: exec: key %q not found: the driver returned an empty secret: %w", keyName, ErrNotFound)
+		return Secret{}, fmt.Errorf("keystore: exec: resolve key %q: malformed response: the driver reported found true and returned an empty secret", keyName)
 	}
 	return NewSecret(string(secret)), nil
 }

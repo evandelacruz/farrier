@@ -28,6 +28,13 @@ Work:
 3. **KEY-003 on the error path.** A failing driver executable's stderr
    reaches the error Farrier surfaces; the secret is scrubbed from it in
    both its raw and base64 forms, as the `command` driver already does.
+4. **`resolve` states absence.** Evan's call on review: the result carries
+   `{"secret": "<base64>", "found": true|false}`, and `found: false` is
+   the protocol's only positive "not found". The rotation guard is
+   fail-closed on this lookup, so a driver has to *positively determine* a
+   key is absent — `found: true` with no secret, or a response omitting
+   `found`, is malformed and refuses the write rather than reading as an
+   empty slot.
 
 Declaring `store: true` against an executable that does not implement the
 method still fails at the first call. That is the operator misconfiguring

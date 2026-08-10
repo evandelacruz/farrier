@@ -39,9 +39,13 @@ func (f *fakeInvoker) Invoke(ctx context.Context, method string, params, result 
 	return json.Unmarshal(data, result)
 }
 
+// found is a helper for the pointer field: the protocol distinguishes
+// found:false from a response that omits it entirely.
+func found(v bool) *bool { return &v }
+
 func TestExecDriverResolveDecodesBase64Secret(t *testing.T) {
 	secret := []byte("hunter2")
-	fake := &fakeInvoker{result: execResolveResult{Secret: base64.StdEncoding.EncodeToString(secret)}}
+	fake := &fakeInvoker{result: execResolveResult{Secret: base64.StdEncoding.EncodeToString(secret), Found: found(true)}}
 	d := execDriver{invoker: fake}
 
 	got, err := d.Resolve(context.Background(), "forgejo_secret_key")
@@ -71,7 +75,7 @@ func TestExecDriverResolveInvokerErrorPropagates(t *testing.T) {
 }
 
 func TestExecDriverResolveInvalidBase64Errors(t *testing.T) {
-	fake := &fakeInvoker{result: execResolveResult{Secret: "not-valid-base64!!"}}
+	fake := &fakeInvoker{result: execResolveResult{Secret: "not-valid-base64!!", Found: found(true)}}
 	d := execDriver{invoker: fake}
 
 	if _, err := d.Resolve(context.Background(), "k"); err == nil {
@@ -79,16 +83,67 @@ func TestExecDriverResolveInvalidBase64Errors(t *testing.T) {
 	}
 }
 
-// An ok response carrying no secret is the protocol's positive "not
-// found" — the answer guardedDriver.Store requires before it will write
-// non-rotating key material.
-func TestExecDriverResolveEmptySecretIsNotFound(t *testing.T) {
-	fake := &fakeInvoker{result: execResolveResult{Secret: ""}}
+// found:false is the protocol's only positive "not found" — the answer
+// guardedDriver.Store requires before it will write non-rotating key
+// material.
+func TestExecDriverResolveFoundFalseIsNotFound(t *testing.T) {
+	fake := &fakeInvoker{result: execResolveResult{Found: found(false)}}
 	d := execDriver{invoker: fake}
 
 	_, err := d.Resolve(context.Background(), "k")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Resolve error = %v, want it to wrap ErrNotFound", err)
+	}
+}
+
+// A driver that claims to have found something and returns nothing is
+// malformed, not empty. The guard is fail-closed on this lookup, so this
+// has to refuse the write rather than read as an absent key — the case
+// empty-means-absent could not express.
+func TestExecDriverResolveFoundTrueWithNoSecretIsNotNotFound(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result execResolveResult
+	}{
+		{"omitted secret", execResolveResult{Found: found(true)}},
+		{"blank secret", execResolveResult{Secret: "   ", Found: found(true)}},
+		{"base64 of nothing", execResolveResult{Secret: base64.StdEncoding.EncodeToString(nil), Found: found(true)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := execDriver{invoker: &fakeInvoker{result: tc.result}}
+
+			_, err := d.Resolve(context.Background(), "k")
+			if err == nil || errors.Is(err, ErrNotFound) {
+				t.Fatalf("Resolve error = %v, want a non-ErrNotFound failure", err)
+			}
+		})
+	}
+}
+
+// A response omitting "found" says nothing either way. Defaulting it to
+// false would recreate the semantic this field replaced.
+func TestExecDriverResolveMissingFoundFieldIsMalformed(t *testing.T) {
+	d := execDriver{invoker: &fakeInvoker{result: map[string]any{"secret": ""}}}
+
+	_, err := d.Resolve(context.Background(), "k")
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve error = %v, want a non-ErrNotFound failure", err)
+	}
+}
+
+// The guard must refuse a store when the lookup came back malformed —
+// found:true with nothing behind it is exactly the third-party driver bug
+// the explicit field exists to catch.
+func TestGuardedExecDriverRefusesStoreOnMalformedResolve(t *testing.T) {
+	fake := &fakeInvoker{result: execResolveResult{Found: found(true)}}
+	writer := writableExecDriver{execDriver{invoker: fake}}
+	d := guardedDriver{Driver: writer, writer: writer}
+
+	if err := d.Store(context.Background(), "forgejo_secret_key", NewSecret("hunter2")); err == nil {
+		t.Fatal("Store: want the guard to refuse a malformed lookup, got nil")
+	}
+	if fake.gotMethod == "store" {
+		t.Fatal("Store: the guard reached the driver's store method after a malformed lookup")
 	}
 }
 
@@ -108,7 +163,7 @@ func TestExecDriverResolveFailureIsNotNotFound(t *testing.T) {
 // agree, or init can never mint non-rotating key material through an
 // out-of-tree driver — the whole point of the store method.
 func TestGuardedExecDriverStoresWhenKeyAbsent(t *testing.T) {
-	fake := &fakeInvoker{result: execResolveResult{Secret: ""}}
+	fake := &fakeInvoker{result: execResolveResult{Found: found(false)}}
 	d := guardedDriver{Driver: writableExecDriver{execDriver{invoker: fake}}, writer: writableExecDriver{execDriver{invoker: fake}}}
 
 	if Rotates("forgejo_secret_key") {
