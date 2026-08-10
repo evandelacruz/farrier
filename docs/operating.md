@@ -64,7 +64,7 @@ The snapshot is verified at creation, against the decrypted form of the exact by
 
 Your call. Farrier ships no scheduler and nothing runs a backup on your behalf, so if you never run it there is nothing to promote to. Your recovery point is exactly your backup cadence.
 
-The minimum-effort route is a cron entry on your own machine:
+The minimum-effort route is a cron entry. It can live on your own machine, or on the forge host itself — the forge host keeps running when your laptop is closed, at a key-custody cost worth reading first ([security.md](security.md), "Backups are exactly as private as the age key"):
 
 ```cron
 0 * * * * /usr/local/bin/farrier backup -bundle /path/to/bundle -target ssh://user@forge-host -to s3://my-bucket/farrier
