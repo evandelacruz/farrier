@@ -192,6 +192,6 @@ The check is **fail-closed on the lookup itself**. A driver must return an error
 ## Security posture
 
 - API binds loopback; any wider exposure is operator topology.
-- Key material is held in memory only during operations; never written to logs, event streams, command output, or the bundle directory.
+- Secret key material is held in memory only during operations; never written to logs, event streams, command output, or the bundle directory. Public key material, such as the SSH host key's public half, may live in the manifest: it is the string an operator pastes into `known_hosts`, and requiring keystore access to obtain it would mean handing out the store that holds `SECRET_KEY` and the age backup key just to let someone publish a repository.
 - Snapshots are age-encrypted before leaving the forge host; the operator holds the sole key.
 - CI executes in containers; the trust boundary and fork-PR policy are recorded in [spec.md](spec.md).

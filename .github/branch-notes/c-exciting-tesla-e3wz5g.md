@@ -18,7 +18,9 @@ keep working and the pin is never silently skipped.
 
 Amends CORE-001 (a clause: public key material may live in the manifest,
 nothing secret ever does), with the matching sentence in `docs/spec.md` and the
-field in `docs/tech-spec.md`'s manifest field list. No new requirement ID, so
-`docs/status.json` is untouched.
+field in `docs/tech-spec.md`'s manifest field list. The same rule is stated in
+KEY-003 and in `docs/tech-spec.md`'s Security posture list, so both carry the
+`secret` qualifier in the same words — a reader landing on any of the three
+gets one rule. No new requirement ID, so `docs/status.json` is untouched.
 
 This file exists for conductor tracking and can be deleted once the PR merges.
