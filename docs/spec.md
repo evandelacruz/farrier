@@ -165,7 +165,7 @@ The system defines the state interface; the operator owns transport and topology
 The bundle configuration (manifest, Compose definitions, pinned versions) is a plain directory living at `.farrier/` in the project it serves, so any teammate who can clone the project can operate the instance from their own machine. Key material stays out of the repo and resolves at runtime through a keystore driver:
 
 - **`file`:** a path to a local directory; each piece of key material is a file named by its key name. The default.
-- **`command`:** any command that prints the key — one interface that covers 1Password CLI, Vault, `pass`, sops, cloud secret managers, and anything else the team already uses.
+- **`command`:** any command that prints the key, plus a second that takes one on stdin — one interface that covers 1Password CLI, Vault, `pass`, sops, cloud secret managers, and anything else the team already uses. Both halves matter: `init` mints key material and has to put it somewhere, and a driver that can only read forces the operator to mint into a file first and copy it across, leaving a plaintext copy on disk in exactly the place they were trying to avoid.
 
 The driver interface is published; the plugin posture matches DNS drivers and blob adapters. Teammate onboarding is: clone the project, obtain the key through the team's keystore.
 

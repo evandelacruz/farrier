@@ -317,6 +317,13 @@ export function dependenciesSatisfied(id: string, landed: Set<string>): boolean 
   if (id === "UP-006" && !landed.has("INIT-005")) {
     return false;
   }
+  // INIT-002 and UP-002 are landed except for the nameless case, and that
+  // case is INIT-005's to create. Offering either first sends an agent to
+  // build nameless-bundle support as a side effect of a conditional — twice,
+  // in parallel, in two packages.
+  if ((id === "INIT-002" || id === "UP-002") && !landed.has("INIT-005")) {
+    return false;
+  }
   // ...and be served before it can be given a name.
   if (id === "UP-007" && !landed.has("UP-006")) {
     return false;

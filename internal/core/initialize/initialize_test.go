@@ -684,3 +684,114 @@ func TestRunRejectsAnInvalidGitSSHPort(t *testing.T) {
 		t.Errorf("zone control was proven despite an unusable port: %v", prover.calls)
 	}
 }
+
+// INIT-004: a project that already holds a bundle is never re-initialized
+// over. The bundle directory carries the running instance's identity, so a
+// second init must fail, name the folder, and leave the first bundle
+// exactly as it found it.
+func TestRunRefusesToOverwriteAnExistingBundle(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	dir := BundleDir(params)
+	before, err := os.ReadFile(filepath.Join(dir, bundle.ManifestFile))
+	if err != nil {
+		t.Fatalf("read first manifest: %v", err)
+	}
+
+	// A fresh keystore and prover for the second attempt, so what the
+	// refused run did — and did not do — is visible on its own.
+	second := validParams(t, &fakeResolver{})
+	second.Project = params.Project
+	prover := &fakeProver{}
+	second.Prover = prover
+	job := events.NewJob()
+
+	_, err = Run(context.Background(), job, second)
+	if err == nil {
+		t.Fatal("Run: want error re-initializing a project that already has a bundle, got nil")
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("error = %v, want it to name the bundle folder %s", err, dir)
+	}
+	assertJobFailed(t, job)
+
+	after, err := os.ReadFile(filepath.Join(dir, bundle.ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest after refusal: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Error("the existing manifest changed; a refused init must leave the bundle untouched")
+	}
+
+	if len(prover.calls) != 0 {
+		t.Errorf("prover calls = %v, want a refused init to spend no ACME exchange", prover.calls)
+	}
+	keysDir := second.Keystore.Config["path"].(string)
+	entries, err := os.ReadDir(keysDir)
+	if err != nil {
+		t.Fatalf("read keystore dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("keystore holds %d entry/entries, want a refused init to generate no key material", len(entries))
+	}
+}
+
+// The refusal follows the bundle, not the project: an operator who points
+// init at an explicit location — the shape a bundle serving several
+// projects takes (INIT-001) — is protected there too.
+func TestRunRefusesToOverwriteAnExistingBundleAtAnExplicitDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared-forge")
+	params := validParams(t, &fakeResolver{})
+	params.Dir = dir
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+
+	second := validParams(t, &fakeResolver{})
+	second.Dir = dir
+	job := events.NewJob()
+
+	_, err := Run(context.Background(), job, second)
+	if err == nil {
+		t.Fatal("Run: want error re-initializing an occupied bundle dir, got nil")
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("error = %v, want it to name %s", err, dir)
+	}
+	assertJobFailed(t, job)
+}
+
+// A crashed init can leave compose/ behind with no manifest. Finishing
+// that folder with freshly generated key material is exactly what INIT-004
+// prevents, so a torn bundle is refused like a whole one.
+func TestRunRefusesATornBundle(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	dir := BundleDir(params)
+	if err := os.MkdirAll(filepath.Join(dir, bundle.ComposeDir), 0o755); err != nil {
+		t.Fatalf("seed torn bundle: %v", err)
+	}
+	job := events.NewJob()
+
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want error for a bundle dir holding compose/ but no manifest, got nil")
+	}
+	assertJobFailed(t, job)
+}
+
+// An empty .farrier/ is not a bundle. Refusing one would break the
+// operator who created the folder before running init.
+func TestRunInitializesIntoAnEmptyBundleDir(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+	if err := os.MkdirAll(BundleDir(params), 0o755); err != nil {
+		t.Fatalf("create empty bundle dir: %v", err)
+	}
+
+	if _, err := Run(context.Background(), events.NewJob(), params); err != nil {
+		t.Fatalf("Run into an empty bundle dir: %v", err)
+	}
+	if _, err := bundle.Load(BundleDir(params)); err != nil {
+		t.Fatalf("bundle.Load: %v", err)
+	}
+}
