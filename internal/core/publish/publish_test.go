@@ -632,16 +632,43 @@ func TestKnownHostsLineOmitsThePortOn22(t *testing.T) {
 	}
 }
 
+// The pin goes in ahead of whatever the operator set, because ssh keeps
+// the first value it obtains for a keyword: an operator wrapper that sets
+// StrictHostKeyChecking or UserKnownHostsFile must not be able to defeat
+// it. Everything else the operator set survives untouched.
 func TestSSHCommandExtendsTheOperatorsOwn(t *testing.T) {
-	got, err := sshCommand("ssh -i /keys/id", "/tmp/kh")
-	if err != nil {
-		t.Fatalf("sshCommand: %v", err)
+	const pins = "-o UserKnownHostsFile='/tmp/kh' -o StrictHostKeyChecking=yes"
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"unset", "", "ssh " + pins},
+		{"identity file survives", "ssh -i /keys/id", "ssh " + pins + " -i /keys/id"},
+		{"proxy command survives", `ssh -o ProxyCommand="nc -X connect %h %p"`, "ssh " + pins + ` -o ProxyCommand="nc -X connect %h %p"`},
+		{"config file survives", "/usr/bin/ssh -F /home/op/.ssh/config -p 2022", "/usr/bin/ssh " + pins + " -F /home/op/.ssh/config -p 2022"},
+		{"strict host key checking loses", "ssh -o StrictHostKeyChecking=accept-new", "ssh " + pins + " -o StrictHostKeyChecking=accept-new"},
+		{"known hosts file loses", "ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no", "ssh " + pins + " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"},
+		{"glued form loses", "ssh -oStrictHostKeyChecking=no", "ssh " + pins + " -oStrictHostKeyChecking=no"},
+		{"quoted program", `'/opt/my ssh/ssh' -o StrictHostKeyChecking=no`, `'/opt/my ssh/ssh' ` + pins + " -o StrictHostKeyChecking=no"},
+		{"leading assignment", "SSH_AUTH_SOCK=/run/sock ssh -o StrictHostKeyChecking=no", "SSH_AUTH_SOCK=/run/sock ssh " + pins + " -o StrictHostKeyChecking=no"},
 	}
-	want := "ssh -i /keys/id -o UserKnownHostsFile='/tmp/kh' -o StrictHostKeyChecking=yes"
-	if got != want {
-		t.Errorf("sshCommand = %q, want %q", got, want)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := sshCommand(tc.base, "/tmp/kh")
+			if err != nil {
+				t.Fatalf("sshCommand: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("sshCommand = %q, want %q", got, tc.want)
+			}
+		})
 	}
+
 	if _, err := sshCommand("", "/tmp/it's"); err == nil {
 		t.Error("sshCommand accepted a quoted path, want an error")
+	}
+	if _, err := sshCommand(`'/opt/my ssh/ssh -o StrictHostKeyChecking=no`, "/tmp/kh"); err == nil {
+		t.Error("sshCommand accepted an unterminated quote around the program, want an error")
 	}
 }

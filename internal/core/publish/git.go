@@ -104,7 +104,9 @@ func inspectRepo(ctx context.Context, git Git, dir, remoteName string) (localRep
 //
 // An operator who has set GIT_SSH_COMMAND keeps it — their ssh invocation
 // is extended, not replaced, so a custom ssh binary or a jump host still
-// applies.
+// applies. The two options that carry the pin are the exception: they go
+// in ahead of the operator's own, so a wrapper that sets them cannot
+// defeat the pin (see sshCommand).
 func (s *settings) sshEnv(ctx context.Context) ([]string, func(), error) {
 	line, err := knownHostsLine(ctx, s.manifest)
 	if err != nil {
@@ -137,17 +139,117 @@ func (s *settings) sshEnv(ctx context.Context) ([]string, func(), error) {
 }
 
 // sshCommand extends base (an operator's GIT_SSH_COMMAND, or plain ssh)
-// with the options that pin the instance's host key. git splits
-// GIT_SSH_COMMAND with shell-style single-quote rules, so the path is
-// single-quoted; a path containing a single quote is rejected rather than
-// mis-split, which cannot happen for os.CreateTemp's own names and is
-// checked only so the quoting is safe by construction.
+// with the two options that pin the instance's host key.
+//
+// The pinning options are inserted directly after the ssh program rather
+// than appended, because ssh resolves a repeated keyword by keeping the
+// first value it obtains — ssh_config(5): "For each parameter, the first
+// obtained value will be used." Appending would hand the decision to any
+// operator whose wrapper already sets StrictHostKeyChecking (an
+// accept-new for their other remotes, a CI environment) or
+// UserKnownHostsFile: theirs would win, the bundle's host key would never
+// be enforced, and the push would fail open. Going in first makes those
+// two keywords Farrier's, while everything else the operator set —
+// IdentityFile, ProxyCommand, Port, -F — still follows and still applies.
+//
+// git runs GIT_SSH_COMMAND through the shell, so the program word is
+// found with shell quoting rules. The known_hosts path is single-quoted
+// for the same reason; a path containing a single quote is rejected
+// rather than mis-split, which cannot happen for os.CreateTemp's own
+// names and is checked only so the quoting is safe by construction.
 func sshCommand(base, knownHostsPath string) (string, error) {
 	if strings.Contains(knownHostsPath, "'") {
 		return "", fmt.Errorf("known_hosts path %q contains a quote", knownHostsPath)
 	}
-	if strings.TrimSpace(base) == "" {
+	base = strings.TrimSpace(base)
+	if base == "" {
 		base = "ssh"
 	}
-	return fmt.Sprintf("%s -o UserKnownHostsFile='%s' -o StrictHostKeyChecking=yes", base, knownHostsPath), nil
+	at, err := afterProgram(base)
+	if err != nil {
+		return "", err
+	}
+	pins := fmt.Sprintf("-o UserKnownHostsFile='%s' -o StrictHostKeyChecking=yes", knownHostsPath)
+	rest := strings.TrimLeft(base[at:], " \t")
+	if rest == "" {
+		return base[:at] + " " + pins, nil
+	}
+	return base[:at] + " " + pins + " " + rest, nil
+}
+
+// afterProgram returns the offset in cmd just past the ssh program word —
+// the first place an option of ours can go. Leading VAR=value assignments
+// are stepped over: in shell syntax they precede the command rather than
+// being it, so an option inserted before them would not be ssh's.
+func afterProgram(cmd string) (int, error) {
+	for i := 0; ; {
+		for i < len(cmd) && (cmd[i] == ' ' || cmd[i] == '\t') {
+			i++
+		}
+		if i == len(cmd) {
+			return 0, fmt.Errorf("GIT_SSH_COMMAND %q names no ssh program", cmd)
+		}
+		end, err := endOfWord(cmd, i)
+		if err != nil {
+			return 0, err
+		}
+		if !isAssignment(cmd[i:end]) {
+			return end, nil
+		}
+		i = end
+	}
+}
+
+// endOfWord returns the offset of the unquoted whitespace that ends the
+// shell word starting at i, or len(s) if the word runs to the end.
+func endOfWord(s string, i int) (int, error) {
+	for i < len(s) {
+		switch s[i] {
+		case ' ', '\t':
+			return i, nil
+		case '\'':
+			rest := strings.IndexByte(s[i+1:], '\'')
+			if rest < 0 {
+				return 0, fmt.Errorf("GIT_SSH_COMMAND %q has an unterminated quote", s)
+			}
+			i += rest + 2
+		case '"':
+			for i++; ; i++ {
+				if i >= len(s) {
+					return 0, fmt.Errorf("GIT_SSH_COMMAND %q has an unterminated quote", s)
+				}
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+					continue
+				}
+				if s[i] == '"' {
+					break
+				}
+			}
+			i++
+		case '\\':
+			i += 2
+		default:
+			i++
+		}
+	}
+	return len(s), nil
+}
+
+// isAssignment reports whether word is a shell VAR=value assignment.
+func isAssignment(word string) bool {
+	name, _, ok := strings.Cut(word, "=")
+	if !ok || name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case i > 0 && c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return true
 }
