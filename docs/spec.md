@@ -228,7 +228,7 @@ All logic lives in a single core engine; the CLI and the web dashboard are thin 
 
 ## CLI commands
 
-The full lifecycle — create, deploy, publish, import, protect, relocate, verify, upgrade — in eleven commands.
+The full lifecycle — create, deploy, publish, import, name, protect, relocate, verify, upgrade — in twelve commands.
 
 | Command | Function |
 |---|---|
@@ -239,6 +239,7 @@ The full lifecycle — create, deploy, publish, import, protect, relocate, verif
 | `backup` | Produce a complete, verified, encrypted snapshot to an S3 URI or directory. |
 | `restore` | Rebuild a full instance from a snapshot onto a fresh host, verified, running the snapshot's pinned version. |
 | `promote` | Fail over: restore the latest snapshot onto a fresh host, verify, start, reconcile CI, flip DNS. |
+| `attach` | Give a nameless instance a domain in place: prove the zone, issue TLS, re-render, report the clone URLs that changed. |
 | `upgrade` | Backup, bump the pinned Forgejo version, run migrations, verify. |
 | `drill` | Restore the latest backup to a quarantined scratch target, boot it, run a smoke CI job, report. |
 | `status` | Instance health and replication lag for golden-path transports. |

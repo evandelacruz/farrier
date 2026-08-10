@@ -82,6 +82,18 @@ func run(args []string) int {
 // flag set already understands. The runner returns 2 for that, since it
 // cannot tell a help request from a parse error — but this call site can, so
 // the exit code is 0.
+//
+// The runner writes that usage to os.Stderr — no flag set in this package
+// calls SetOutput, and flag.FlagSet.Output() falls back to os.Stderr when it
+// has none. Sending it there would reproduce the bug this function exists to
+// fix, one level down: `farrier help up | less` would show nothing while
+// exiting 0. So os.Stderr is pointed at stdout for the duration of the call.
+//
+// It reads as a blunt instrument and it is, but the alternative is calling
+// SetOutput in all twelve runners and keeping every future one in line — a
+// rule that holds only as long as everyone remembers it. flag.FlagSet.Output()
+// resolves os.Stderr on each call rather than capturing it, which is what
+// makes the swap work at all.
 func helpFor(name string) int {
 	cmd, ok := commands[name]
 	if !ok {
@@ -89,6 +101,11 @@ func helpFor(name string) int {
 		printUsage(os.Stderr)
 		return 2
 	}
+
+	saved := os.Stderr
+	os.Stderr = os.Stdout
+	defer func() { os.Stderr = saved }()
+
 	cmd.run([]string{"-h"})
 	return 0
 }
