@@ -44,7 +44,7 @@
       "remaining": "Proof is unconditional: a nameless bundle (INIT-005) must skip DNS-01 and certificate issuance rather than failing."
     },
     "INIT-003": "landed",
-    "INIT-004": "open",
+    "INIT-004": "landed",
     "INIT-005": "open",
     "UP-001": "landed",
     "UP-002": {
