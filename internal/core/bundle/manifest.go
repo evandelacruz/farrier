@@ -219,6 +219,36 @@ func (m *Manifest) GitSSHKnownHostsHost() string {
 	return fmt.Sprintf("[%s]:%d", m.Domain, port)
 }
 
+// domainPattern is the grammar a bundle domain has to match: one or more
+// dot-separated labels of letters, digits, and hyphens (no label starting
+// or ending with one), ending in an alphabetic TLD of at least two
+// characters. A fully-qualified name, in other words — the thing spec.md
+// "The domain" means by a name the operator controls in DNS.
+var domainPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+// ValidateDomain checks that domain is a well-formed FQDN a bundle may
+// carry. It lives here, beside the Domain field, because both operations
+// that put a name on a bundle need the same answer: `init` when it builds a
+// named bundle (INIT-002) and `attach` when it names a nameless one in
+// place (UP-007). One grammar in one place is what keeps a name init would
+// accept from being a name attach rejects.
+//
+// Manifest.Validate deliberately does not call it. A manifest already on
+// disk was accepted by whichever operation wrote it, and tightening the
+// grammar later must not turn a running instance's bundle into one that no
+// longer loads. This is the front-door check on an operator's input, not a
+// retroactive one on stored state.
+func ValidateDomain(domain string) error {
+	d := strings.TrimSpace(domain)
+	if d == "" {
+		return fmt.Errorf("bundle: domain is required")
+	}
+	if !domainPattern.MatchString(d) {
+		return fmt.Errorf("bundle: domain %q is not a valid DNS name", domain)
+	}
+	return nil
+}
+
 // ValidateGitSSHPort checks that port is one a manifest may carry: zero,
 // meaning unset (GitSSHPortOrDefault), or a real TCP port. Exported so a
 // frontend collecting the operator's choice can reject an impossible one

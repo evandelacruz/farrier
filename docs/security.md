@@ -42,7 +42,7 @@ The last row is the one to avoid. Note what it does and does not cost you: someo
 
 An instance deployed without a domain has no certificate, so pull requests, review, and login travel unencrypted. Git over SSH is encrypted regardless, so pushing to one across the internet is safe — it is the browser session that is exposed.
 
-**What to do about it:** keep nameless instances on a LAN, a VPN, or a tailnet. Attach a domain when the instance outlives the experiment; it is an in-place operation that loses nothing but clone URLs.
+**What to do about it:** keep nameless instances on a LAN, a VPN, or a tailnet. Attach a domain when the instance outlives the experiment: `farrier attach` is an in-place operation that loses nothing but clone URLs, and it reports the ones that changed.
 
 ## The local API binds loopback
 

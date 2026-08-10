@@ -24,6 +24,13 @@ farrier up ssh://user@host
 # Plain HTTP: keep it on a LAN, a VPN, or a tailnet.
 farrier up ssh://user@host -address 192.168.1.5
 
+# Give that nameless instance a name later, in place — proves the zone,
+# issues TLS, re-renders config, and tells you which clone URLs changed.
+# Nothing on it is lost; consumers re-point their remote once.
+farrier attach -bundle .farrier -target ssh://user@host \
+  -domain myproject.example.com -acme-dns-provider cloudflare \
+  -address 192.168.1.5
+
 # Put this project on it — creates the repository, pushes your history,
 # points origin at the instance. `git push` works from here on.
 farrier publish

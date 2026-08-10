@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/evandelacruz/farrier/internal/core/attach"
 	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/blob"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
@@ -56,6 +57,7 @@ type Server struct {
 	loadBundle     func(dir string) (*bundle.Bundle, error)
 	dial           func(ctx context.Context, target string, opts orchestrate.Options) (Host, error)
 	deployUp       func(ctx context.Context, job *events.Job, host deploy.Host, b *bundle.Bundle, opts deploy.Options) error
+	attachRun      func(ctx context.Context, job *events.Job, opts attach.Options) (*bundle.Bundle, error)
 	importRun      func(ctx context.Context, job *events.Job, opts importer.Options) (importer.Result, error)
 	importRunBatch func(ctx context.Context, job *events.Job, opts importer.BatchOptions) (importer.BatchResult, error)
 	publishRun     func(ctx context.Context, job *events.Job, opts publish.Options) (publish.Result, error)
@@ -91,6 +93,7 @@ func New() *Server {
 			return orchestrate.Connect(ctx, target, opts)
 		},
 		deployUp:       deploy.Up,
+		attachRun:      attach.Attach,
 		importRun:      importer.Run,
 		importRunBatch: importer.RunBatch,
 		publishRun:     publish.Run,
@@ -124,7 +127,7 @@ func New() *Server {
 }
 
 // Handler returns the server's routed http.Handler: POST /init, POST /up,
-// POST /import, POST /publish, POST /backup, POST /restore, POST /promote,
+// POST /attach, POST /import, POST /publish, POST /backup, POST /restore, POST /promote,
 // POST /upgrade, POST /drill, GET /status, GET /snapshots, and
 // GET /jobs/{id}/events — an
 // RPC verb for every core operation (API-001, tech-spec.md "API").
@@ -132,6 +135,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /init", s.handleInit)
 	mux.HandleFunc("POST /up", s.handleUp)
+	mux.HandleFunc("POST /attach", s.handleAttach)
 	mux.HandleFunc("POST /import", s.handleImport)
 	mux.HandleFunc("POST /publish", s.handlePublish)
 	mux.HandleFunc("POST /backup", s.handleBackup)

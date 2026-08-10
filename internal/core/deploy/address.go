@@ -8,7 +8,7 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 )
 
-// maxHostnameLength and maxLabelLength are the DNS limits normalizeAddress
+// maxHostnameLength and maxLabelLength are the DNS limits NormalizeAddress
 // holds a hostname to, so an address that could never resolve is rejected
 // on the operator's machine rather than after Caddy has been handed a site
 // block it will refuse to load.
@@ -49,12 +49,18 @@ func serveAddress(m *bundle.Manifest, address string) (string, error) {
 	if address == "" {
 		return "", fmt.Errorf("deploy: this bundle is nameless (INIT-005), so up needs the address — an IP or a hostname — to serve its web UI at (UP-006)")
 	}
-	return normalizeAddress(address)
+	return NormalizeAddress(address)
 }
 
-// normalizeAddress checks that address is an IP literal or a hostname and
+// NormalizeAddress checks that address is an IP literal or a hostname and
 // returns it spelled for the authority component of a URL: an IPv6 literal
 // comes back bracketed, everything else unchanged.
+//
+// Exported because `up` is no longer the only operation that takes a
+// nameless instance's address: attaching a name to one (UP-007) reports the
+// clone URLs that address used to serve, and it has to spell them the way
+// `up` spelled them or the "was" half of that report names URLs nobody ever
+// used. One grammar, one normalization, one spelling.
 //
 // It is deliberately strict about what it is *not*. The address is used
 // verbatim as Caddy's site address, Forgejo's DOMAIN, SSH_DOMAIN, and the
@@ -69,7 +75,7 @@ func serveAddress(m *bundle.Manifest, address string) (string, error) {
 // instance's web UI on port 80 (see plainHTTPPort), the same way it
 // publishes a named one's on 443, so there is no port for the operator to
 // choose and an address carrying one would be silently ignored.
-func normalizeAddress(address string) (string, error) {
+func NormalizeAddress(address string) (string, error) {
 	switch {
 	case strings.Contains(address, "://"):
 		return "", fmt.Errorf("deploy: address %q carries a scheme; give the bare IP or hostname — up serves a nameless instance over plain HTTP (UP-006)", address)

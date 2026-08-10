@@ -49,7 +49,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/evandelacruz/farrier/internal/core/acme"
@@ -213,8 +212,6 @@ type Params struct {
 	// (acmeProver).
 	Prover Prover
 }
-
-var domainPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 
 // Run builds a bundle for params.Project and saves it to the bundle
 // directory params resolves to — bundle.DirFor(Project) by default, or
@@ -452,8 +449,11 @@ func validateName(params Params) error {
 		}
 		return nil
 	}
-	if !domainPattern.MatchString(domain) {
-		return fmt.Errorf("initialize: domain %q is not a valid DNS name", params.Domain)
+	// The grammar lives on bundle, beside the field it validates, so the
+	// name `init` accepts and the name `attach` accepts (UP-007) are the
+	// same set.
+	if err := bundle.ValidateDomain(domain); err != nil {
+		return fmt.Errorf("initialize: %w", err)
 	}
 	if provider == "" {
 		return fmt.Errorf("initialize: acme dns-01 provider is required to prove control of %s", domain)
