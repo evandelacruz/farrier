@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -276,6 +277,16 @@ type fakeHost struct {
 
 	checkHostErr error
 	writeFileErr error
+
+	// failOutputOn fails any Output whose command contains it, standing in
+	// for a host that refuses one specific command — the same lever
+	// deploy_test.go's fakeHost offers, and how a test drives a refused
+	// chown or a forge that cannot use the state restore just placed. The
+	// error carries stderrOnFailure so a test can hold the resulting
+	// message to naming the path, the way a real host's Output does by
+	// appending the command's stderr.
+	failOutputOn    string
+	stderrOnFailure string
 }
 
 type stdinCall struct {
@@ -291,6 +302,9 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+	if f.failOutputOn != "" && strings.Contains(command, f.failOutputOn) {
+		return nil, fmt.Errorf("fakeHost: command failed: exit status 1 (stderr: %s)", f.stderrOnFailure)
+	}
 	// Serve deploy.ReadStateVersion's read out of the same map WriteFile
 	// stores into, so the fake's reads and writes agree the way a real
 	// host's do — that agreement is what TestRestoreDoesNotMigrate rests on.

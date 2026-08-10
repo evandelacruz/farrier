@@ -34,6 +34,16 @@ type gitPair struct {
 // not that user, and configureState's own chown (part of deploy.Up, run
 // after this) only ever touches each directory's top level, which is
 // enough for `up` but not for content restore populates itself.
+//
+// That chown is best-effort — it cannot be applied at all on a host whose
+// container runtime maps ownership across the mount boundary — so placing
+// state is not finished until the outcome it exists for is checked. The
+// last thing this step does is run the forge, as the uid it really runs
+// as, against the very paths it just wrote: each restored repository
+// directory and the database file. A restore whose content the forge
+// cannot use fails here, loudly, naming the path; it does not converge a
+// host and report a success Forgejo will discover is a lie on its first
+// write.
 func placeState(ctx context.Context, job *events.Job, plainDir string, manifest *backup.Manifest, opts Options) error {
 	job.Started(StepPlaceState, "restoring git repositories and database onto host")
 
@@ -44,6 +54,7 @@ func placeState(ctx context.Context, job *events.Job, plainDir string, manifest 
 	}
 
 	gitRoot := deploy.GitStatePath(opts.RemoteDir)
+	repoDirs := make([]string, 0, len(names))
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			job.Emit(StepPlaceState, events.StateFailed, err.Error())
@@ -53,6 +64,7 @@ func placeState(ctx context.Context, job *events.Job, plainDir string, manifest 
 			job.Emit(StepPlaceState, events.StateFailed, err.Error())
 			return err
 		}
+		repoDirs = append(repoDirs, repoDirPath(gitRoot, name))
 	}
 
 	dbComponent, err := databaseComponent(manifest)
@@ -68,6 +80,16 @@ func placeState(ctx context.Context, job *events.Job, plainDir string, manifest 
 	}
 
 	if err := deploy.ChownState(ctx, opts.Host, opts.RemoteDir); err != nil {
+		err = fmt.Errorf("restore: %w", err)
+		job.Emit(StepPlaceState, events.StateFailed, err.Error())
+		return err
+	}
+
+	// The image is the snapshot's own pinned Forgejo (RSTR-002) rather than
+	// the target bundle's, because that is the one runDeploy is about to
+	// start against this state — checking access as any other image would
+	// be checking a deployment that is not going to happen.
+	if err := deploy.VerifyForgeCanUsePlacedState(ctx, opts.Host, manifest.ForgejoVersion, opts.RemoteDir, repoDirs, []string{dbDest}); err != nil {
 		err = fmt.Errorf("restore: %w", err)
 		job.Emit(StepPlaceState, events.StateFailed, err.Error())
 		return err
@@ -103,7 +125,7 @@ func placeState(ctx context.Context, job *events.Job, plainDir string, manifest 
 // archive) is consistent with. Applying the ref archive second restores
 // exactly that hold-time, database-consistent state.
 func placeOneRepo(ctx context.Context, host Host, plainDir, gitRoot, name string, p gitPair) error {
-	dir := path.Join(gitRoot, name+".git")
+	dir := repoDirPath(gitRoot, name)
 	if err := extractRemoteTar(ctx, host, filepath.Join(plainDir, filepath.FromSlash(p.objectsPath)), dir); err != nil {
 		return fmt.Errorf("restore: place git: %s: objects: %w", name, err)
 	}
@@ -111,6 +133,15 @@ func placeOneRepo(ctx context.Context, host Host, plainDir, gitRoot, name string
 		return fmt.Errorf("restore: place git: %s: refs: %w", name, err)
 	}
 	return nil
+}
+
+// repoDirPath is the host directory one repository's git data is restored
+// into — the layout Forgejo itself expects under forge.RepoRoot. Named
+// once because placeState hands the same paths to the access check that
+// placeOneRepo extracted into, and a check aimed a directory off the ones
+// that were actually written would pass for the wrong reason.
+func repoDirPath(gitRoot, name string) string {
+	return path.Join(gitRoot, name+".git")
 }
 
 // gitComponentPairs groups manifest's git components by repository name
