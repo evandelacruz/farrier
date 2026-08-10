@@ -201,6 +201,23 @@ func testBundle(t *testing.T) *bundle.Bundle {
 	}
 }
 
+// namelessBundle returns what `init` with no domain produces (INIT-005):
+// testBundle with the domain and the ACME section it pairs with both
+// dropped, which is the shape bundle.Manifest.Validate accepts as nameless.
+// Everything else about the bundle is unchanged — a nameless instance is a
+// complete instance in all respects but its name (spec.md "Instances
+// without a name").
+func namelessBundle(t *testing.T) *bundle.Bundle {
+	t.Helper()
+	b := testBundle(t)
+	b.Manifest.Domain = ""
+	b.Manifest.ACME = bundle.ACMEConfig{}
+	if err := b.Manifest.Validate(); err != nil {
+		t.Fatalf("nameless manifest is not valid: %v", err)
+	}
+	return b
+}
+
 // copyFixtureFiles copies every file directly under src into dst, so a
 // test gets its own writable copy of a checked-in fixture directory.
 func copyFixtureFiles(t *testing.T, src, dst string) {
@@ -592,6 +609,70 @@ func TestUpEmbedsAppINIChecksumSoContentChangesForceRecreate(t *testing.T) {
 	}
 	if !strings.Contains(compose, appINIChecksumEnv) || !strings.Contains(compose, wantChecksum) {
 		t.Errorf("shipped compose missing %s=%s:\n%s", appINIChecksumEnv, wantChecksum, compose)
+	}
+}
+
+// UP-002 completes with the forge serving HTTPS at the bundle domain, so
+// the last thing Up says about a successful deployment is that endpoint —
+// the guarantee stated in the event stream both frontends read, not only in
+// this package's doc comment.
+func TestUpReportsHTTPSEndpointAtTheDomainOnCompletion(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+
+	if err := Up(context.Background(), job, host, testBundle(t), testOptions("/opt/farrier")); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	var caddyReady string
+	for _, ev := range drain(job) {
+		if ev.Step == StepWaitCaddy && ev.State == events.StateSucceeded {
+			caddyReady = ev.Detail
+		}
+	}
+	if caddyReady == "" {
+		t.Fatal("Up: no succeeded event for the wait-caddy step")
+	}
+	if !strings.Contains(caddyReady, "https://example.com") {
+		t.Errorf("wait-caddy detail = %q, want the https endpoint at the bundle domain", caddyReady)
+	}
+}
+
+// UP-002 is a guarantee about a named bundle. A nameless one (INIT-005) has
+// no domain to serve HTTPS at, and serving it over plain HTTP at an
+// operator-supplied address is UP-006's job — so Up refuses rather than
+// half-deploying an instance nothing can reach.
+func TestUpRejectsNamelessBundle(t *testing.T) {
+	host := newFakeHost()
+	job := events.NewJob()
+
+	err := Up(context.Background(), job, host, namelessBundle(t), testOptions("/opt/farrier"))
+	if err == nil {
+		t.Fatal("Up: want error for a nameless bundle, got nil")
+	}
+	if !strings.Contains(err.Error(), "UP-006") {
+		t.Errorf("error = %v, want it to point at UP-006", err)
+	}
+
+	// Ahead of CheckHost: a refused deployment leaves the host exactly as
+	// it found it, with nothing shipped and nothing run.
+	if len(host.commands) != 0 {
+		t.Errorf("host commands = %v, want none — Up must refuse before touching the host", host.commands)
+	}
+	if len(host.files) != 0 {
+		t.Errorf("host files = %v, want none — Up must refuse before touching the host", keysOf(host.files))
+	}
+
+	evs := drain(job)
+	if len(evs) == 0 {
+		t.Fatal("Up: emitted no events")
+	}
+	last := evs[len(evs)-1]
+	if last.State != events.StateFailed || last.Step != "" {
+		t.Errorf("last event = %+v, want a job-terminal failure", last)
+	}
+	if !strings.Contains(last.Detail, "UP-006") {
+		t.Errorf("terminal event detail = %q, want it to point at UP-006", last.Detail)
 	}
 }
 
