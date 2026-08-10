@@ -136,6 +136,20 @@ farrier up -bundle .farrier -target ssh://you@host
 farrier up -bundle .farrier -target ssh://you@localhost -address 192.168.1.5
 ```
 
+**Deploying to your own machine? Add `-remote-dir`.** `up` writes configuration and forge state into `/opt/farrier` by default — fine on a dedicated host you reach as root, and not writable by an ordinary user:
+
+```bash
+farrier up -bundle .farrier -target ssh://you@localhost -address 127.0.0.1 \
+  -remote-dir /Users/you/farrier          # Linux: /home/you/farrier
+```
+
+Two things about that path:
+
+- **Give it absolutely, never as `~/farrier`.** It is quoted into a command on the host, so a tilde is taken literally and you get a directory actually named `~`.
+- **On macOS, keep it under `/Users`.** `up` bind-mounts forge state from this directory into the containers, and Docker Desktop shares only a fixed set of host paths with its VM. `/Users` is shared by default; `/opt` is not, so `/opt/farrier` would fail at mount time even with the permissions fixed.
+
+Whatever you choose, pass the same `-remote-dir` to every later command against that host — `backup`, `status`, `drill`, `upgrade` all default to `/opt/farrier` too.
+
 `up` prints the first admin account's credentials exactly once, through the event stream. Save them.
 
 ### 5. Push your project to it
