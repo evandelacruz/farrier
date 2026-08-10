@@ -31,6 +31,39 @@ func DirFor(project string) string {
 	return filepath.Join(project, DirName)
 }
 
+// Exists reports whether dir already holds a bundle — the manifest, the
+// rendered Compose directory, or both. Those are exactly the paths Save
+// writes, so they are exactly what a second write would destroy.
+//
+// This is the check `init` makes before it creates anything (INIT-004).
+// The bundle directory carries an instance's identity: the manifest names
+// the domain and pins the images the running forge was deployed from, and
+// spec.md ("Key material") holds that once `init` writes a piece of key
+// material nothing may silently overwrite it. A second `init` over an
+// initialized project would mint a fresh identity and leave the live
+// instance running on one that no longer matches its definition.
+//
+// A torn bundle counts as existing. compose/ with no manifest — or the
+// reverse — is what a crashed or interrupted init leaves behind, and
+// completing it with newly generated key material is the outcome INIT-004
+// exists to prevent. Recovering from that is the operator's call: remove
+// the folder, or point init somewhere else.
+//
+// Nothing else in the directory matters. An empty .farrier/, or a folder
+// of unrelated files an operator pointed init at, is not a bundle, and
+// Save adds to such a directory rather than replacing what is in it.
+func Exists(dir string) (bool, error) {
+	for _, name := range []string{ManifestFile, ComposeDir} {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("bundle: check %s: %w", path, err)
+		}
+	}
+	return false, nil
+}
+
 // Bundle is a bundle directory's contents in memory: the manifest and the
 // rendered Compose files. It carries no reference to the directory it came
 // from, so loading it from one path and saving it to another is exactly the
