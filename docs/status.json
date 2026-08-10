@@ -16,8 +16,12 @@
     "CORE-002": "landed",
     "CORE-003": "landed",
     "KEY-001": "landed",
-    "KEY-002": "landed",
+    "KEY-002": {
+      "state": "partial",
+      "remaining": "Resolve-only: the driver implements no write side, so `init` cannot mint key material straight into an operator's secret manager and requires a `file` keystore."
+    },
     "KEY-003": "landed",
+    "KEY-004": "open",
     "BLOB-001": "landed",
     "BLOB-002": "landed",
     "ORCH-001": "landed",
@@ -46,6 +50,7 @@
     "INIT-003": "landed",
     "INIT-004": "open",
     "INIT-005": "open",
+    "INIT-006": "open",
     "UP-001": "landed",
     "UP-002": {
       "state": "partial",
