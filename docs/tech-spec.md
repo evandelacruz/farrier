@@ -110,6 +110,8 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
 <RemoteDir>/state/forgejo-version
                            the Forgejo image this state has been started
                            under; one line, not mounted
+<RemoteDir>/state/owner    which instance this state belongs to; `<field>:
+                           <value>` lines, not mounted
 ```
 
 Two records sit beside the state rather than inside it, because they describe the deployment rather than the forge:
@@ -137,9 +139,13 @@ Each command verifies the state it placed, over the paths it placed. `up` create
 
 `forgejo-version` is what makes UPGR-003 checkable. Forgejo migrates its schema whenever it starts on a version newer than the database it opens, so migrations are decided entirely by which image starts against which state. `deploy.Up` records the image it is about to start here, before starting it, and refuses to start any other image against state this file already names — the exemption is `upgrade`, which has taken a backup and gated on health by then. `restore` stamps the snapshot's own version alongside the database it places, so the version it then boots (spec.md "Version pinning") matches by construction. It is a property of this host's state, not of the bundle, which is why it lives here: two hosts restored from the same bundle can legitimately carry different values. An absent file means *unknown* — a fresh host, or one deployed before this record existed — and is not treated as a migration.
 
+`owner` is what makes UP-008 checkable. Every deployment lays this directory out identically, so a second bundle pointed at a directory a first one is already using takes it over — Forgejo boots against a database whose `SECRET_KEY` it does not hold, and nothing fails to say so. The record carries two fields: `ssh-host-key`, the public half of the instance's SSH host key, normalized to `<type> <base64>`; and `domain`, present only when the bundle has one. The key is the comparison and the domain is a label, so a refusal can name the instance rather than only a fingerprint; unknown fields are ignored on read. The key identifies an instance because it is the only piece of bundle identity every instance has, that never rotates, and that never changes under a live instance: a nameless bundle has no domain, and `attach` fills one in on a running host (UP-007) while keeping the key. It is public by definition — the string an operator pastes into `known_hosts` — so recording it on the host and naming it in a refusal keeps key material out of both (KEY-003).
+
+`up` reads it after checking Docker and before writing anything, refuses a directory belonging to another instance with the host untouched, and otherwise claims the directory then and there — a deployment that dies partway has still written its app.ini and key material, so the claim must not wait for success. An absent record falls back to the SSH host key installed under `state/gitea`, which `up` writes on every deployment: that covers every instance deployed before this record existed, which is the entire population the requirement protects. Absent both, the state is unclaimed — a fresh host — and `up` proceeds. `restore` stamps the record for the state it places, beside the `forgejo-version` stamp, since that state is the snapshot's whatever the target held before. `deploy.StateOwnerPath` is this record's single spelling.
+
 This is what makes spec.md's stateless/stateful split real. Containers are the disposable half and are recreated on any config change, so no stateful kind may live inside one. `<RemoteDir>/state` is the one directory on the host that is not disposable.
 
-`deploy.GitStatePath`, `deploy.GiteaStatePath`, `deploy.BlobsStatePath`, and `deploy.StateVersionPath` are this layout's single spelling. Deploy, backup, and restore all call them rather than rebuilding the paths independently — three copies of one layout decision is how it drifts.
+`deploy.GitStatePath`, `deploy.GiteaStatePath`, `deploy.BlobsStatePath`, `deploy.StateVersionPath`, and `deploy.StateOwnerPath` are this layout's single spelling. Deploy, backup, and restore all call them rather than rebuilding the paths independently — three copies of one layout decision is how it drifts.
 
 ## State export interfaces
 

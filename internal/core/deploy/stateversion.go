@@ -29,16 +29,15 @@ func StateVersionPath(remoteDir string) string {
 // the two are indistinguishable from here. checkStateVersion treats unknown
 // as permission to proceed for exactly that reason: refusing would break
 // every already-deployed instance on its next `up` (UP-003).
+// A read that fails is an error rather than an absence: reading a transport
+// or shell failure as "no record" is how a migration would be waved through
+// (readOptionalFile).
 func ReadStateVersion(ctx context.Context, host Host, remoteDir string) (string, error) {
-	p := stateShQuote(StateVersionPath(remoteDir))
-	// The `if` means an absent file is empty output and a zero exit, so a
-	// nonzero exit is only ever a real transport or shell failure — which
-	// must not be silently read as "no record" and allowed to migrate.
-	out, err := host.Output(ctx, fmt.Sprintf("if [ -f %s ]; then cat %s; fi", p, p))
+	out, err := readOptionalFile(ctx, host, StateVersionPath(remoteDir))
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", StateVersionPath(remoteDir), err)
+		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(out), nil
 }
 
 // RecordStateVersion writes image to StateVersionPath(remoteDir).

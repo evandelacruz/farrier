@@ -9,8 +9,10 @@ import (
 
 	"github.com/evandelacruz/farrier/internal/core/backup"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
+	"github.com/evandelacruz/farrier/internal/core/deploy"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/forge"
+	"github.com/evandelacruz/farrier/internal/core/state"
 )
 
 func TestGitComponentPairsGroupsByName(t *testing.T) {
@@ -148,6 +150,21 @@ func TestPlaceOneRepoAppliesObjectsBeforeRefs(t *testing.T) {
 	}
 }
 
+// placeStateOptions is the slice of Options placeState reads: the target
+// directory and host, plus the bundle and the target keystore it claims the
+// state for (deploy.RecordStateOwner, UP-008). Restore.validate already
+// requires all four, so a test that omitted the last two would be testing a
+// shape production never produces.
+func placeStateOptions(t *testing.T, host Host) Options {
+	t.Helper()
+	return Options{
+		RemoteDir: "/opt/farrier",
+		Host:      host,
+		Bundle:    testBundle(t, t.TempDir()),
+		Keystore:  &fakeKeystoreDriver{values: map[string]string{state.KeySSHHostKeyPublic: testHostPublicKey}},
+	}
+}
+
 // placeStateFixture writes the archives a one-repository snapshot's
 // manifest points at into a fresh directory, and returns the directory and
 // the manifest. placeState streams these to the host, so they have to
@@ -189,7 +206,7 @@ func TestPlaceStateFailsWhenTheForgeCannotUseWhatItRestored(t *testing.T) {
 	host.failOutputOn = "docker run"
 	host.stderrOnFailure = "/opt/farrier/state/git/acme/widgets.git"
 
-	err := placeState(context.Background(), events.NewJob(), dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host})
+	err := placeState(context.Background(), events.NewJob(), dir, manifest, placeStateOptions(t, host))
 	if err == nil {
 		t.Fatal("placeState: want error when the forge cannot use the restored repository, got nil")
 	}
@@ -215,7 +232,7 @@ func TestPlaceStateSucceedsWhenOwnershipCannotBeSet(t *testing.T) {
 	host := newFakeHost()
 	host.failOutputOn = "chown"
 
-	if err := placeState(context.Background(), events.NewJob(), dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host}); err != nil {
+	if err := placeState(context.Background(), events.NewJob(), dir, manifest, placeStateOptions(t, host)); err != nil {
 		t.Fatalf("placeState: %v", err)
 	}
 }
@@ -230,7 +247,7 @@ func TestPlaceStateVerifiesTheRepositoryAndDatabaseItPlaced(t *testing.T) {
 	dir, manifest := placeStateFixture(t)
 	host := newFakeHost()
 
-	if err := placeState(context.Background(), events.NewJob(), dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host}); err != nil {
+	if err := placeState(context.Background(), events.NewJob(), dir, manifest, placeStateOptions(t, host)); err != nil {
 		t.Fatalf("placeState: %v", err)
 	}
 
@@ -258,11 +275,36 @@ func TestPlaceStateFailsLoudlyOnTornGitSnapshot(t *testing.T) {
 
 	host := newFakeHost()
 	job := events.NewJob()
-	err := placeState(context.Background(), job, dir, manifest, Options{RemoteDir: "/opt/farrier", Host: host})
+	err := placeState(context.Background(), job, dir, manifest, placeStateOptions(t, host))
 	if err == nil {
 		t.Fatal("placeState: want error for a torn git snapshot, got nil")
 	}
 	if len(host.commands) != 0 {
 		t.Errorf("host was touched despite the snapshot being torn: %v", host.commands)
+	}
+}
+
+// TestPlaceStateClaimsTheStateItPlaced is UP-008 from restore's side. The
+// state on this host is the snapshot's the moment restore writes it, so the
+// record saying whose it is has to move with it — otherwise recovery onto a
+// target that once held something else is refused by deploy.Up moments
+// later, over state restore has already replaced.
+func TestPlaceStateClaimsTheStateItPlaced(t *testing.T) {
+	dir, manifest := placeStateFixture(t)
+	host := newFakeHost()
+	opts := placeStateOptions(t, host)
+	// A target that used to hold a different instance, as a reused scratch
+	// host or a half-finished recovery leaves it.
+	host.files[deploy.StateOwnerPath(opts.RemoteDir)] = "ssh-host-key: ssh-ed25519 AAAAsomeotherinstance\ndomain: git.other.example\n"
+
+	if err := placeState(context.Background(), events.NewJob(), dir, manifest, opts); err != nil {
+		t.Fatalf("placeState: %v", err)
+	}
+
+	record := host.files[deploy.StateOwnerPath(opts.RemoteDir)]
+	for _, want := range []string{testHostPublicKey[:strings.LastIndex(testHostPublicKey, " ")], testDomain} {
+		if !strings.Contains(record, want) {
+			t.Errorf("owner record %q does not name %q", record, want)
+		}
 	}
 }
