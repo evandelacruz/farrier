@@ -52,6 +52,7 @@
     "UP-005": "landed",
     "UP-006": "landed",
     "UP-007": "landed",
+    "UP-008": "open",
     "IMPT-001": "landed",
     "IMPT-002": "landed",
     "IMPT-003": "landed",
@@ -84,6 +85,8 @@
     "UI-001": "landed",
     "UI-002": "landed",
     "XCUT-001": "landed",
-    "XCUT-002": "landed"
+    "XCUT-002": "landed",
+    "XCUT-003": "open",
+    "XCUT-004": "open"
   }
 }
