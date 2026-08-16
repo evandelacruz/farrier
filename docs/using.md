@@ -16,21 +16,15 @@ So for a project moving off GitHub, `.github/workflows` is the two-way door. Git
 
 The trap is on the other side of that. **The moment you add `.forgejo/workflows`, your instance stops reading `.github/workflows` entirely** — not just for the file you duplicated. Anything you still want running on the instance moves too.
 
-Add `.forgejo/workflows` when the two forges genuinely need different content, and then treat it as the instance's complete set. Usually the only line that differs is `runs-on`.
+Add `.forgejo/workflows` when the two forges genuinely need different content, and then treat it as the instance's complete set. With the colocated runner answering to `ubuntu-latest`, most GitHub workflows need no `runs-on` change.
 
-### `runs-on: docker`
+### `runs-on: ubuntu-latest` works
 
-The colocated runner registers with its default label, `docker`. `runs-on: ubuntu-latest` — GitHub's habit — matches nothing on your instance, and the job sits queued forever rather than failing, which reads like a broken runner and is not one.
+The colocated runner answers to both `ubuntu-latest` and `docker`, each mapped to the same Node container image. A workflow written for GitHub — `runs-on: ubuntu-latest` — schedules on a fresh instance without rewriting the file.
 
-```yaml
-jobs:
-  test:
-    runs-on: docker
-```
+That label match is not GitHub's runner VM. Every step still runs as root inside a plain Node image, not GitHub's `ubuntu-latest` image with a hundred tools baked in. Expect to install what your job needs — you are already root inside that container, so nothing needs `sudo` and `sudo` is not there anyway. Name a different image per job with `container:` when installing the same packages every run is the wrong trade.
 
-That label means "run every step in a container," and the image behind it is a plain Node image, not GitHub's `ubuntu-latest` image with a hundred tools baked in. Expect to install what your job needs — you are already root inside that container, so nothing needs `sudo` and `sudo` is not there anyway. Name a different image per job with `container:` when installing the same packages every run is the wrong trade.
-
-Check what your own instance answers to under **Site Administration → Actions → Runners**, which lists each runner with its labels.
+`runs-on: docker` is the Forgejo-shaped spelling of the same thing. Check what your own instance answers to under **Site Administration → Actions → Runners**, which lists each runner with its labels.
 
 ### Actions resolve from `code.forgejo.org`, not GitHub
 

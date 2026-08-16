@@ -83,6 +83,14 @@ func TestUpDeploysAndRegistersTheColocatedRunner(t *testing.T) {
 		t.Errorf("shipped secret = %q, want the bundle's", secret)
 	}
 
+	config, ok := host.files[RunnerConfigPath("/opt/farrier")]
+	if !ok {
+		t.Fatalf("runner config not shipped to %s; host has %v", RunnerConfigPath("/opt/farrier"), hostPaths(host))
+	}
+	if config != string(forge.RenderRunnerConfig()) {
+		t.Errorf("shipped config =\n%s\nwant\n%s", config, forge.RenderRunnerConfig())
+	}
+
 	services := convergedCompose(t, host, "/opt/farrier")
 	svc, ok := services[forge.RunnerService].(map[string]any)
 	if !ok {
@@ -110,12 +118,20 @@ func TestUpDeploysAndRegistersTheColocatedRunner(t *testing.T) {
 	}
 
 	command := stringsOf(svc["command"])
-	if len(command) == 0 || !strings.Contains(strings.Join(command, " "), "forgejo-runner daemon") {
+	joined := strings.Join(command, " ")
+	if !strings.Contains(joined, "forgejo-runner daemon") {
 		t.Errorf("runner command %v does not start the daemon", command)
+	}
+	if !strings.Contains(joined, "-c '"+forge.RunnerConfigFilename+"'") {
+		t.Errorf("runner command %v does not pass the shipped config", command)
 	}
 
 	if !ranCommandContaining(host, "forgejo-cli actions register") {
 		t.Errorf("no registration command ran; commands: %v", host.commands)
+	}
+	register := commandContaining(host, "forgejo-cli actions register")
+	if !strings.Contains(register, "--labels 'docker,ubuntu-latest'") {
+		t.Errorf("registration does not declare labels: %s", register)
 	}
 }
 
@@ -226,6 +242,9 @@ func TestUpWithoutColocatedRunnerRemovesTheServiceEntirely(t *testing.T) {
 	}
 	if _, ok := host.files[RunnerSecretPath("/opt/farrier")]; ok {
 		t.Error("runner secret was shipped for a deployment with no colocated runner")
+	}
+	if _, ok := host.files[RunnerConfigPath("/opt/farrier")]; ok {
+		t.Error("runner config was shipped for a deployment with no colocated runner")
 	}
 	if ranCommandContaining(host, "forgejo-cli actions register") {
 		t.Errorf("registered a runner that isn't deployed; commands: %v", host.commands)

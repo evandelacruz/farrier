@@ -90,13 +90,31 @@ func TestRunnerCommandDerivesCredentialsFromTheMountedSecret(t *testing.T) {
 	for _, want := range []string{
 		"cd '" + RunnerDataDir + "'",
 		"if [ ! -f .runner ]",
-		"forgejo-runner create-runner-file --instance 'https://forge.example.com/'",
+		"forgejo-runner create-runner-file -c '" + RunnerConfigFilename + "' --instance 'https://forge.example.com/'",
 		"$(cat '" + RunnerSecretFilename + "')",
-		"exec forgejo-runner daemon",
+		"exec forgejo-runner daemon -c '" + RunnerConfigFilename + "'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("script missing %q:\n%s", want, script)
 		}
+	}
+}
+
+func TestRenderRunnerConfigDeclaresDockerAndUbuntuLatest(t *testing.T) {
+	got := string(RenderRunnerConfig())
+	for _, want := range []string{
+		"runner:",
+		"labels:",
+		"docker:docker://" + RunnerJobImage,
+		"ubuntu-latest:docker://" + RunnerJobImage,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("config missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Count(got, "docker://") != len(RunnerLabelNames) {
+		t.Errorf("config has %d image mappings, want %d:\n%s",
+			strings.Count(got, "docker://"), len(RunnerLabelNames), got)
 	}
 }
 
@@ -123,7 +141,7 @@ func TestRegisterRunnerRunsForgejoOfflineRegistration(t *testing.T) {
 		t.Fatalf("RegisterRunner: %v", err)
 	}
 
-	want := "docker compose exec -T -u git forgejo forgejo forgejo-cli actions register --secret-stdin --name 'farrier-colocated' < '/opt/farrier/runner/secret'"
+	want := "docker compose exec -T -u git forgejo forgejo forgejo-cli actions register --secret-stdin --name 'farrier-colocated' --labels 'docker,ubuntu-latest' < '/opt/farrier/runner/secret'"
 	if runner.lastCmd() != want {
 		t.Errorf("command =\n%s\nwant\n%s", runner.lastCmd(), want)
 	}
