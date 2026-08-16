@@ -25,7 +25,7 @@ func runUpgrade(args []string) int {
 	target := fs.String("target", "", "ssh://user@host[:port] of the forge host (required)")
 	to := fs.String("to", "", "pre-upgrade backup destination: an s3:// URI or a filesystem directory (required, the same shape `backup -to` takes)")
 	image := fs.String("image", "", "forgejo image to upgrade to, a tag or an exact digest (required)")
-	remoteDir := fs.String("remote-dir", "/opt/farrier", "directory on the host farrier was deployed into")
+	remoteDir := fs.String("remote-dir", orchestrate.DefaultRemoteDir, "directory on the host farrier was deployed into")
 	workDir := fs.String("work-dir", "", "local scratch directory for the pre-upgrade backup (default: a fresh temporary directory)")
 	diskPath := fs.String("disk-path", "", "filesystem path on the host to check disk headroom on (default: status.DefaultDiskPath)")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")

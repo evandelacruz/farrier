@@ -45,11 +45,11 @@ func Connect(ctx context.Context, raw string, opts Options) (*Client, error) {
 		return nil, err
 	}
 
-	auth, closer, err := authMethod(opts)
+	auth, err := authMethod(opts)
 	if err != nil {
 		return nil, err
 	}
-	defer closer.Close()
+	defer auth.closer.Close()
 
 	hostKeyCB, err := hostKeyCallback(opts)
 	if err != nil {
@@ -76,13 +76,13 @@ func Connect(ctx context.Context, raw string, opts Options) (*Client, error) {
 
 	config := &ssh.ClientConfig{
 		User:            target.User,
-		Auth:            []ssh.AuthMethod{auth},
+		Auth:            []ssh.AuthMethod{auth.method},
 		HostKeyCallback: hostKeyCB,
 	}
 	sshConn, chans, reqs, err := ssh.NewClientConn(rawConn, target.addr(), config)
 	if err != nil {
 		rawConn.Close()
-		return nil, fmt.Errorf("orchestrate: connect to %s: %w", target, err)
+		return nil, fmt.Errorf("orchestrate: connect to %s: %w%s", target, err, authFailureHint(auth, err))
 	}
 	if err := rawConn.SetDeadline(time.Time{}); err != nil {
 		sshConn.Close()
@@ -154,11 +154,18 @@ func (c *Client) WriteFile(ctx context.Context, remotePath string, content []byt
 // run is the one place a session is opened, wired up, and waited on. Run,
 // Output, and WriteFile differ only in what they attach to it.
 //
-// It is also the one place the docker PATH fallback is applied. Every
-// command this package runs — and so every docker invocation any package
+// It is also the one place the docker PATH fallback is applied, and the one
+// place a failure is turned into a diagnosis. Every command this package
+// runs — and so every docker invocation and every remote write any package
 // makes, since they all reach a host through this transport — goes over a
-// session started here, which is what keeps that fallback a single decision
-// rather than one per caller.
+// session started here, which is what keeps both a single decision rather
+// than one per caller.
+//
+// Diagnosing needs the host's own words, and the caller may have taken
+// stderr for itself (Run streams it to a writer; Output and WriteFile
+// buffer it to report separately). So stderr is tapped rather than
+// intercepted: whoever asked for it still gets every byte, and run keeps a
+// bounded copy to read the failure from.
 func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdout, stderr io.Writer) error {
 	session, err := c.conn.NewSession()
 	if err != nil {
@@ -172,8 +179,11 @@ func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdou
 	if stdout != nil {
 		session.Stdout = stdout
 	}
+	var tap stderrTap
 	if stderr != nil {
-		session.Stderr = stderr
+		session.Stderr = io.MultiWriter(stderr, &tap)
+	} else {
+		session.Stderr = &tap
 	}
 
 	if err := session.Start(withDockerPath(command)); err != nil {
@@ -190,11 +200,35 @@ func (c *Client) run(ctx context.Context, command string, stdin io.Reader, stdou
 		return fmt.Errorf("orchestrate: %s: %q: %w", c.target, command, ctx.Err())
 	case err := <-done:
 		if err != nil {
-			return fmt.Errorf("orchestrate: %s: %q: %w%s", c.target, command, err, dockerMissingHint(command, err))
+			return fmt.Errorf("orchestrate: %s: %q: %w%s%s", c.target, command, err,
+				dockerMissingHint(command, err), remoteDirHint(command, tap.String()))
 		}
 		return nil
 	}
 }
+
+// stderrTapLimit bounds what a tap keeps. A refusal is one line; anything
+// beyond this is a command that failed for some other reason and is being
+// verbose about it, and holding all of it in memory to diagnose a failure
+// that will not be diagnosed here buys nothing.
+const stderrTapLimit = 4 << 10
+
+// stderrTap keeps the first stderrTapLimit bytes a session writes to
+// stderr and discards the rest. It never errors and never short-writes:
+// its only reader is a hint, and a command whose diagnosis was truncated
+// must still fail on its own terms rather than on this.
+type stderrTap struct {
+	buf []byte
+}
+
+func (t *stderrTap) Write(p []byte) (int, error) {
+	if room := stderrTapLimit - len(t.buf); room > 0 {
+		t.buf = append(t.buf, p[:min(room, len(p))]...)
+	}
+	return len(p), nil
+}
+
+func (t *stderrTap) String() string { return string(t.buf) }
 
 // RunStdin executes command on the host in a fresh SSH session, streaming
 // stdin to the process and its stdout and stderr to the given writers

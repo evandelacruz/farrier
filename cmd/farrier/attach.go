@@ -25,7 +25,7 @@ func runAttach(args []string) int {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	bundleDir := fs.String("bundle", "", "path to the nameless bundle's directory (required)")
 	target := fs.String("target", "", "ssh://user@host[:port] of the host the instance runs on (required)")
-	remoteDir := fs.String("remote-dir", "/opt/farrier", "directory on the host the instance was deployed into")
+	remoteDir := fs.String("remote-dir", orchestrate.DefaultRemoteDir, "directory on the host the instance was deployed into")
 	domain := fs.String("domain", "", "the FQDN to attach (required)")
 	dnsProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name used to prove the zone (required)")
 	email := fs.String("acme-email", "", "contact address registered on the ACME account")

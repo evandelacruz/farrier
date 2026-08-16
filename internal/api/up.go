@@ -14,10 +14,11 @@ import (
 	"github.com/evandelacruz/farrier/internal/core/orchestrate"
 )
 
-// defaultRemoteDir matches the `up` CLI command's -remote-dir default
-// (cmd/farrier/main.go), so a bare {"bundleDir":...,"target":...} request
-// deploys to the same place the CLI would.
-const defaultRemoteDir = "/opt/farrier"
+// defaultRemoteDir is the same default the `up` CLI command gives its
+// -remote-dir flag, so a bare {"bundleDir":...,"target":...} request
+// deploys to the same place the CLI would. Both take it from the core
+// package that creates the directory rather than repeating the path.
+const defaultRemoteDir = orchestrate.DefaultRemoteDir
 
 // upRequest is the POST /up body, one field per the `up` CLI command's
 // flags. Address is the address a nameless bundle's web UI is served at
