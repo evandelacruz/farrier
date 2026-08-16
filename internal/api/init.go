@@ -33,12 +33,18 @@ type initRequest struct {
 	Project string `json:"project"`
 	// Dir optionally overrides the bundle location; empty writes it inside
 	// Project (INIT-001).
-	Dir             string            `json:"dir"`
-	Keystore        initDriverRef     `json:"keystore"`
-	Blob            initDriverRef     `json:"blob"`
-	ACMEDNSProvider string            `json:"acmeDnsProvider"`
-	ACMEEmail       string            `json:"acmeEmail"`
-	Images          map[string]string `json:"images,omitempty"`
+	Dir             string        `json:"dir"`
+	Keystore        initDriverRef `json:"keystore"`
+	Blob            initDriverRef `json:"blob"`
+	ACMEDNSProvider string        `json:"acmeDnsProvider"`
+	ACMEEmail       string        `json:"acmeEmail"`
+	// ACMEDirectory is the ACME server to issue against: omitted for Let's
+	// Encrypt production, "staging" for its staging environment, or any
+	// other ACME directory URL. Like the two fields above it is rejected
+	// without a domain, and the resolved URL is recorded in the manifest so
+	// renewal reaches the CA that issued.
+	ACMEDirectory string            `json:"acmeDirectory,omitempty"`
+	Images        map[string]string `json:"images,omitempty"`
 	// GitSSHPort is the host port the instance serves git over SSH on
 	// (UP-005); omitted or zero takes bundle.DefaultGitSSHPort.
 	GitSSHPort int `json:"gitSshPort,omitempty"`
@@ -103,6 +109,7 @@ func (s *Server) handleInit(w http.ResponseWriter, r *http.Request) {
 		Blob:            bundle.DriverRef{Driver: req.Blob.Driver, Config: req.Blob.Config},
 		ACMEDNSProvider: req.ACMEDNSProvider,
 		ACMEEmail:       req.ACMEEmail,
+		ACMEDirectory:   req.ACMEDirectory,
 		Images:          req.Images,
 		GitSSHPort:      req.GitSSHPort,
 		WebPort:         req.WebPort,

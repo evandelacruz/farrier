@@ -124,12 +124,36 @@ type DriverConfig struct {
 type ACMEConfig struct {
 	DNSProvider string `yaml:"dnsProvider,omitempty"`
 	Email       string `yaml:"email,omitempty"`
+
+	// DirectoryURL is the ACME server this bundle's certificates are issued
+	// and renewed against — the operator's choice at `init`, resolved to an
+	// absolute URL before it is written (acme.ResolveDirectoryURL) so the
+	// manifest carries no shorthand to interpret.
+	//
+	// It is recorded rather than merely used because issuance and renewal
+	// must agree about the CA. `up` renews a certificate that is due
+	// (ACME-002), and a bundle rehearsed against Let's Encrypt staging whose
+	// manifest did not remember that would renew against production on some
+	// later `up` — changing the instance's trust chain underneath the
+	// operator with no command having asked for it.
+	//
+	// Empty is Let's Encrypt production: that is what a manifest written
+	// before the field existed carries, and what acme.Config does with an
+	// empty DirectoryURL, so a bundle already on disk is unaffected.
+	//
+	// Like the domain and the pinned image digests, it is frozen at `init`
+	// (spec.md "Version pinning"). A bundle initialized against staging is a
+	// rehearsal bundle and cannot be graduated to production — the operator
+	// re-runs `init` for the real one.
+	DirectoryURL string `yaml:"directoryUrl,omitempty"`
 }
 
 // isZero reports whether an ACME section carries nothing at all — the shape
 // a nameless bundle's manifest has.
 func (c ACMEConfig) isZero() bool {
-	return strings.TrimSpace(c.DNSProvider) == "" && strings.TrimSpace(c.Email) == ""
+	return strings.TrimSpace(c.DNSProvider) == "" &&
+		strings.TrimSpace(c.Email) == "" &&
+		strings.TrimSpace(c.DirectoryURL) == ""
 }
 
 // ActionsConfig is the manifest's CI section: what `up` deploys alongside

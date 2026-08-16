@@ -62,6 +62,7 @@ A forge's identity — its URL, its keys, its certificates — is what welds it 
 - A named bundle owns a DNS name the operator controls, given at `init`. A bundle may also be nameless ("Instances without a name"), which trades permanence for a first minute that costs nothing.
 - All identity derives from the name: clone URLs, webhooks, runner registration, OAuth callbacks, LFS endpoints. Hosts are fungible; the domain is permanent. A nameless instance puts its address in that role, which is why relocating one breaks remotes.
 - Given a name, `init` proves zone control via an ACME DNS-01 challenge, front-loading the project's one external dependency to day one.
+- The CA is the operator's, chosen at `init` and recorded in the bundle: Let's Encrypt production by default, its staging environment for a rehearsal, or any other ACME directory — an internal CA, for instance. Whatever issued is what renews, because a renewal that silently changed CAs would change the instance's trust chain with no command having asked for it.
 - Records are created with a 60-second TTL so DNS flips land within the promotion downtime window.
 
 ### Reaching the forge
@@ -87,7 +88,7 @@ Generated at `init`, carried through every backup and restore:
 
 - Forgejo `SECRET_KEY` and `INTERNAL_TOKEN`
 - LFS JWT secret
-- TLS certificates, issued and renewed by the core via ACME DNS-01 — a standby holds a valid cert before any traffic points at it
+- TLS certificates, issued and renewed by the core via ACME DNS-01, against the CA the bundle names — a standby holds a valid cert before any traffic points at it
 - SSH host keys, installed on every deploy including the first, so a fresh host and a restored one both present an unchanged identity
 
 Secrets stay in the keystore; the SSH host key's public half also travels in the bundle manifest, written there at `init`. That half is public by definition — it is the string an operator would paste into `known_hosts` — and carrying it means publishing a project to an instance can pin its identity without read access to the store holding `SECRET_KEY`, `INTERNAL_TOKEN`, and the age backup key. On a shared instance, that is the difference between every project owner being able to publish and only the instance's owner. The private half never leaves the keystore, and nothing secret is ever written into a bundle.
@@ -160,10 +161,12 @@ This is stated plainly because "isolated at the container level" reads stronger 
 
 Every backup embeds the exact Forgejo version that wrote it, and restore always runs that exact version — the manifest pins the images, and restore uses the pinned images. Schema migrations run during upgrades, never during restores.
 
-- **Init:** resolves whatever image reference it is given — a tag, or a digest — to a digest, and writes that digest into the manifest. From that moment the bundle is frozen there.
+- **Init:** resolves whatever image reference it is given — a tag, or a digest — to a digest, and writes that digest into the manifest. From that moment the bundle is frozen there. The ACME server is frozen the same way, and by the same rule: `init` records which CA the instance issues against, and every later issuance and renewal uses it.
 - **Up:** deploys the digest the manifest holds. It never re-resolves, so a bundle deployed today and the same bundle deployed in six months are the same software. A tag in the default image set therefore governs exactly one thing: what a **fresh** `init` picks up. It does not mean a deployed instance drifts forward onto patches.
 - **Restore:** boots the version recorded in the snapshot, every time.
 - **Upgrade:** the only command that moves a bundle to a different version, and a deliberate one on a healthy instance — backup, bump the pinned version, run migrations, verify.
+
+**A bundle initialized against a rehearsal CA is a rehearsal bundle.** Choosing Let's Encrypt staging at `init` is frozen exactly as the domain and the image digests are, so such a bundle is never graduated to production — the operator runs `init` again for the real instance. That is the intended shape: staging exists to rehearse the named tier before it spends production's rate limits, and the instance it produces serves a certificate no browser trusts. Nothing about it is worth keeping except what was learned.
 
 ## What the operator owns
 

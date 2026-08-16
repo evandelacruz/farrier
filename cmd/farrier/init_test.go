@@ -222,3 +222,29 @@ func TestParseInitFlagsWebPorts(t *testing.T) {
 		}
 	}
 }
+
+// -acme-directory reaches the core verbatim: expanding the shorthand and
+// rejecting a malformed URL are the core's decisions, so the CLI and the
+// API resolve an operator's CA choice the same way and refuse it in the
+// same words.
+func TestParseInitFlagsCarriesTheACMEDirectory(t *testing.T) {
+	base := []string{"-domain", "example.com", "-keystore-driver", "file", "-blob-driver", "local", "-acme-dns-provider", "manual"}
+
+	params, code := parseInitFlags(base)
+	if code != 0 {
+		t.Fatalf("parseInitFlags: exit code = %d, want 0", code)
+	}
+	if params.ACMEDirectory != "" {
+		t.Errorf("ACMEDirectory = %q, want it empty so the core takes Let's Encrypt production", params.ACMEDirectory)
+	}
+
+	for _, given := range []string{"staging", "https://ca.internal.example.com/acme/acme/directory"} {
+		params, code := parseInitFlags(append(append([]string{}, base...), "-acme-directory", given))
+		if code != 0 {
+			t.Fatalf("parseInitFlags -acme-directory %s: exit code = %d, want 0", given, code)
+		}
+		if params.ACMEDirectory != given {
+			t.Errorf("ACMEDirectory = %q, want %q", params.ACMEDirectory, given)
+		}
+	}
+}

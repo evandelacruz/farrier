@@ -135,11 +135,19 @@ func configureTLS(ctx context.Context, host Host, b *bundle.Bundle, remoteDir st
 		return nil, false, fmt.Errorf("generate acme account key: %w", err)
 	}
 
+	// The CA comes from the manifest, never from a default: a certificate
+	// issued by Let's Encrypt staging has to renew against staging, and a
+	// renewal that silently reached production would change the instance's
+	// trust chain with no command having asked for it
+	// (bundle.ACMEConfig.DirectoryURL). Every path that converges a host —
+	// `up`, `attach`, `promote`, `restore`, `drill`, `upgrade` — reaches the
+	// ACME server through here, so there is one place that decision is made.
 	cert, renewed, err := issuer.EnsureValid(acme.Config{
-		Domain:      b.Manifest.Domain,
-		Email:       b.Manifest.ACME.Email,
-		AccountKey:  accountKey,
-		DNSProvider: b.Manifest.ACME.DNSProvider,
+		Domain:       b.Manifest.Domain,
+		Email:        b.Manifest.ACME.Email,
+		AccountKey:   accountKey,
+		DNSProvider:  b.Manifest.ACME.DNSProvider,
+		DirectoryURL: b.Manifest.ACME.DirectoryURL,
 	}, existing, time.Now())
 	if err != nil {
 		return nil, false, fmt.Errorf("issue certificate for %s: %w", b.Manifest.Domain, err)

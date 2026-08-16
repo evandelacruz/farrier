@@ -100,6 +100,7 @@ func TestHandleAttachPassesEveryInputThrough(t *testing.T) {
 		"domain":"forge.example.com",
 		"acmeDnsProvider":"cloudflare",
 		"acmeEmail":"ops@example.com",
+		"acmeDirectory":"staging",
 		"address":"box.tail1234.ts.net"
 	}`)
 	if rec.Code != http.StatusAccepted {
@@ -116,6 +117,9 @@ func TestHandleAttachPassesEveryInputThrough(t *testing.T) {
 		}
 		if opts.ACMEEmail != "ops@example.com" {
 			t.Errorf("ACMEEmail = %q", opts.ACMEEmail)
+		}
+		if opts.ACMEDirectory != "staging" {
+			t.Errorf("ACMEDirectory = %q, want it carried through to the core", opts.ACMEDirectory)
 		}
 		if opts.Address != "box.tail1234.ts.net" {
 			t.Errorf("Address = %q", opts.Address)

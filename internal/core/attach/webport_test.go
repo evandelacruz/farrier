@@ -127,7 +127,7 @@ func TestAttachRefusesWhenNamingWouldLeaveThePublicPortUnstated(t *testing.T) {
 // can assert a refusal happened before anything was spent.
 type recordingProver struct{ called bool }
 
-func (p *recordingProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
+func (p *recordingProver) Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error) {
 	p.called = true
 	return nil, fmt.Errorf("recordingProver: should not have been called")
 }
