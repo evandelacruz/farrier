@@ -190,7 +190,7 @@ farrier attach -bundle .farrier -target ssh://you@host \
   -address 192.168.1.5
 ```
 
-Day-to-day work stays in Forgejo's UI at your domain. Portability — status, drills, promote — stays on your machine (`farrier status`, `farrier drill`, `farrier promote`, or `farrier ui`). Backing up, restoring, and getting back after losing a host: [docs/operating.md](docs/operating.md). What you are accepting security-wise: [docs/security.md](docs/security.md). Full command set: [docs/spec.md](docs/spec.md).
+Day-to-day work stays in Forgejo's UI at your domain. Portability — status, drills, promote — stays on your machine (`farrier status`, `farrier drill`, `farrier promote`, or `farrier ui`). Working on the instance day to day — where CI workflows go, how secrets are set, putting a second project on it: [docs/using.md](docs/using.md). Backing up, restoring, and getting back after losing a host: [docs/operating.md](docs/operating.md). What you are accepting security-wise: [docs/security.md](docs/security.md). Full command set: [docs/spec.md](docs/spec.md).
 
 **Keep the age backup key.** `init` reports where it stored every piece of key material and which one matters most: the age key alone decrypts every snapshot this instance will ever produce, and there is no recovery path if it is lost. Put a copy somewhere other than the machine you would be recovering from.
 
