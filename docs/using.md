@@ -65,7 +65,7 @@ farrier publish -bundle ../my-project/.farrier
 
 The bundle supplies the instance — its address, its host key, its identity. The folder you run in supplies the code, and the repository takes that folder's name unless you pass `-name`. `FARRIER_TARGET_TOKEN` is read from the environment exactly as in the quick start, and a nameless instance needs `-target` as well, having no public URL of its own to default to.
 
-Nothing about the instance changes and no code path differs. One instance for ten projects is one address, one backup, one drill. The reasoning, and why the bundle then belongs on its own rather than inside one of the ten, is [spec.md](spec.md), "The unit: one forge per project."
+Nothing about the instance changes and no code path differs. One instance for ten projects is one address, one backup, one drill. The reasoning, and why the bundle then belongs on its own rather than inside one of the ten, is [spec.md](spec.md), "The unit: a forge, and the projects on it."
 
 ## What is different from GitHub
 
