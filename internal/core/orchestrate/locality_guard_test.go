@@ -58,6 +58,21 @@ var localityExemptions = []localityExemption{{
 	why: "container image reference parsing: decides whether the first path " +
 		"component of an image name is a registry host, which is unrelated to " +
 		"any host Farrier deploys to",
+}, {
+	file: "internal/core/deploy/ciaddress.go",
+	expr: `ip.IsLoopback()`,
+	why: "the address the forge's web UI is served at, not the host it is " +
+		"deployed to: a loopback one is refused when the deployment carries " +
+		"CI (UP-006), because it is what job containers are told to clone " +
+		"from and inside a container it names the container. The SSH target " +
+		"is untouched — ssh://user@localhost still runs the identical path, " +
+		"and is the ordinary way to reach the host this refusal fires on",
+}, {
+	file: "internal/core/deploy/ciaddress.go",
+	expr: `name == "localhost"`,
+	why: "the same served-address check, spelled as a hostname: RFC 6761 " +
+		"reserves localhost for the loopback interface, so it is the same " +
+		"unreachable-from-a-container address by another name",
 }}
 
 // scannedRoots are the directories holding product code. tools/ is agent

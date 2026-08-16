@@ -113,6 +113,14 @@ type fakeHost struct {
 	// test can assert what a deployment puts down before anything else
 	// (UP-008: the claim on the state directory comes first).
 	firstWrite string
+
+	// hostAddrOutput is what the host prints when asked for its own
+	// interface addresses (hostAddressCommand), and hostAddrErr fails that
+	// question outright — a host with neither `ip` nor `ifconfig`. Empty
+	// output is the default, so a test that does not care sees a host that
+	// knows no address for itself.
+	hostAddrOutput string
+	hostAddrErr    error
 }
 
 func newFakeHost() *fakeHost {
@@ -126,6 +134,13 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 
 	if f.failOutputOn != "" && strings.Contains(command, f.failOutputOn) {
 		return nil, errors.New("fakeHost: command failed: " + command)
+	}
+
+	if command == hostAddressCommand {
+		if f.hostAddrErr != nil {
+			return nil, f.hostAddrErr
+		}
+		return []byte(f.hostAddrOutput), nil
 	}
 
 	// Serve every "read this file if it is there" out of the same map

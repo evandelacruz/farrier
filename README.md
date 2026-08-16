@@ -139,9 +139,11 @@ A nameless instance comes up at **`http://<address>:8222`**, and a named one at 
 **Deploying to your own machine? Add `-remote-dir`.** `up` writes configuration and forge state into `/opt/farrier` by default — fine on a dedicated host you reach as root, and not writable by an ordinary user:
 
 ```bash
-farrier up -bundle .farrier -target ssh://you@localhost -address 127.0.0.1 \
+farrier up -bundle .farrier -target ssh://you@localhost -address 192.168.1.5 \
   -remote-dir /Users/you/farrier          # Linux: /home/you/farrier
 ```
+
+**Still give your machine's real address, not `127.0.0.1`.** The address is what the forge tells CI to clone from, and CI jobs run in containers — inside one, a loopback address is the container itself, so every workflow fails at its first step while the instance looks perfectly healthy. `up` refuses a loopback address for that reason and names one your machine answers on. (An instance you only browse has no such container: turn CI off with `colocatedRunner: false` in the bundle's `farrier.yaml` and `127.0.0.1` is fine.)
 
 Three things about that path:
 

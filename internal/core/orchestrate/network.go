@@ -18,7 +18,7 @@ const defaultNetwork = "default"
 // It exists for the one case where a deployment must be self-contained
 // rather than reachable the way the outside world reaches it: a drilled
 // instance (DRIL-002). The colocated Actions runner connects to the bundle
-// domain (forge.RunnerInstanceURL), and a drill deliberately leaves DNS
+// domain (deploy.runnerInstanceURL), and a drill deliberately leaves DNS
 // pointing at production (DRIL-001) — so without an alias the runner beside
 // a drilled instance would resolve that domain to production and poll
 // production's job queue with the bundle's own runner secret. Aliasing the
