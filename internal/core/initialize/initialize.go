@@ -137,8 +137,14 @@ type Resolver interface {
 // waste. Satisfied by acmeProver, which backs it with a real ACME DNS-01
 // exchange (acme.Issue, ACME-001); declared here so Run is testable without
 // a real ACME server or DNS provider.
+//
+// It takes the manifest's own ACME section rather than loose strings,
+// because that section is exactly what the exchange has to agree with: the
+// bundle is about to record which provider proved the zone and which CA
+// issued the certificate, and passing the recorded value is what keeps the
+// proof and the record from being two independent choices.
 type Prover interface {
-	Prove(domain, dnsProvider, email string) (*acme.Certificate, error)
+	Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error)
 }
 
 // acmeProver is the production Prover: it runs a full ACME DNS-01 exchange
@@ -149,16 +155,17 @@ type Prover interface {
 // domain against the same provider.
 type acmeProver struct{}
 
-func (acmeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
+func (acmeProver) Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error) {
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate acme account key: %w", err)
 	}
 	return acme.Issue(acme.Config{
-		Domain:      domain,
-		Email:       email,
-		AccountKey:  accountKey,
-		DNSProvider: dnsProvider,
+		Domain:       domain,
+		Email:        acmeCfg.Email,
+		AccountKey:   accountKey,
+		DNSProvider:  acmeCfg.DNSProvider,
+		DirectoryURL: acmeCfg.DirectoryURL,
 	})
 }
 
@@ -201,6 +208,19 @@ type Params struct {
 	// ACMEEmail is the optional contact address registered on the ACME
 	// account Run creates to perform the proof.
 	ACMEEmail string
+	// ACMEDirectory is the ACME server to issue against: empty for Let's
+	// Encrypt production, acme.StagingShorthand for its staging environment,
+	// or any other ACME directory URL — an internal CA, for instance. Run
+	// resolves it to an absolute URL (acme.ResolveDirectoryURL) and writes
+	// that into the manifest, so every later issuance and renewal reaches
+	// the same CA. Rejected without a Domain, like the two fields above.
+	//
+	// Staging exists here so a first named deployment can be rehearsed
+	// without spending production's rate limits. The bundle it produces is a
+	// rehearsal bundle: the CA is frozen at init the way the domain and the
+	// image digests are, so graduating one to production means running init
+	// again (bundle.ACMEConfig.DirectoryURL).
+	ACMEDirectory string
 
 	// Keystore is the "keystore target": driver name plus its non-secret
 	// config, exactly as the manifest's DriverConfig.Keystore carries it.
@@ -303,6 +323,14 @@ func Run(ctx context.Context, job *events.Job, params Params) (b *bundle.Bundle,
 	if err := validateName(params); err != nil {
 		return fail(job, StepValidate, err)
 	}
+	// The ACME section the manifest will carry, resolved here so a
+	// malformed directory URL is refused on the operator's machine — before
+	// an exchange is spent — rather than surfacing as a failed issuance on a
+	// host.
+	acmeCfg, err := resolveACMEConfig(params, named)
+	if err != nil {
+		return fail(job, StepValidate, err)
+	}
 	if err := validateProject(params.Project); err != nil {
 		return fail(job, StepValidate, err)
 	}
@@ -365,7 +393,7 @@ func Run(ctx context.Context, job *events.Job, params Params) (b *bundle.Bundle,
 	job.Emit(StepResolveImages, events.StateSucceeded, fmt.Sprintf("resolved %d image(s)", len(images)))
 
 	job.Started(StepRenderCompose, "assembling the manifest and rendering Compose")
-	manifest := buildManifest(params, images, named)
+	manifest := buildManifest(params, images, acmeCfg)
 	compose, err := orchestrate.Render(manifest)
 	if err != nil {
 		return fail(job, StepRenderCompose, fmt.Errorf("initialize: %w", err))
@@ -380,7 +408,7 @@ func Run(ctx context.Context, job *events.Job, params Params) (b *bundle.Bundle,
 	var cert *acme.Certificate
 	if named {
 		job.Started(StepProveZoneControl, fmt.Sprintf("proving control of %s via ACME DNS-01", params.Domain))
-		cert, err = proverOrDefault(params.Prover).Prove(params.Domain, params.ACMEDNSProvider, params.ACMEEmail)
+		cert, err = proverOrDefault(params.Prover).Prove(params.Domain, acmeCfg)
 		if err != nil {
 			return fail(job, StepProveZoneControl, fmt.Errorf("initialize: prove control of %s: %w", params.Domain, err))
 		}
@@ -509,21 +537,11 @@ func announceIncomplete(job *events.Job, b *bundle.Bundle, err error, dir string
 // resolved image digests. Split out of Run so the manifest — the last
 // thing that can fail before key material is written — is assembled and
 // rendered while the keystore is still untouched.
-func buildManifest(params Params, images map[string]string, named bool) *bundle.Manifest {
-	// A nameless bundle's ACME section stays zero: nothing about it ever
-	// reaches ACME, and Manifest.Validate rejects a manifest whose domain
-	// and ACME section disagree.
-	acmeConfig := bundle.ACMEConfig{}
-	if named {
-		acmeConfig = bundle.ACMEConfig{
-			DNSProvider: params.ACMEDNSProvider,
-			Email:       params.ACMEEmail,
-		}
-	}
+func buildManifest(params Params, images map[string]string, acmeCfg bundle.ACMEConfig) *bundle.Manifest {
 	manifest := bundle.NewManifest(strings.TrimSpace(params.Domain), images, bundle.DriverConfig{
 		Keystore: params.Keystore,
 		Blob:     params.Blob,
-	}, acmeConfig)
+	}, acmeCfg)
 	// Written out even when it matches the default, so farrier.yaml shows
 	// the operator both that the colocated runner exists and how to turn it
 	// off (FORGE-005, spec.md "CI trust boundary").
@@ -659,7 +677,7 @@ func validateName(params Params) error {
 	provider := strings.TrimSpace(params.ACMEDNSProvider)
 
 	if domain == "" {
-		if provider != "" || strings.TrimSpace(params.ACMEEmail) != "" {
+		if provider != "" || strings.TrimSpace(params.ACMEEmail) != "" || strings.TrimSpace(params.ACMEDirectory) != "" {
 			return fmt.Errorf("initialize: acme dns-01 settings were given without a domain; pass a domain to prove its zone, or drop them for a nameless bundle")
 		}
 		return nil
@@ -674,6 +692,36 @@ func validateName(params Params) error {
 		return fmt.Errorf("initialize: acme dns-01 provider is required to prove control of %s", domain)
 	}
 	return nil
+}
+
+// resolveACMEConfig builds the ACME section this run's manifest will carry,
+// with the operator's ACME server choice resolved to an absolute directory
+// URL (acme.ResolveDirectoryURL).
+//
+// The URL is written even when it is the default, for the same reason the
+// git-over-SSH port and the web port are: it is a knob an operator should be
+// able to see in farrier.yaml, and here it is also the record of which CA
+// issued the instance's certificate — the thing every later renewal has to
+// agree with. Resolving it once, before anything is spent, is what keeps a
+// shorthand out of the manifest and a malformed URL out of an ACME exchange.
+//
+// A nameless bundle's section stays zero: nothing about it ever reaches
+// ACME, and Manifest.Validate rejects a manifest whose domain and ACME
+// section disagree. validateName has already refused ACME inputs without a
+// domain by the time this runs.
+func resolveACMEConfig(params Params, named bool) (bundle.ACMEConfig, error) {
+	if !named {
+		return bundle.ACMEConfig{}, nil
+	}
+	directory, err := acme.ResolveDirectoryURL(params.ACMEDirectory)
+	if err != nil {
+		return bundle.ACMEConfig{}, fmt.Errorf("initialize: %w", err)
+	}
+	return bundle.ACMEConfig{
+		DNSProvider:  strings.TrimSpace(params.ACMEDNSProvider),
+		Email:        strings.TrimSpace(params.ACMEEmail),
+		DirectoryURL: directory,
+	}, nil
 }
 
 // refuseExistingBundle implements INIT-004: a bundle directory that

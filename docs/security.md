@@ -44,6 +44,12 @@ An instance deployed without a domain has no certificate, so pull requests, revi
 
 **What to do about it:** keep nameless instances on a LAN, a VPN, or a tailnet. Attach a domain when the instance outlives the experiment: `farrier attach` is an in-place operation that loses nothing but clone URLs, and it reports the ones that changed.
 
+## A bundle initialized against a staging CA serves an untrusted certificate
+
+`init -acme-directory staging` issues from Let's Encrypt's staging environment, whose root no browser and no git client trusts. That is the point — staging exists so the named tier can be rehearsed without spending production's rate limits — but the instance it produces is a rehearsal, not a soft launch. The choice is frozen in the manifest the way the domain and the image digests are, so every later `up` renews against staging too; there is no flag that promotes the bundle later.
+
+**What to do about it:** treat a staging bundle as disposable. Rehearse with it, learn what breaks, then run `init` again without the flag for the instance the team will actually use. Check `acme.directoryUrl` in `farrier.yaml` if you are unsure which kind of bundle you are holding.
+
 ## The local API binds loopback
 
 The control API listens on `127.0.0.1` by default and exposes a verb for every operation, including destructive ones. It has no authentication of its own — the loopback bind is the boundary.

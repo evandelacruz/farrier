@@ -43,12 +43,17 @@ func (f *fakeResolver) Resolve(ctx context.Context, ref string) (string, error) 
 // one a real exchange would obtain — INIT-003 persists it as key material.
 type fakeProver struct {
 	calls []string
-	err   error
-	cert  *acme.Certificate
+	// acme records the ACME section each call was handed — the same one Run
+	// is about to write into the manifest, so a test can assert the proof
+	// and the record cannot disagree about the CA.
+	acme []bundle.ACMEConfig
+	err  error
+	cert *acme.Certificate
 }
 
-func (f *fakeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
+func (f *fakeProver) Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error) {
 	f.calls = append(f.calls, domain)
+	f.acme = append(f.acme, acmeCfg)
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -489,7 +494,10 @@ func TestRunPropagatesResolverError(t *testing.T) {
 // deterministic while still proving acmeProver wires domain/provider/email
 // through to acme.Issue correctly.
 func TestAcmeProverWiring(t *testing.T) {
-	_, err := acmeProver{}.Prove("forge.example.com", "not-a-real-provider", "ops@example.com")
+	_, err := acmeProver{}.Prove("forge.example.com", bundle.ACMEConfig{
+		DNSProvider: "not-a-real-provider",
+		Email:       "ops@example.com",
+	})
 	if err == nil {
 		t.Fatal("Prove: want error for an unrecognized DNS provider, got nil")
 	}
@@ -1198,5 +1206,115 @@ func TestRunInitializesIntoAnEmptyBundleDir(t *testing.T) {
 	}
 	if _, err := bundle.Load(BundleDir(params)); err != nil {
 		t.Fatalf("bundle.Load: %v", err)
+	}
+}
+
+// The ACME server is the operator's choice, resolved once at `init` and
+// written into the manifest — the shorthand expanded, so nothing downstream
+// has to interpret it, and the same value handed to the zone-control proof
+// that issued the certificate. `up` renews against what the manifest says
+// (deploy.configureTLS), so a value that was not recorded here would send a
+// bundle rehearsed against staging to production the next time its
+// certificate came due.
+func TestRunRecordsTheChosenACMEDirectory(t *testing.T) {
+	cases := []struct {
+		name  string
+		given string
+		want  string
+	}{
+		{"unset takes Let's Encrypt production", "", acme.ProductionDirectoryURL},
+		{"the shorthand expands to staging", acme.StagingShorthand, acme.StagingDirectoryURL},
+		{"an explicit URL is carried through unchanged",
+			"https://ca.internal.example.com/acme/acme/directory",
+			"https://ca.internal.example.com/acme/acme/directory"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prover := &fakeProver{}
+			params := validParams(t, &fakeResolver{})
+			params.ACMEDirectory = tc.given
+			params.Prover = prover
+
+			b, err := Run(context.Background(), events.NewJob(), params)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := b.Manifest.ACME.DirectoryURL; got != tc.want {
+				t.Errorf("manifest acme directory = %q, want %q", got, tc.want)
+			}
+			if len(prover.acme) != 1 {
+				t.Fatalf("prover called %d times, want 1", len(prover.acme))
+			}
+			if got := prover.acme[0].DirectoryURL; got != tc.want {
+				t.Errorf("proof issued against %q, want %q", got, tc.want)
+			}
+
+			// What the bundle on disk says is what every later command
+			// reads, so the assertion has to survive the write.
+			reloaded, err := bundle.Load(BundleDir(params))
+			if err != nil {
+				t.Fatalf("load written bundle: %v", err)
+			}
+			if got := reloaded.Manifest.ACME.DirectoryURL; got != tc.want {
+				t.Errorf("written manifest acme directory = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A malformed directory is refused at validate, before an ACME exchange is
+// spent and before any key material exists — the operator finds out on
+// their own machine, not from a failed issuance against a server that does
+// not answer.
+func TestRunRejectsAMalformedACMEDirectory(t *testing.T) {
+	prover := &fakeProver{}
+	params := validParams(t, &fakeResolver{})
+	params.ACMEDirectory = "acme-staging-v02.api.letsencrypt.org/directory"
+	params.Prover = prover
+
+	job := events.NewJob()
+	_, err := Run(context.Background(), job, params)
+	if err == nil {
+		t.Fatal("Run: want a refusal for a directory that is not a URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "acme-staging-v02.api.letsencrypt.org/directory") {
+		t.Errorf("refusal = %q, want it to name the value the operator gave", err)
+	}
+	if len(prover.calls) != 0 {
+		t.Error("a refused init still spent an ACME exchange")
+	}
+	exists, err := bundle.Exists(BundleDir(params))
+	if err != nil {
+		t.Fatalf("check for a written bundle: %v", err)
+	}
+	if exists {
+		t.Error("a refused init wrote a bundle")
+	}
+	assertJobFailed(t, job)
+}
+
+// A nameless bundle reaches no ACME server at all (INIT-005), so a CA
+// choice alongside no domain is refused rather than silently dropped — the
+// same treatment the DNS-01 provider and the contact address already get.
+func TestRunRejectsAnACMEDirectoryWithoutADomain(t *testing.T) {
+	params := namelessParams(t, &fakeResolver{})
+	params.ACMEDirectory = acme.StagingShorthand
+
+	job := events.NewJob()
+	if _, err := Run(context.Background(), job, params); err == nil {
+		t.Fatal("Run: want a refusal for acme settings with no domain, got nil")
+	}
+	assertJobFailed(t, job)
+}
+
+// A nameless bundle's ACME section stays empty end to end, CA included.
+func TestNamelessRunRecordsNoACMEDirectory(t *testing.T) {
+	params := namelessParams(t, &fakeResolver{})
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if b.Manifest.ACME.DirectoryURL != "" {
+		t.Errorf("nameless manifest carries an acme directory %q", b.Manifest.ACME.DirectoryURL)
 	}
 }

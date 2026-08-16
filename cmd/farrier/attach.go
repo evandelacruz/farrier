@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/attach"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
@@ -28,6 +29,7 @@ func runAttach(args []string) int {
 	domain := fs.String("domain", "", "the FQDN to attach (required)")
 	dnsProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name used to prove the zone (required)")
 	email := fs.String("acme-email", "", "contact address registered on the ACME account")
+	acmeDirectory := fs.String("acme-directory", "", "ACME directory URL to issue this instance's certificate against (default: Let's Encrypt production); pass "+acme.StagingShorthand+" for Let's Encrypt's staging environment, or a URL for an internal ACME CA. The choice is recorded in the bundle and every later renewal uses it")
 	address := fs.String("address", "", "the address the instance is served at today, so the clone URLs it is changing from can be reported (required)")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file (default: ~/.ssh/known_hosts)")
@@ -69,6 +71,7 @@ func runAttach(args []string) int {
 			Domain:          *domain,
 			ACMEDNSProvider: *dnsProvider,
 			ACMEEmail:       *email,
+			ACMEDirectory:   *acmeDirectory,
 			Address:         *address,
 		})
 		return err

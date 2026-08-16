@@ -116,12 +116,16 @@ func (f *fakeHost) wrote(path string) (string, bool) {
 // was asked to prove and handing back a self-signed certificate for it.
 type fakeProver struct {
 	calls []string
-	err   error
-	cert  *acme.Certificate
+	// acme records the ACME section each call was handed, so a test can
+	// assert the certificate is proven against the CA the manifest records.
+	acme []bundle.ACMEConfig
+	err  error
+	cert *acme.Certificate
 }
 
-func (p *fakeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
-	p.calls = append(p.calls, fmt.Sprintf("%s|%s|%s", domain, dnsProvider, email))
+func (p *fakeProver) Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error) {
+	p.calls = append(p.calls, fmt.Sprintf("%s|%s|%s", domain, acmeCfg.DNSProvider, acmeCfg.Email))
+	p.acme = append(p.acme, acmeCfg)
 	if p.err != nil {
 		return nil, p.err
 	}
@@ -723,6 +727,7 @@ func TestAttachRefusesBadInput(t *testing.T) {
 		{"no domain", func(o *Options) { o.Domain = "" }, "domain is required"},
 		{"not an fqdn", func(o *Options) { o.Domain = "forge" }, "not a valid DNS name"},
 		{"no dns provider", func(o *Options) { o.ACMEDNSProvider = "" }, "dns-01 provider is required"},
+		{"acme directory that is not a URL", func(o *Options) { o.ACMEDirectory = "letsencrypt.org/directory" }, "must be an http or https URL"},
 		{"no address", func(o *Options) { o.Address = "" }, "currently served at is required"},
 		{"address with a scheme", func(o *Options) { o.Address = "http://box" }, "carries a scheme"},
 		{"no remote dir", func(o *Options) { o.RemoteDir = "" }, "remote directory is required"},
@@ -897,6 +902,56 @@ func TestAttachAlwaysTerminatesTheJob(t *testing.T) {
 			}
 			if final != want {
 				t.Errorf("terminal event state = %q, want %q", final, want)
+			}
+		})
+	}
+}
+
+// A nameless bundle carries no ACME section at all, so naming one is where
+// it states which CA issues its certificate. The choice is resolved to an
+// absolute URL, proven against, and written into the manifest — `up` renews
+// against what the manifest says, so an instance named against staging must
+// stay on staging until the operator says otherwise.
+func TestAttachRecordsTheChosenACMEDirectory(t *testing.T) {
+	cases := []struct {
+		name  string
+		given string
+		want  string
+	}{
+		{"unset takes Let's Encrypt production", "", acme.ProductionDirectoryURL},
+		{"the shorthand expands to staging", acme.StagingShorthand, acme.StagingDirectoryURL},
+		{"an explicit URL is carried through unchanged",
+			"https://ca.internal.example.com/acme/acme/directory",
+			"https://ca.internal.example.com/acme/acme/directory"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := namelessBundleDir(t)
+			prover := &fakeProver{}
+			opts := testOptions(t, dir, newFakeHost())
+			opts.Prover = prover
+			opts.ACMEDirectory = tc.given
+
+			named, err := Attach(context.Background(), events.NewJob(), opts)
+			if err != nil {
+				t.Fatalf("Attach: %v", err)
+			}
+			if got := named.Manifest.ACME.DirectoryURL; got != tc.want {
+				t.Errorf("manifest acme directory = %q, want %q", got, tc.want)
+			}
+			if len(prover.acme) != 1 {
+				t.Fatalf("prover called %d times, want 1", len(prover.acme))
+			}
+			if got := prover.acme[0].DirectoryURL; got != tc.want {
+				t.Errorf("proof issued against %q, want %q", got, tc.want)
+			}
+
+			reloaded, err := bundle.Load(dir)
+			if err != nil {
+				t.Fatalf("reload bundle: %v", err)
+			}
+			if got := reloaded.Manifest.ACME.DirectoryURL; got != tc.want {
+				t.Errorf("saved manifest acme directory = %q, want %q", got, tc.want)
 			}
 		})
 	}

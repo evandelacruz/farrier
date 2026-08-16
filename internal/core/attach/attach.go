@@ -106,7 +106,7 @@ type Host = deploy.Host
 // declared as an interface so Attach is testable without a real ACME server
 // or DNS provider.
 type Prover interface {
-	Prove(domain, dnsProvider, email string) (*acme.Certificate, error)
+	Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error)
 }
 
 // acmeProver is the production Prover: a full ACME DNS-01 exchange through
@@ -121,16 +121,17 @@ type Prover interface {
 // it obtains is what is kept.
 type acmeProver struct{}
 
-func (acmeProver) Prove(domain, dnsProvider, email string) (*acme.Certificate, error) {
+func (acmeProver) Prove(domain string, acmeCfg bundle.ACMEConfig) (*acme.Certificate, error) {
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate acme account key: %w", err)
 	}
 	return acme.Issue(acme.Config{
-		Domain:      domain,
-		Email:       email,
-		AccountKey:  accountKey,
-		DNSProvider: dnsProvider,
+		Domain:       domain,
+		Email:        acmeCfg.Email,
+		AccountKey:   accountKey,
+		DNSProvider:  acmeCfg.DNSProvider,
+		DirectoryURL: acmeCfg.DirectoryURL,
 	})
 }
 
@@ -185,6 +186,19 @@ type Options struct {
 	// account, and is recorded in the manifest alongside the provider.
 	ACMEEmail string
 
+	// ACMEDirectory is the ACME server the certificate is issued against:
+	// empty for Let's Encrypt production, acme.StagingShorthand for its
+	// staging environment, or any other ACME directory URL. It is resolved
+	// to an absolute URL and recorded in the manifest, so renewal reaches
+	// the CA that issued (bundle.ACMEConfig.DirectoryURL).
+	//
+	// A nameless bundle carries no ACME section at all (INIT-005), so this
+	// is where a bundle that was initialized without a name states its CA —
+	// the same choice `init` offers a bundle that is named from the start,
+	// and for the same reason: a first named deployment is worth rehearsing
+	// against staging before it spends production's rate limits.
+	ACMEDirectory string
+
 	// Address is the address the instance is currently served at — the one
 	// the operator gave `up` (UP-006). Required, and used for exactly one
 	// thing: the "was" half of the clone-URL report.
@@ -236,7 +250,7 @@ func attach(ctx context.Context, job *events.Job, opts Options) (*bundle.Bundle,
 	job.Emit(StepValidate, events.StateSucceeded, fmt.Sprintf("nameless bundle at %s is ready to be named %s", opts.BundleDir, checked.domain))
 
 	job.Started(StepProveZoneControl, fmt.Sprintf("proving control of %s via ACME DNS-01", checked.domain))
-	cert, err := proverOrDefault(opts.Prover).Prove(checked.domain, checked.dnsProvider, strings.TrimSpace(opts.ACMEEmail))
+	cert, err := proverOrDefault(opts.Prover).Prove(checked.domain, checked.acme)
 	if err != nil {
 		err = fmt.Errorf("attach: prove control of %s: %w", checked.domain, err)
 		job.Emit(StepProveZoneControl, events.StateFailed, err.Error())
@@ -257,10 +271,7 @@ func attach(ctx context.Context, job *events.Job, opts Options) (*bundle.Bundle,
 	job.Emit(StepPersistCertificate, events.StateSucceeded, fmt.Sprintf("%s and %s stored through the %s keystore driver", state.KeyTLSCertificate, state.KeyTLSPrivateKey, opts.Bundle.Manifest.Drivers.Keystore.Driver))
 
 	job.Started(StepNameBundle, fmt.Sprintf("writing %s into the manifest and re-rendering compose", checked.domain))
-	named, err := namedBundle(opts.Bundle, checked.domain, bundle.ACMEConfig{
-		DNSProvider: checked.dnsProvider,
-		Email:       strings.TrimSpace(opts.ACMEEmail),
-	})
+	named, err := namedBundle(opts.Bundle, checked.domain, checked.acme)
 	if err != nil {
 		job.Emit(StepNameBundle, events.StateFailed, err.Error())
 		return nil, err
@@ -280,14 +291,20 @@ func attach(ctx context.Context, job *events.Job, opts Options) (*bundle.Bundle,
 	return named, nil
 }
 
-// checkedOptions is what validate resolved: the trimmed domain and DNS-01
-// provider, the address spelled the way `up` spelled it, and the keystore
-// driver the certificate is persisted through.
+// checkedOptions is what validate resolved: the trimmed domain, the ACME
+// section the named manifest will carry — DNS-01 provider, contact address,
+// and the CA's directory URL resolved from the operator's choice — the
+// address spelled the way `up` spelled it, and the keystore driver the
+// certificate is persisted through.
+//
+// One ACME section is both proven through and written down, rather than two
+// values assembled separately: the certificate this operation issues has to
+// be renewable by what the manifest says renews it.
 type checkedOptions struct {
-	domain      string
-	dnsProvider string
-	address     string
-	keystore    keystore.Driver
+	domain   string
+	acme     bundle.ACMEConfig
+	address  string
+	keystore keystore.Driver
 }
 
 // validate refuses every input Attach cannot act on, before anything is
@@ -326,6 +343,13 @@ func validate(ctx context.Context, opts Options) (checkedOptions, error) {
 	if provider == "" {
 		return checked, fmt.Errorf("attach: acme dns-01 provider is required to prove control of %s and to renew its certificate later", domain)
 	}
+	// Resolved here, with the other refusals, so a malformed directory URL
+	// costs nothing: the alternative is an ACME exchange that fails on the
+	// way out to a server that does not exist.
+	directory, err := acme.ResolveDirectoryURL(opts.ACMEDirectory)
+	if err != nil {
+		return checked, fmt.Errorf("attach: %w", err)
+	}
 
 	if strings.TrimSpace(opts.Address) == "" {
 		return checked, errors.New("attach: the address this instance is currently served at is required, so the clone URLs it is changing from can be reported")
@@ -362,7 +386,16 @@ func validate(ctx context.Context, opts Options) (checkedOptions, error) {
 		return checked, err
 	}
 
-	checked = checkedOptions{domain: domain, dnsProvider: provider, address: address, keystore: driver}
+	checked = checkedOptions{
+		domain: domain,
+		acme: bundle.ACMEConfig{
+			DNSProvider:  provider,
+			Email:        strings.TrimSpace(opts.ACMEEmail),
+			DirectoryURL: directory,
+		},
+		address:  address,
+		keystore: driver,
+	}
 	return checked, nil
 }
 

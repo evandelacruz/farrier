@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/evandelacruz/farrier/internal/core/acme"
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
 	"github.com/evandelacruz/farrier/internal/core/initialize"
@@ -46,6 +47,7 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 	blobDriver := fs.String("blob-driver", "", "blob driver name, e.g. local or s3 (required)")
 	acmeDNSProvider := fs.String("acme-dns-provider", "", "lego DNS-01 provider name for zone-control proof, e.g. cloudflare or rfc2136 (required with -domain); reads that provider's credentials from the environment")
 	acmeEmail := fs.String("acme-email", "", "contact email for the ACME account used to prove zone control")
+	acmeDirectory := fs.String("acme-directory", "", "ACME directory URL to issue this bundle's certificates against (default: Let's Encrypt production); pass "+acme.StagingShorthand+" for Let's Encrypt's staging environment to rehearse a named deployment without spending production's rate limits, or a URL for an internal ACME CA. The choice is recorded in the bundle and every later renewal uses it, so a staging bundle is a rehearsal bundle")
 	gitSSHPort := fs.Int("git-ssh-port", bundle.DefaultGitSSHPort, "host port the instance serves git over SSH on; 22 gives bare git@domain:owner/repo.git clone URLs, but the host's own sshd usually owns it")
 	webPort := fs.Int("web-port", 0, "host port the instance's web UI is published on (default: 443 with -domain, 8222 without); move it if the host already serves something there")
 	publicWebPort := fs.Int("public-web-port", 0, "port clients actually connect on, when something on the host holds the standard port and forwards to Farrier; that forwarder must pass TCP through so Farrier still terminates TLS")
@@ -101,6 +103,7 @@ func parseInitFlags(args []string) (initialize.Params, int) {
 		Blob:            bundle.DriverRef{Driver: *blobDriver, Config: blobConfig.asAny()},
 		ACMEDNSProvider: *acmeDNSProvider,
 		ACMEEmail:       *acmeEmail,
+		ACMEDirectory:   *acmeDirectory,
 		Images:          images.asStrings(),
 		ColocatedRunner: colocatedRunner,
 		GitSSHPort:      *gitSSHPort,

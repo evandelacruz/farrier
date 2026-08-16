@@ -43,8 +43,11 @@ type Config struct {
 	// credentials from the process environment; the caller sets them,
 	// resolved through the keystore, before calling Issue.
 	DNSProvider string
-	// DirectoryURL is the ACME server's directory endpoint. Defaults to
-	// Let's Encrypt production (lego.LEDirectoryProduction).
+	// DirectoryURL is the ACME server's directory endpoint — the operator's
+	// choice of CA, resolved through ResolveDirectoryURL and carried in the
+	// bundle manifest so that whatever issued a certificate is also what
+	// renews it. Empty defaults to ProductionDirectoryURL, which is what a
+	// manifest written before the field existed carries.
 	DirectoryURL string
 
 	// httpClient overrides the HTTP client lego uses to reach the ACME
@@ -129,14 +132,20 @@ func issue(cfg Config, provider challenge.Provider, opts ...dns01.ChallengeOptio
 	return newCertificate(res)
 }
 
-func newClient(cfg Config) (*lego.Client, error) {
-	dirURL := cfg.DirectoryURL
-	if dirURL == "" {
-		dirURL = lego.LEDirectoryProduction
+// directoryURL is the ACME server this config reaches: the caller's own,
+// or Let's Encrypt production when it names none. Empty is what a manifest
+// written before the bundle recorded a CA carries, so the default lives
+// here, in one place, rather than in each caller that builds a Config.
+func (c Config) directoryURL() string {
+	if url := strings.TrimSpace(c.DirectoryURL); url != "" {
+		return url
 	}
+	return ProductionDirectoryURL
+}
 
+func newClient(cfg Config) (*lego.Client, error) {
 	legoCfg := lego.NewConfig(&account{email: cfg.Email, key: cfg.AccountKey})
-	legoCfg.CADirURL = dirURL
+	legoCfg.CADirURL = cfg.directoryURL()
 	if cfg.httpClient != nil {
 		legoCfg.HTTPClient = cfg.httpClient
 	}
