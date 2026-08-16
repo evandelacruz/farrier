@@ -111,6 +111,8 @@ The thing Farrier hands you is a forge for one project, and the project folder i
 
 The first push is part of standing it up: `publish` creates the repository on the instance from the folder, pushes its existing history, and sets `origin` to the instance's SSH URL. It refuses rather than overwrites — a folder with no commits, a folder that already has that remote, and a repository already on the instance each fail with nothing changed. `import` (below) remains the on-ramp for a project that already lives on GitHub or GitLab.
 
+A fresh instance has no SSH key on the account, and a push to an account with no key is rejected — so `publish` registers the operator's own public key when the account has none, rather than failing the one command the quick start says takes no flags. It is a fallback, not a policy: an account that already has a key is already publishable and is left untouched, the operator can name a different key, and the file that was registered is reported in the run's output, because uploading a key to their account is a change they are entitled to see.
+
 ### Instances without a name
 
 Requiring a domain before anything works puts the cost first: own a name, hold a DNS API token or paste a TXT record and wait for it to propagate, and only then get a forge. For someone trying the thing for the first time, that is where they stop.

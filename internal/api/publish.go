@@ -22,6 +22,12 @@ import (
 // defaulting to the host of Target, and is rejected for a named bundle,
 // whose domain already answers it.
 //
+// PublicKey is the SSH public key file to register with the instance
+// account. Absent falls back to the operator's own key the way the CLI's
+// -ssh-key does, and only when the account has no key registered; the
+// server runs on the operator's machine, so "the operator's own key" means
+// the same file to both frontends.
+//
 // The instance token is deliberately not a request field: like the CLI, it
 // comes from FARRIER_TARGET_TOKEN in the server process's own environment,
 // never the wire.
