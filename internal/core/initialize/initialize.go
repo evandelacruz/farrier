@@ -547,6 +547,13 @@ func buildManifest(params Params, images map[string]string, acmeCfg bundle.ACMEC
 	// off (FORGE-005, spec.md "CI trust boundary").
 	colocatedRunner := params.ColocatedRunner == nil || *params.ColocatedRunner
 	manifest.Actions.ColocatedRunner = &colocatedRunner
+	// And the image those runner's jobs run in, for the same reason: it is
+	// the knob an operator reaches for when a ported workflow expects
+	// GitHub's preinstalled toolbox, and nothing else would tell them it
+	// exists. Unlike Images, it is not resolved to a digest and not frozen —
+	// it is what future jobs run in, not what this instance is — so an
+	// operator edits it in place and the next `up` uses it.
+	manifest.Actions.JobImage = bundle.DefaultActionsJobImage
 	// Same reason: written out even at its default so farrier.yaml shows
 	// the operator which port clients reach git over SSH on, and that it is
 	// theirs to change (UP-005, spec.md "Reaching the forge").

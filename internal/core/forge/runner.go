@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/evandelacruz/farrier/internal/core/events"
 )
 
@@ -76,13 +78,20 @@ const RunnerSecretFilename = "secret"
 // RunnerLabelNames for why registration declares the same set.
 const RunnerConfigFilename = "config.yaml"
 
-// RunnerJobImage is the default container image behind each colocated
-// runner label. Both docker and ubuntu-latest point here so a workflow
-// written for GitHub's runs-on: ubuntu-latest schedules on a fresh
-// instance without rewriting the file. It is a plain Node image, not
-// GitHub's ubuntu-latest VM: workflows that assume that toolbox still
-// need to install what they use (docs/using.md).
-const RunnerJobImage = "docker.io/library/node:22-bookworm"
+// RunnerToolCacheDir is the directory job containers find the runner tool
+// cache at. It is the path the `setup-*` actions read out of
+// RUNNER_TOOL_CACHE, and /opt/hostedtoolcache is that variable's
+// conventional value — the one GitHub's hosted runners ship preloaded, and
+// the one those actions fall back to when nothing sets it.
+//
+// It matters because actions/setup-node, setup-python, setup-go, and
+// setup-java do not look at what is already on PATH. They look here, and
+// download the version they were asked for when it is absent. A job
+// container is fresh every run, so with nothing mounted at this path every
+// run re-downloads a toolchain — minutes per job, on every job, for the
+// life of the instance. Mounting one host directory here is what turns that
+// into a first-run cost (deploy.RunnerToolCachePath).
+const RunnerToolCacheDir = "/opt/hostedtoolcache"
 
 // RunnerLabelNames are the runs-on values the colocated runner answers to.
 // docker is Forgejo's conventional label; ubuntu-latest is the GitHub
@@ -163,23 +172,80 @@ func ValidateRunnerSecret(secret string) error {
 	return nil
 }
 
+// runnerConfigFile is the subset of the forgejo-runner configuration file
+// Farrier writes. The field names and YAML keys are the runner's own
+// (code.forgejo.org/forgejo/runner, internal/pkg/config): `runner.labels`,
+// `container.options`, `container.valid_volumes`. Marshalling a struct
+// rather than printing lines is what keeps an operator-supplied job image
+// or remote directory from having to be escaped by hand into valid YAML.
+//
+// Container is a pointer so a configuration with nothing to mount omits the
+// section entirely rather than writing an empty one.
+type runnerConfigFile struct {
+	Runner    runnerConfigRunner     `yaml:"runner"`
+	Container *runnerConfigContainer `yaml:"container,omitempty"`
+}
+
+type runnerConfigRunner struct {
+	Labels []string `yaml:"labels"`
+}
+
+type runnerConfigContainer struct {
+	Options      string   `yaml:"options"`
+	ValidVolumes []string `yaml:"valid_volumes"`
+}
+
 // RenderRunnerConfig renders the colocated runner's configuration file
 // (FORGE-005): the labels it declares when it connects to Forgejo, each
-// mapped to the shared job-container image.
+// mapped to jobImage, and the tool cache every job container mounts.
 //
 // Labels are runner-side configuration. Forgejo updates its view of them
 // every time the runner establishes a connection, so shipping this file
 // and pointing the daemon at it is what makes a fresh `up` answer
 // runs-on: ubuntu-latest without operator action. The file carries no
 // secrets — the registration secret stays in RunnerSecretFilename.
-func RenderRunnerConfig() []byte {
+//
+// toolCacheHostPath is the tool cache's directory **on the host**, not
+// inside the runner container. The runner starts job containers on the
+// host's Docker daemon (DockerHostValue), so the daemon resolves this
+// source path in the host's own filesystem — the runner's view of the same
+// directory, under RunnerDataDir, means nothing to it. Empty renders no
+// container section at all, which is the shape a caller with no cache to
+// mount gets rather than a half-written mount.
+//
+// Two keys are needed, not one. `container.options` is the mount; the
+// runner also sanitizes every job container's binds against
+// `container.valid_volumes`, a glob allowlist it always applies, so a
+// source missing from that list is dropped with a warning in the job log
+// and the job runs on with no cache and no failure. Both are set from the
+// same string so they cannot disagree.
+func RenderRunnerConfig(jobImage, toolCacheHostPath string) []byte {
+	config := runnerConfigFile{}
+	for _, name := range RunnerLabelNames {
+		config.Runner.Labels = append(config.Runner.Labels, fmt.Sprintf("%s:docker://%s", name, jobImage))
+	}
+	if strings.TrimSpace(toolCacheHostPath) != "" {
+		config.Container = &runnerConfigContainer{
+			// Shell-quoted: the runner splits this string with POSIX
+			// shell quoting before handing it to Docker's own flag
+			// parser, and the host path descends from the operator's
+			// remote directory, which may carry a space.
+			Options:      "--volume " + quote(toolCacheHostPath+":"+RunnerToolCacheDir),
+			ValidVolumes: []string{toolCacheHostPath},
+		}
+	}
+
+	body, err := yaml.Marshal(config)
+	if err != nil {
+		// Unreachable: every field is a string or a slice of strings.
+		// Panicking beats returning a second value every caller would
+		// have to invent an error path for.
+		panic(fmt.Sprintf("forge: render runner config: %v", err))
+	}
+
 	var b strings.Builder
 	b.WriteString("# Generated by Farrier. Labels are how workflows find this runner.\n")
-	b.WriteString("runner:\n")
-	b.WriteString("  labels:\n")
-	for _, name := range RunnerLabelNames {
-		fmt.Fprintf(&b, "    - %s:docker://%s\n", name, RunnerJobImage)
-	}
+	b.Write(body)
 	return []byte(b.String())
 }
 

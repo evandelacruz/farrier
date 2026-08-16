@@ -1,11 +1,14 @@
 package forge
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/evandelacruz/farrier/internal/core/bundle"
 	"github.com/evandelacruz/farrier/internal/core/events"
@@ -100,21 +103,132 @@ func TestRunnerCommandDerivesCredentialsFromTheMountedSecret(t *testing.T) {
 	}
 }
 
+// testJobImage and testToolCache stand in for the manifest's job image and
+// the host tool cache path in this file's rendering tests.
+const (
+	testJobImage  = "docker.io/library/node:22-bookworm"
+	testToolCache = "/opt/farrier/runner/toolcache"
+)
+
+// decodedRunnerConfig is the shape of the file Farrier writes, decoded back
+// with the same keys forgejo-runner reads it under.
+type decodedRunnerConfig struct {
+	Runner struct {
+		Labels []string `yaml:"labels"`
+	} `yaml:"runner"`
+	Container *struct {
+		Options      string   `yaml:"options"`
+		ValidVolumes []string `yaml:"valid_volumes"`
+	} `yaml:"container"`
+}
+
+func decodeRunnerConfig(t *testing.T, raw []byte) decodedRunnerConfig {
+	t.Helper()
+	var got decodedRunnerConfig
+	if err := yaml.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("rendered config is not YAML: %v\n%s", err, raw)
+	}
+	return got
+}
+
 func TestRenderRunnerConfigDeclaresDockerAndUbuntuLatest(t *testing.T) {
-	got := string(RenderRunnerConfig())
-	for _, want := range []string{
-		"runner:",
-		"labels:",
-		"docker:docker://" + RunnerJobImage,
-		"ubuntu-latest:docker://" + RunnerJobImage,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("config missing %q:\n%s", want, got)
+	got := decodeRunnerConfig(t, RenderRunnerConfig(testJobImage, testToolCache))
+
+	want := []string{
+		"docker:docker://" + testJobImage,
+		"ubuntu-latest:docker://" + testJobImage,
+	}
+	if len(got.Runner.Labels) != len(RunnerLabelNames) {
+		t.Fatalf("config declares %d labels, want %d: %v", len(got.Runner.Labels), len(RunnerLabelNames), got.Runner.Labels)
+	}
+	for i, label := range want {
+		if got.Runner.Labels[i] != label {
+			t.Errorf("label %d = %q, want %q", i, got.Runner.Labels[i], label)
 		}
 	}
-	if strings.Count(got, "docker://") != len(RunnerLabelNames) {
-		t.Errorf("config has %d image mappings, want %d:\n%s",
-			strings.Count(got, "docker://"), len(RunnerLabelNames), got)
+}
+
+// The job image is the manifest's, not a constant this package holds: an
+// operator who points the bundle at a fatter image gets it behind every
+// label, not just some.
+func TestRenderRunnerConfigUsesTheSuppliedJobImage(t *testing.T) {
+	const image = "ghcr.io/catthehacker/ubuntu:act-22.04"
+	got := decodeRunnerConfig(t, RenderRunnerConfig(image, testToolCache))
+
+	for _, label := range got.Runner.Labels {
+		if !strings.HasSuffix(label, ":docker://"+image) {
+			t.Errorf("label %q does not point at the supplied image %q", label, image)
+		}
+	}
+}
+
+// The mount source is the path as the *host* sees it. The runner starts job
+// containers on the host's Docker daemon, so the daemon resolves this in the
+// host filesystem; the runner's own view of the same directory, under
+// RunnerDataDir, would mount something else entirely or nothing at all.
+func TestRenderRunnerConfigMountsTheToolCacheByHostPath(t *testing.T) {
+	got := decodeRunnerConfig(t, RenderRunnerConfig(testJobImage, testToolCache))
+
+	if got.Container == nil {
+		t.Fatal("config declares no container section, so no tool cache is mounted")
+	}
+	if want := "--volume '" + testToolCache + ":" + RunnerToolCacheDir + "'"; got.Container.Options != want {
+		t.Errorf("container options = %q, want %q", got.Container.Options, want)
+	}
+	if strings.Contains(got.Container.Options, RunnerDataDir+"/") {
+		t.Errorf("container options use the runner's own view of the directory, not the host's: %q", got.Container.Options)
+	}
+	// The runner sanitizes every job container's binds against this
+	// allowlist and always applies it, so a source missing from it is
+	// dropped with a warning and the job runs on with no cache.
+	if len(got.Container.ValidVolumes) != 1 || got.Container.ValidVolumes[0] != testToolCache {
+		t.Errorf("valid_volumes = %v, want exactly [%q]", got.Container.ValidVolumes, testToolCache)
+	}
+}
+
+// A host path with a space in it — the operator picks the remote directory —
+// survives both the YAML file and the POSIX-shell splitting the runner
+// applies to the options string before Docker's flag parser sees it.
+func TestRenderRunnerConfigQuotesAToolCachePathWithASpace(t *testing.T) {
+	const spaced = "/opt/my forge/runner/toolcache"
+	got := decodeRunnerConfig(t, RenderRunnerConfig(testJobImage, spaced))
+
+	if got.Container == nil {
+		t.Fatal("config declares no container section")
+	}
+	if want := "--volume '" + spaced + ":" + RunnerToolCacheDir + "'"; got.Container.Options != want {
+		t.Errorf("container options = %q, want %q", got.Container.Options, want)
+	}
+	if got.Container.ValidVolumes[0] != spaced {
+		t.Errorf("valid_volumes = %v, want the unquoted path %q", got.Container.ValidVolumes, spaced)
+	}
+}
+
+// No cache path, no container section — rather than a half-written mount or
+// an empty stanza the runner has to interpret.
+func TestRenderRunnerConfigOmitsTheContainerSectionWithNoToolCache(t *testing.T) {
+	raw := RenderRunnerConfig(testJobImage, "")
+	got := decodeRunnerConfig(t, raw)
+
+	if got.Container != nil {
+		t.Errorf("config declares a container section with no tool cache to mount:\n%s", raw)
+	}
+	if strings.Contains(string(raw), RunnerToolCacheDir) {
+		t.Errorf("config names the tool cache mount point with nothing to mount:\n%s", raw)
+	}
+}
+
+// The file is regenerated on every `up` and compared against what the host
+// already has, so identical inputs must render identical bytes (UP-003).
+func TestRenderRunnerConfigIsStable(t *testing.T) {
+	first := RenderRunnerConfig(testJobImage, testToolCache)
+	for i := 0; i < 5; i++ {
+		if got := RenderRunnerConfig(testJobImage, testToolCache); !bytes.Equal(got, first) {
+			t.Fatalf("render %d differs:\n%s\nwant\n%s", i, got, first)
+		}
+	}
+	if !strings.HasPrefix(string(first), "# Generated by Farrier.") {
+		t.Errorf("config does not say who generated it:\n%s", first)
 	}
 }
 

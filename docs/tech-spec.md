@@ -114,7 +114,7 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
                            <value>` lines, not mounted
 ```
 
-Two records sit beside the state rather than inside it, because they describe the deployment rather than the forge:
+Three things sit beside the state rather than inside it, because they describe the deployment rather than the forge:
 
 ```
 <RemoteDir>/compose        the rendered Compose files this deployment was
@@ -123,7 +123,13 @@ Two records sit beside the state rather than inside it, because they describe th
 <RemoteDir>/compose-project
                            the Docker Compose project this deployment's
                            containers belong to; one line, written once
+<RemoteDir>/runner         the colocated runner's data directory, mounted
+                           into that container: its registration secret
+                           (0600), the config declaring its labels, the
+                           credentials it derives, and `toolcache/`
 ```
+
+`runner/toolcache` is the one directory here a *job* container touches: it mounts at `/opt/hostedtoolcache`, the path the `setup-*` actions read, so a toolchain downloaded by one job is found by the next. Two properties are load-bearing. It is mounted by its **host** path, because the runner starts job containers on the host's Docker daemon and the daemon resolves the source in the host's own filesystem — the runner's view of the same directory, under `/data`, names nothing there. And it sits outside `state/`, so no exporter captures it: it is rebuildable from the network and grows without bound, and a snapshot is for what cannot be rebuilt.
 
 `compose-project` is what keeps two deployments on one host apart. Compose resolves a project's containers by the project name and by nothing else — not by the directory it runs in, and not by the file list it is given — so a single name shared by every deployment made every deployment on a host one project, and `docker compose down --remove-orphans` from any of them a teardown of all of them. A drill on the machine hosting the live instance removed the live instance.
 

@@ -735,6 +735,27 @@ func TestRunPinsARunnerAndRecordsTheColocatedChoice(t *testing.T) {
 	}
 }
 
+// The job image is written out at its default, the same way the git-SSH and
+// web ports are: farrier.yaml is where an operator discovers the knob, and
+// nothing else would tell them a fatter image is an option. It is written
+// as a tag rather than resolved to a digest — it is what future jobs run in,
+// not what this instance is, so it stays editable after init.
+func TestRunRecordsTheJobImageUnpinned(t *testing.T) {
+	params := validParams(t, &fakeResolver{})
+
+	b, err := Run(context.Background(), events.NewJob(), params)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if b.Manifest.Actions.JobImage != bundle.DefaultActionsJobImage {
+		t.Errorf("manifest job image = %q, want %q", b.Manifest.Actions.JobImage, bundle.DefaultActionsJobImage)
+	}
+	if strings.Contains(b.Manifest.Actions.JobImage, "@sha256:") {
+		t.Errorf("job image %q was frozen to a digest; it is meant to stay editable", b.Manifest.Actions.JobImage)
+	}
+}
+
 func TestRunHonorsAColocatedRunnerOptOut(t *testing.T) {
 	params := validParams(t, &fakeResolver{})
 	disabled := false
