@@ -72,7 +72,8 @@ const RunnerSecretFilename = "secret"
 // the runner's configuration file. Farrier ships it so the colocated runner
 // declares its labels on every connect — Forgejo takes labels from the
 // runner, not the other way around — rather than leaving the image's empty
-// default and waiting forever for a matching job (FORGE-005).
+// default and waiting forever for a matching job (FORGE-005). See
+// RunnerLabelNames for why registration declares the same set.
 const RunnerConfigFilename = "config.yaml"
 
 // RunnerJobImage is the default container image behind each colocated
@@ -87,6 +88,24 @@ const RunnerJobImage = "docker.io/library/node:22-bookworm"
 // docker is Forgejo's conventional label; ubuntu-latest is the GitHub
 // habit, aliased onto the same container image so existing workflows
 // land.
+//
+// Two places declare these, and both are load-bearing — deleting either
+// one leaves a real gap:
+//
+//   - RenderRunnerConfig writes them into the runner's own configuration
+//     file, and the daemon declares them to Forgejo on every connect.
+//     This is the authoritative copy: Forgejo overwrites the runner's
+//     labels with whatever the daemon declares, from the first connect
+//     onward, so the config file is what actually makes a job schedule.
+//   - registerRunnerCommand passes them to `forgejo-cli actions register`,
+//     which writes them onto the runner row at registration — before the
+//     daemon has connected at all. Without it, the row Forgejo creates
+//     carries a single empty label, and an operator looking at the admin
+//     runner list in the window before the first connect sees a runner
+//     that answers to nothing. That unreadable state is the symptom this
+//     whole mechanism exists to end, so it is worth closing too.
+//
+// They cannot drift: both read this slice.
 var RunnerLabelNames = []string{"docker", "ubuntu-latest"}
 
 // DockerSocketPath is the host's Docker socket, mounted into the runner so
@@ -181,9 +200,15 @@ func RenderRunnerConfig() []byte {
 // stop signal directly. Nothing in the script waits for the instance: the
 // daemon retries its connection, and the service's restart policy covers the
 // window between `docker compose up -d` starting this container and
-// RegisterRunner creating its registration. Both create-runner-file and
-// daemon take -c so labels come from the shipped config on every connect
-// rather than from an empty default.
+// RegisterRunner creating its registration.
+//
+// -c is a root-level flag on forgejo-runner, so every subcommand takes it,
+// and both subcommands here use it for labels. create-runner-file copies
+// the configured labels into the `.runner` credentials file it writes; the
+// daemon declares them on each connect and they take precedence over
+// whatever `.runner` holds. Passing it to both means the labels are right
+// from the moment the credentials file exists, not only once the daemon
+// has come up.
 func RunnerCommand(instanceURL string) []string {
 	configFlag := "-c " + quote(RunnerConfigFilename)
 	script := strings.Join([]string{
@@ -261,6 +286,13 @@ func RegisterRunner(ctx context.Context, runner Runner, job *events.Job, secretP
 // It runs as the git user, the form Forgejo documents for its admin CLI
 // under Docker, so the command touches the database as the user that owns
 // it.
+//
+// --labels seeds the runner row's labels at registration. Forgejo splits
+// the value on commas and stores it, so omitting the flag stores one empty
+// label rather than none — the blank label set an operator sees in the
+// admin runner list before the daemon's first connect. The daemon's own
+// declaration (RunnerLabelNames) is authoritative from that connect
+// onward; this only covers the window before it.
 func registerRunnerCommand(secretPath string) string {
 	return fmt.Sprintf(
 		"docker compose exec -T -u %s %s forgejo forgejo-cli actions register --secret-stdin --name %s --labels %s < %s",

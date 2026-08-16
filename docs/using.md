@@ -28,7 +28,9 @@ That label match is not GitHub's runner VM. Every step still runs as root inside
 
 ### Actions resolve from `code.forgejo.org`, not GitHub
 
-`uses: actions/checkout@v4` fetches from `code.forgejo.org/actions/checkout` — Forgejo's default source, which Farrier leaves alone. The popular actions are mirrored there; anything else is not.
+`uses: actions/checkout@v4` fetches from `code.forgejo.org/actions/checkout` — Forgejo's default source, which Farrier leaves alone. The common ones are mirrored there, `checkout` and `setup-node` among them. Most of the marketplace is not.
+
+This is the next thing a ported GitHub workflow hits after `runs-on`, and it fails rather than queues: the step errors on a repository that does not exist, naming `code.forgejo.org`, which reads like an outage and is not one. Every `uses:` line in a workflow you carried over needs to be either mirrored or spelled out.
 
 Name a full URL for an action that lives elsewhere:
 
