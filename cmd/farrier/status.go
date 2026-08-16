@@ -32,7 +32,7 @@ func runStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (required)")
 	target := fs.String("target", "", "ssh://user@host[:port] of the forge host (required)")
-	remoteDir := fs.String("remote-dir", "/opt/farrier", "directory on the host farrier was deployed into")
+	remoteDir := fs.String("remote-dir", orchestrate.DefaultRemoteDir, "directory on the host farrier was deployed into")
 	diskPath := fs.String("disk-path", status.DefaultDiskPath, "filesystem path on the host to report disk headroom for")
 	to := fs.String("to", "", "golden-path backup destination to report last-backup age and replication lag against: an s3:// URI or a filesystem directory (optional; omit for unmeasured, spec.md \"Golden path\")")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")

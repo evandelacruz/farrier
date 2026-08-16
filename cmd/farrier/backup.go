@@ -23,7 +23,7 @@ func runBackup(args []string) int {
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (required)")
 	target := fs.String("target", "", "ssh://user@host[:port] of the forge host (required)")
 	to := fs.String("to", "", "backup destination: an s3:// URI or a filesystem directory (required, spec.md \"Golden path\")")
-	remoteDir := fs.String("remote-dir", "/opt/farrier", "directory on the host farrier was deployed into")
+	remoteDir := fs.String("remote-dir", orchestrate.DefaultRemoteDir, "directory on the host farrier was deployed into")
 	workDir := fs.String("work-dir", "", "local scratch directory for the plain and encrypted snapshot (default: a fresh temporary directory)")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file (default: ~/.ssh/known_hosts)")
