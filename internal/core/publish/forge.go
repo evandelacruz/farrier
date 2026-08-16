@@ -214,21 +214,33 @@ type sshKey struct {
 //
 // With a key path, it registers that key unless the account already has
 // it — re-running publish for a second project does not accumulate
-// duplicate keys. Without one, it only checks: an account with at least
-// one key registered is assumed to be the operator's own working setup and
-// is left alone, and an account with none fails here, before anything is
-// created, rather than as a permission-denied push two steps later.
-func ensurePushKey(ctx context.Context, c *client, user, publicKeyPath string) (string, error) {
+// duplicate keys.
+//
+// Without one it decides between two accounts. An account with at least
+// one key registered is the operator's own working setup and is left
+// alone: it can already be pushed to, and uploading a second key because
+// a file happens to exist on disk is not publish's call. An account with
+// none cannot be pushed to at all, so the operator's own public key
+// (defaults, in preference order) is registered instead of failing a
+// command the README says needs no flags. Either way the returned detail
+// names what happened, including which file was registered — that upload
+// is a change to the operator's account and belongs in the event.
+func ensurePushKey(ctx context.Context, c *client, user, publicKeyPath string, defaults []string) (string, error) {
 	var keys []sshKey
 	if _, err := c.do(ctx, http.MethodGet, "/api/v1/user/keys", nil, &keys); err != nil {
 		return "", fmt.Errorf("list the account's ssh keys: %w", err)
 	}
 
+	fellBack := false
 	if publicKeyPath == "" {
-		if len(keys) == 0 {
-			return "", fmt.Errorf("the account %s has no ssh public key registered, so a push would be rejected: re-run with the path to your public key, or add it to the account in the forge's web UI", user)
+		if len(keys) > 0 {
+			return fmt.Sprintf("%d ssh key(s) already registered", len(keys)), nil
 		}
-		return fmt.Sprintf("%d ssh key(s) already registered", len(keys)), nil
+		found, err := firstExistingKey(defaults)
+		if err != nil {
+			return "", fmt.Errorf("the account %s has no ssh public key registered, so a push would be rejected, and %w", user, err)
+		}
+		publicKeyPath, fellBack = found, true
 	}
 
 	raw, err := os.ReadFile(publicKeyPath)
@@ -257,7 +269,27 @@ func ensurePushKey(ctx context.Context, c *client, user, publicKeyPath string) (
 	if _, err := c.do(ctx, http.MethodPost, "/api/v1/user/keys", body, nil); err != nil {
 		return "", fmt.Errorf("register ssh public key with %s: %w", user, err)
 	}
+	if fellBack {
+		return fmt.Sprintf("the account had no ssh key, so registered %s with it", publicKeyPath), nil
+	}
 	return fmt.Sprintf("registered %s", publicKeyPath), nil
+}
+
+// firstExistingKey picks the first candidate that is a readable file. Its
+// error is the one an operator with no key at all reads, so it names every
+// path tried, the override, and the command that makes a key — "no key" on
+// its own leaves them nowhere to go.
+func firstExistingKey(candidates []string) (string, error) {
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("your home directory could not be located, so there was nowhere to look for your own public key: name one with -ssh-key, or add a key to the account in the forge's web UI")
+	}
+	return "", fmt.Errorf("this machine has no public key to register either (tried %s): make one with `ssh-keygen -t ed25519`, name an existing one with -ssh-key, or add a key to the account in the forge's web UI",
+		strings.Join(candidates, ", "))
 }
 
 // keyTitle names a registered key in the forge's UI: the key's own comment

@@ -53,8 +53,16 @@
 // A push is rejected unless the operator's public key is registered with
 // the forge account, so `authorize` checks for one rather than letting the
 // operator discover it as a permission-denied error four steps later.
-// Options.PublicKeyPath registers a key; without it, an account that has
-// no key at all fails the step before anything is created.
+// Options.PublicKeyPath registers a key of the operator's choosing; with
+// no path named and no key on the account, `authorize` falls back to the
+// operator's own public key on disk (defaultPublicKeyNames) so a fresh
+// instance is publishable with no flags — which is what the README's quick
+// start tells the operator to expect. An account that already has a key is
+// left alone: it is already publishable, and a second key uploaded because
+// a file happens to exist on disk is not something publish should decide.
+// Whichever file is registered, the authorize event names it — uploading a
+// key to an account is not nothing, and a silent upload is what would make
+// the default questionable.
 //
 // The instance's own host key is not left to trust-on-first-use: its public
 // half is in the bundle manifest (bundle.Manifest.SSHHostKeyPublic, written
@@ -153,9 +161,21 @@ type Options struct {
 
 	// PublicKeyPath is an SSH public key file to register with the forge
 	// account so the push — and every later push by the operator — is
-	// authorized. Empty registers nothing, and then an account with no key
-	// already registered fails the authorize step.
+	// authorized. A leading ~ is expanded here; nothing shell-expands a
+	// path that arrives from a flag or an API request.
+	//
+	// Empty falls back to the operator's own public key
+	// (defaultPublicKeyNames), and only when the account has no key
+	// registered at all: an account that already has one is already
+	// publishable and is left untouched.
 	PublicKeyPath string
+
+	// homeDir is the operator's home directory: the root of the default
+	// public-key search, and what a leading ~ in PublicKeyPath expands to.
+	// Empty means the real one. It is unexported because no caller sets
+	// it — the tests do, so the suite never reads the machine's own
+	// ~/.ssh and passes or fails on what that machine happens to hold.
+	homeDir string
 
 	// HTTPClient overrides the client used for the instance's API; nil
 	// uses http.DefaultClient. Tests point this at an httptest.Server.
@@ -240,7 +260,7 @@ func run(ctx context.Context, job *events.Job, opts Options) (Result, error) {
 	if owner == "" {
 		owner = user
 	}
-	keyDetail, err := ensurePushKey(ctx, client, user, settings.publicKeyPath)
+	keyDetail, err := ensurePushKey(ctx, client, user, settings.publicKeyPath, settings.defaultKeyPaths)
 	if err != nil {
 		job.Emit(StepAuthorize, events.StateFailed, err.Error())
 		return Result{}, fmt.Errorf("publish: %w", err)
@@ -340,8 +360,12 @@ type settings struct {
 	private       bool
 	remoteName    string
 	publicKeyPath string
-	git           Git
-	client        *client
+	// defaultKeyPaths are the operator's own public keys, in preference
+	// order, used only when the account has no key and no path was named.
+	// Empty when the home directory could not be located.
+	defaultKeyPaths []string
+	git             Git
+	client          *client
 
 	// remoteAdded records that this run configured the remote, so
 	// rollback removes only a remote publish itself created.
@@ -390,22 +414,63 @@ func resolve(opts Options) (*settings, error) {
 		git = ExecGit{}
 	}
 
+	// A home directory that cannot be located is not fatal: it costs the
+	// default key search and tilde expansion, both of which only matter to
+	// an operator who named no key, and ensurePushKey says so when it does.
+	home := opts.homeDir
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+
 	return &settings{
-		dir:           dir,
-		manifest:      opts.Manifest,
-		host:          host,
-		owner:         strings.TrimSpace(opts.Owner),
-		name:          strings.TrimSpace(opts.Name),
-		private:       opts.Private,
-		remoteName:    remoteName,
-		publicKeyPath: strings.TrimSpace(opts.PublicKeyPath),
-		git:           git,
+		dir:             dir,
+		manifest:        opts.Manifest,
+		host:            host,
+		owner:           strings.TrimSpace(opts.Owner),
+		name:            strings.TrimSpace(opts.Name),
+		private:         opts.Private,
+		remoteName:      remoteName,
+		publicKeyPath:   expandHome(strings.TrimSpace(opts.PublicKeyPath), home),
+		defaultKeyPaths: defaultPublicKeyPaths(home),
+		git:             git,
 		client: &client{
 			baseURL: baseURL,
 			token:   opts.TargetToken,
 			http:    opts.HTTPClient,
 		},
 	}, nil
+}
+
+// defaultPublicKeyNames are the operator's own public keys, in the order
+// publish falls back to them when the account has none registered and no
+// path was named. ed25519 first: it is what the README's own `ssh-keygen
+// -t ed25519` line produces and what a modern host prefers, so an operator
+// holding both gets the better of the two registered.
+var defaultPublicKeyNames = []string{"id_ed25519.pub", "id_rsa.pub"}
+
+// defaultPublicKeyPaths resolves defaultPublicKeyNames against the
+// operator's ~/.ssh. An unknown home directory yields no candidates rather
+// than paths relative to whatever directory publish was run from.
+func defaultPublicKeyPaths(home string) []string {
+	if home == "" {
+		return nil
+	}
+	paths := make([]string, 0, len(defaultPublicKeyNames))
+	for _, name := range defaultPublicKeyNames {
+		paths = append(paths, filepath.Join(home, ".ssh", name))
+	}
+	return paths
+}
+
+// expandHome expands a leading ~ in a path the operator typed. A flag
+// value, an API request field, and a constant in this package are none of
+// them shell-expanded, so "~/.ssh/id_ed25519.pub" would otherwise be read
+// as a directory literally named "~".
+func expandHome(path, home string) string {
+	if home == "" || (path != "~" && !strings.HasPrefix(path, "~/")) {
+		return path
+	}
+	return filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
 }
 
 // validateRepoName rejects a derived or given repository name Forgejo
