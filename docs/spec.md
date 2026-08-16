@@ -6,7 +6,7 @@ The system turns a project folder into a complete self-hosted forge — git, pul
 
 ## What it is
 
-Given any project folder, Farrier stands up a self-contained self-hosted forge for it — git hosting, pull requests, code review, and CI/CD — with a remote ready to push to. Each project gets its own portable forge instance rather than a shared central server.
+Given any project folder, Farrier stands up a self-contained self-hosted forge for it — git hosting, pull requests, code review, and CI/CD — with a remote ready to push to. A forge per project is the default shape; one forge serving several projects is equally supported, and the trade between them is the operator's to make ("The unit: a forge, and the projects on it").
 
 It ships as one binary with two frontends: a CLI and a local web dashboard, built as an orchestration and portability layer over existing open-source components.
 
@@ -98,16 +98,18 @@ Key material is non-rotating by default: once `init` writes a piece of it, nothi
 
 Runner registrations live in the database, and runners dial out to the domain. After promotion, remote runners reconnect automatically; colocated runners restart with the bundle.
 
-## The unit: one forge per project
+## The unit: a forge, and the projects on it
 
-The thing Farrier hands you is a forge for one project, and the project folder is where it starts.
+The thing Farrier hands you is a forge, and a project folder is where it starts. How many projects live on that forge is the operator's call. Both shapes are first-class, both work today, and no code path differs between them — a bundle *is* an instance, and how many projects it serves is how many are published to it.
 
-- **The bundle lives in the project, at `.farrier/`.** Manifest and rendered Compose definitions sit beside the code, holding no secrets, so the forge definition is versioned with the thing it serves and travels with it. This is the default and the shape the design optimizes for: `cd my-project && farrier init`, and that project has its own forge.
-- **One instance may serve several projects, and then the bundle lives on its own.** An instance hosts as many repositories as the operator puts on it — ten projects on one instance is one address, one backup, one drill, and a Forgejo that lists all ten. Nothing in the code differs; it is how many times `init` and `up` are run. But a bundle serving ten projects belongs to none of them, so `init` takes an explicit location for that case rather than making one project arbitrarily own the forge that hosts the other nine. A location argument, not a mode.
+- **One forge per project** is the default, and the shape the on-ramp optimizes for: `cd my-project && farrier init`, and that project has its own forge. The bundle lives in the project, at `.farrier/` — manifest and rendered Compose definitions beside the code, holding no secrets — so the forge definition is versioned with the thing it serves and travels with it.
+- **One forge for many repositories** is equally supported. An instance hosts as many repositories as the operator puts on it, and a project joins one that already exists by publishing to it: `publish -bundle <other-project>/.farrier -target <url>`. A bundle serving ten projects belongs to none of them, so `init` takes an explicit location for that case rather than making one project arbitrarily own the forge that hosts the other nine. A location argument, not a mode.
+- **The trade is operational, and it is a real one.** One forge per project buys one blast radius per project: each is lost, restored, upgraded, and drilled on its own, and its backup holds only its own work. It costs N instances to deploy, N backups to keep current, N upgrades to run — N of everything to operate. One forge for many repositories inverts both sides: one address, one backup, one drill, one upgrade, and one thing to lose. Neither is the right answer; pick by whether you would rather operate less or isolate more.
+- **Many projects means one instance, not two bundles on one host.** A second project joins through `publish` against the running instance. Two different bundles pointed at the same host and remote directory would share one state directory, and the second `up` would boot the forge against the first's database with a key that does not match it — so `up` refuses that rather than performing it (UP-008).
 - **`init` takes a folder; `up` takes a host.** They stay separate commands. `init` makes a folder into a forge definition; `up` puts it on a machine.
 - **A host is a host.** `ssh://user@localhost` and `ssh://user@a-vps` run the same path. There is no local mode — locality is an argument, not a branch. ACME DNS-01 proves zone control by writing a TXT record rather than answering an inbound request, so an instance on the operator's own machine holds a publicly valid certificate for its name exactly like a remote one.
 - **An FQDN belongs to an instance, not a repository.** Apex or subdomain is immaterial — what matters is a name the operator controls in DNS, unique to that instance, since the name is the identity. Every repository on that instance shares the endpoint. Subdomains are simply the cheap way to run many instances: one owned zone, a name per project, nothing new to register.
-- **Shared or not is usage, not a mode.** An instance hosts as many repositories as the operator puts on it. One project per instance is the default shape and the reason the design carries no org, team, or tenancy modeling — but nothing forbids several, and no code path differs.
+- **Neither shape introduces tenancy.** The design carries no org, team, or tenancy modeling either way. An instance is single-tenant: its repositories share one endpoint, one administrator, and one backup, whether one project lives on it or ten.
 
 The first push is part of standing it up: `publish` creates the repository on the instance from the folder, pushes its existing history, and sets `origin` to the instance's SSH URL. It refuses rather than overwrites — a folder with no commits, a folder that already has that remote, and a repository already on the instance each fail with nothing changed. `import` (below) remains the on-ramp for a project that already lives on GitHub or GitLab.
 

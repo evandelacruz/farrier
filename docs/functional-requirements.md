@@ -18,6 +18,9 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 - INIT-005 precedes UP-006; UP-006 precedes UP-007: a nameless instance must exist before it can be served, and be served before it can be named.
 - INIT-005 also precedes UP-002: what remains of it is the nameless case, which does not exist until INIT-005 creates it.
 - API-001 precedes all UI.
+- UP-003 and UP-004 precede UP-008, and UP-008 comes first among what is still open: host state has to have a fixed home and a repeatable converge before `up` can tell whose state it is looking at, and until it can, a second bundle deployed to a host already running one destroys that instance silently.
+- INIT-001, UP-001, and IMPT-004 precede XCUT-004: the path CI exercises end to end cannot be exercised before the commands on it exist.
+- XCUT-003 is gated on nothing. It applies to the commands as they stand.
 
 ---
 
@@ -91,6 +94,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 - **UP-006** · `up` on a nameless bundle must serve the forge over plain HTTP at an address the operator supplies — an IP or a hostname — on a manifest-declared host port defaulting to 8222 rather than 80, with git over SSH unchanged, and must state through the event stream that the web UI is unencrypted and belongs on a trusted network.
 - **UP-007** · Farrier must attach an FQDN to a nameless instance in place: prove the zone, issue the certificate, re-render configuration, and report the clone URLs that changed — without rebuilding the instance or losing repositories, history, pull requests, review comments, CI history, secrets, or the SSH host key.
+- **UP-008** · `up` must refuse to deploy a bundle onto host state that belongs to a different bundle, naming what it found there and changing nothing, and must stay safe to repeat against state belonging to the same bundle (UP-003). Every deployment currently shares one host state layout, so a second bundle deployed to a host already running one takes over the first's state and boots the forge against a database whose `SECRET_KEY` no longer matches it: sessions, CSRF tokens, and every secret that database holds become undecryptable, and nothing fails at deploy time to say so.
 
 ## IMPT — repository import
 
@@ -154,3 +158,5 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 - **XCUT-001** · Every operation must work from any machine holding the bundle and key access; nothing may depend on the machine that ran `init`.
 - **XCUT-002** · The CLI must render the CORE-002 event stream in the terminal for every long-running operation.
+- **XCUT-003** · Every failure an operator sees must name what failed, why it failed, and what to do about it. Two cases stand as the test. Exhausted SSH authentication must say that Farrier authenticates through the operator's SSH agent or a key file they name, that a key sitting on disk is not enough on its own, and that `ssh-add -l` lists what the agent holds — not just the methods that were tried. A remote directory that cannot be created or written must say that the default is not writable by an ordinary user and that a writable path can be given instead. Neither message, nor any other, may name a requirement ID: the operator does not have this document.
+- **XCUT-004** · CI must run `init`, `up`, and `publish` against a real Docker daemon over a real SSH connection, and must fail the build when that path breaks. The run must create a bundle from a project folder, deploy it to a host reached over SSH, and publish the folder's history to it, ending with the forge serving and that history present on the instance. The unit suite fakes every seam this path crosses and so proves nothing about it: image references that resolve, a non-interactive SSH session that finds `docker`, a default remote directory that is writable, a bind mount that does not nest, an exec that runs as the right user, and a readiness check that waits on the forge's database rather than on its container. Each of those has broken a live run while the suite stayed green.
