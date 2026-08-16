@@ -22,12 +22,12 @@ const StepSmokeCI = "smoke-ci"
 // was written for.
 const smokeWorkflowPath = ".forgejo/workflows/smoke.yml"
 
-// smokeRunsOn is the runner label the smoke job asks for. `docker` is the
-// colocated runner's default label — the one Forgejo's own Actions
-// documentation writes every example against — and FORGE-005 registers the
-// runner with its defaults rather than overriding them. A drilled instance
-// whose runner answers to something else leaves the run queued, which is
-// reported as exactly that rather than as a broken restore.
+// smokeRunsOn is the runner label the smoke job asks for. The colocated
+// runner answers to both docker and ubuntu-latest (forge.RunnerLabelNames);
+// docker is the Forgejo-shaped spelling and is what a Farrier-authored
+// workflow uses. A drilled instance whose runner answers to something else
+// leaves the run queued, which is reported as exactly that rather than as
+// a broken restore.
 const smokeRunsOn = "docker"
 
 // smokeBranch is the branch the scratch repository is initialized on and the
