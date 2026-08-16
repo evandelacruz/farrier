@@ -224,7 +224,9 @@ func TestUpStatesTheWebUIIsUnencryptedThroughTheEventStream(t *testing.T) {
 
 // CI on a nameless instance reaches it at the same URL the operator's
 // browser does — the runner cannot resolve a domain the bundle does not
-// have (forge.InstanceURL).
+// have (forge.InstanceURL), and the runner hands this same URL to every job
+// container as the server to clone from, so it has to be one a container on
+// a network of its own can reach.
 func TestUpPointsTheRunnerAtTheNamelessInstanceURL(t *testing.T) {
 	host := newFakeHost()
 	job := events.NewJob()

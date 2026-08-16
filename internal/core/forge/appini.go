@@ -148,9 +148,16 @@ func (s Secrets) validate() error {
 //
 // It is deliberately the external URL rather than the forgejo service's
 // name on the Compose network, and that matters most to the colocated
-// Actions runner: its job containers are started on the host's Docker
-// daemon, on per-job networks the runner creates, so a Compose service name
-// would not resolve inside them. spec.md "The domain" settles the general
+// Actions runner. One value answers for three things there, not one: the
+// runner daemon's own connection, the server URL it hands every job
+// container (`GITHUB_SERVER_URL`, which is what `actions/checkout` clones
+// from), and the artifact endpoints those containers upload to. Job
+// containers are started on the host's Docker daemon, on per-job networks
+// the runner creates, so a Compose service name would not resolve inside
+// them — and pointing the runner's own connection at one would take the
+// other two with it. This is also why the address a nameless instance is
+// deployed at must be reachable from a container (deploy's
+// checkRunnerReachableAddress). spec.md "The domain" settles the general
 // case for a named bundle — clone URLs, webhooks, and runner registration
 // all derive from the domain, which is what survives the host changing
 // underneath it — and spec.md "Instances without a name" puts the

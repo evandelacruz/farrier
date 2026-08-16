@@ -309,6 +309,15 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 	if opts.Quarantine && !b.Manifest.Named() {
 		return errors.New("deploy: a quarantined deployment of a nameless bundle is not supported; drill a named bundle, or attach a name first")
 	}
+	// Last of the checks that decide whether this deployment can work at
+	// all, and the only one that asks the host anything — an address for
+	// its refusal to name, and only once it is refusing. A loopback address
+	// on a deployment that carries CI produces an instance every step of
+	// which succeeds and no workflow of which can ever run, so it is
+	// refused here, with the host still exactly as Up found it.
+	if err := checkRunnerReachableAddress(ctx, host, &b.Manifest, address); err != nil {
+		return err
+	}
 
 	job.Started(StepCheckHost, "checking Docker is reachable")
 	if err := host.CheckHost(ctx); err != nil {

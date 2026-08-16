@@ -109,7 +109,7 @@ func issuerOrDefault(i CertIssuer) CertIssuer {
 // (orchestrate.WithNetworkAlias), so containers beside it on the
 // deployment's network resolve the domain to this Caddy rather than to
 // whatever public DNS says. The colocated Actions runner is why: it
-// connects to https://<domain>/ (forge.RunnerInstanceURL), a drill
+// connects to https://<domain>/ (runnerInstanceURL), a drill
 // deliberately leaves the bundle's DNS record pointing at production
 // (DRIL-001), and the drilled runner holds the same registration secret
 // production's does — so without the alias a drill would stand up a second

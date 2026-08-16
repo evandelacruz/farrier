@@ -97,7 +97,7 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 		return compose, false, nil
 	}
 
-	if _, ok := b.Manifest.Images[forge.RunnerService]; !ok {
+	if !colocatedRunnerPlanned(&b.Manifest) {
 		if b.Manifest.ColocatedRunnerDeclared() {
 			return nil, false, fmt.Errorf(
 				"manifest asks for a colocated runner but pins no %q image; pin one or set actions.colocatedRunner to false",
@@ -143,6 +143,25 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 	return compose, true, nil
 }
 
+// colocatedRunnerPlanned reports whether this deployment will carry a
+// colocated runner: the manifest wants one (FORGE-005) and pins an image to
+// run it from. Both halves are configureRunner's own gate above, and this
+// is the same question asked before the deployment touches the host —
+// checkRunnerReachableAddress needs it to know whether a loopback address
+// costs this instance its CI.
+//
+// The contradiction configureRunner fails on — a manifest that asks for the
+// runner and pins nothing — is deliberately not this function's business.
+// It reads as "no runner planned" here, and the deployment still fails at
+// the step that owns that error, with the message that names the fix.
+func colocatedRunnerPlanned(m *bundle.Manifest) bool {
+	if !m.ColocatedRunnerEnabled() {
+		return false
+	}
+	_, pinned := m.Images[forge.RunnerService]
+	return pinned
+}
+
 // runnerInstanceURL is the URL the colocated runner registers against: the
 // instance's public URL (forge.InstanceURL) in an ordinary deployment, and
 // the bundle domain at Caddy's *container* port under quarantine.
@@ -150,7 +169,11 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 // The difference is what resolves the domain. Ordinarily the runner's job
 // containers and the runner itself reach the instance the way any other
 // client does — public DNS to the host, then the published web port, or the
-// proxy in front of it — so the public URL is exactly right. Under
+// proxy in front of it — so the public URL is exactly right. It has to be:
+// this URL is not only the daemon's own connection but the server URL the
+// daemon hands each job container to clone from, so an endpoint only the
+// runner can resolve would break CI rather than fix it (forge.InstanceURL).
+// Under
 // quarantine, configureTLS gives Caddy the bundle domain as a Docker
 // network alias (DRIL-002) so the drilled runner reaches the drilled
 // instance rather than production, and that alias resolves to the container
