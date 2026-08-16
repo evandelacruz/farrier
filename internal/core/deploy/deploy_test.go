@@ -108,6 +108,11 @@ type fakeHost struct {
 	// moment `docker compose up` ran — what lets a test assert Up records
 	// the version it is about to start *before* starting it.
 	versionAtConverge string
+
+	// firstWrite is the path of the first file written to this host, so a
+	// test can assert what a deployment puts down before anything else
+	// (UP-008: the claim on the state directory comes first).
+	firstWrite string
 }
 
 func newFakeHost() *fakeHost {
@@ -123,11 +128,12 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 		return nil, errors.New("fakeHost: command failed: " + command)
 	}
 
-	// Serve reads of the recorded forge version out of the same map
-	// WriteFile stores into, so the fake's reads and writes agree the way
-	// a real host's do — without that, every Up here would see an empty
-	// record and UPGR-003's check could never be exercised.
-	if p := stateVersionRead(command); p != "" {
+	// Serve every "read this file if it is there" out of the same map
+	// WriteFile stores into, so the fake's reads and writes agree the way a
+	// real host's do — without that, every Up here would see an empty
+	// forge-version record (UPGR-003) and an empty owner record (UP-008),
+	// and neither check could be exercised.
+	if p := optionalFileRead(command); p != "" {
 		if f.readVersionErr != nil {
 			return nil, f.readVersionErr
 		}
@@ -139,10 +145,10 @@ func (f *fakeHost) Output(ctx context.Context, command string) ([]byte, error) {
 	return nil, nil
 }
 
-// stateVersionRead returns the path a command reads the recorded forge
-// version from, or "" if it isn't that command — matching the shape
-// ReadStateVersion builds.
-func stateVersionRead(command string) string {
+// optionalFileRead returns the path a command reads a host record from, or
+// "" if it isn't that command — matching the shape readOptionalFile builds
+// for the forge-version and owner records alike.
+func optionalFileRead(command string) string {
 	rest, ok := strings.CutPrefix(command, "if [ -f '")
 	if !ok {
 		return ""
@@ -156,6 +162,9 @@ func (f *fakeHost) WriteFile(ctx context.Context, path string, content []byte, m
 	defer f.mu.Unlock()
 	if f.writeFileErr != nil {
 		return f.writeFileErr
+	}
+	if f.firstWrite == "" {
+		f.firstWrite = path
 	}
 	f.files[path] = string(content)
 	return nil

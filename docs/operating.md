@@ -47,6 +47,14 @@ If it did get as far as writing key material, it leaves an `init-incomplete.json
 
 Two things this deliberately will not do. It never removes key material — key material is non-rotating, and a tool that deletes it is a tool that can delete a live instance's identity. And if it finds key material in your keystore that no `init-incomplete.json` accounts for, it refuses by name rather than guessing: that material may belong to an instance whose bundle lives somewhere else. Point the new bundle at a keystore target of its own, or, once you are certain nothing depends on it, clear it yourself.
 
+## `up` says the directory belongs to another instance
+
+You pointed `up` at a host directory another instance is already using. It stopped before touching anything and named what it found: the instance's domain, if it has one, and its SSH host key.
+
+Two ways forward. Give this bundle a directory of its own on that host — `up -remote-dir` — and both instances live there side by side. Or, if the directory really is the one you meant, run `up` with the bundle that owns it.
+
+What you must not do is clear the directory to make room. Everything the forge holds is in it: repositories, the database, LFS objects, CI history. Deploying over it is what this refusal exists to prevent — the forge would come up looking healthy while the sessions, CSRF tokens, and secrets in that database sat undecryptable behind a key the new bundle does not hold.
+
 ## Backups
 
 ### What a snapshot contains

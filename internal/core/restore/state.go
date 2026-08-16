@@ -110,6 +110,29 @@ func placeState(ctx context.Context, job *events.Job, plainDir string, manifest 
 		return err
 	}
 
+	// And whose state it is, for the same reason and in the same place
+	// (UP-008). The state on this host is now this bundle's, whatever the
+	// target held before — a scratch target reused between drills, or a host
+	// being recovered onto after something else was tried there. Recording it
+	// beside the database it describes is what lets runDeploy's own deploy.Up
+	// see its own instance in front of it and proceed, rather than refuse
+	// over a record describing what this directory used to hold. The key
+	// comes from opts.Keystore, which installKeys has already made agree with
+	// the snapshot's own (it refuses outright when the target holds different
+	// key material under a name), so what is claimed here is the instance the
+	// restored state actually belongs to.
+	owner, err := deploy.StateOwnerOf(ctx, &opts.Bundle.Manifest, opts.Keystore)
+	if err != nil {
+		err = fmt.Errorf("restore: %w", err)
+		job.Emit(StepPlaceState, events.StateFailed, err.Error())
+		return err
+	}
+	if err := deploy.RecordStateOwner(ctx, opts.Host, opts.RemoteDir, owner); err != nil {
+		err = fmt.Errorf("restore: %w", err)
+		job.Emit(StepPlaceState, events.StateFailed, err.Error())
+		return err
+	}
+
 	job.Emit(StepPlaceState, events.StateSucceeded, fmt.Sprintf("restored %d repository(ies) and the database", len(names)))
 	return nil
 }

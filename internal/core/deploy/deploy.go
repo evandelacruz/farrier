@@ -8,9 +8,11 @@
 // bundle definition, rather than requiring a fresh host every time; and
 // UP-004: forge state — git repositories and the database — lives on the
 // host under RemoteDir/state, bind-mounted into the container that serves
-// it, so recreating that container never destroys it; and UP-005: git over
+// it, so recreating that container never destroys it; UP-005: git over
 // SSH is served at the bundle domain on the host port the manifest
-// declares, using the bundle's own SSH host key.
+// declares, using the bundle's own SSH host key; and UP-008: a deployment
+// onto host state that belongs to a different instance is refused before
+// anything on that host is touched (stateowner.go).
 //
 // # Named and nameless
 //
@@ -81,6 +83,7 @@ import (
 // told by a progress bar.
 const (
 	StepCheckHost       = "check-host"
+	StepCheckOwner      = "check-state-owner"
 	StepConfigureForge  = "configure-forge"
 	StepConfigureTLS    = "configure-tls"
 	StepConfigureHTTP   = "configure-http"
@@ -245,13 +248,18 @@ type Options struct {
 // non-rotating secret back and derives its mounts from the manifest alone
 // (its own doc comment), and runner registration is an upsert keyed by that
 // secret, so a re-run updates the existing registration rather than creating
-// a second one (forge.RegisterRunner).
+// a second one (forge.RegisterRunner), and checkStateOwner writes the same
+// claim back over state that is already this instance's.
 //
-// One step does read the host back before deciding: checkStateVersion
-// refuses to start a Forgejo version other than the one the host's state was
-// last started under, because that is what makes Forgejo migrate its schema,
-// and UPGR-003 puts migrations under `upgrade` alone. Up otherwise lets the
-// bundle alone determine the outcome, same as Converge.
+// Two steps do read the host back before deciding. checkStateOwner refuses
+// to deploy onto forge state that belongs to a different instance, naming
+// what it found and leaving the host untouched (UP-008) — it runs first, so
+// nothing is written to a host this deployment turns out not to own.
+// checkStateVersion refuses to start a Forgejo version other than the one
+// the host's state was last started under, because that is what makes
+// Forgejo migrate its schema, and UPGR-003 puts migrations under `upgrade`
+// alone. Up otherwise lets the bundle alone determine the outcome, same as
+// Converge.
 //
 // Up owns job's terminal event: it calls job.Succeeded or job.Failed
 // exactly once, after every step below has run (or the first one fails),
@@ -308,6 +316,17 @@ func up(ctx context.Context, job *events.Job, host Host, b *bundle.Bundle, opts 
 		return fmt.Errorf("deploy: check host: %w", err)
 	}
 	job.Emit(StepCheckHost, events.StateSucceeded, "Docker reachable")
+
+	// Before the first byte this deployment writes to the host: whose forge
+	// state is already in that directory (UP-008). A deployment onto another
+	// instance's state is refused here, with the host exactly as Up found it.
+	job.Started(StepCheckOwner, "checking whose forge state is in the deployment directory")
+	ownerDetail, err := checkStateOwner(ctx, host, b, opts.RemoteDir)
+	if err != nil {
+		job.Emit(StepCheckOwner, events.StateFailed, err.Error())
+		return fmt.Errorf("deploy: %w", err)
+	}
+	job.Emit(StepCheckOwner, events.StateSucceeded, ownerDetail)
 
 	job.Started(StepConfigureForge, "resolving key material and rendering app.ini")
 	compose, secrets, err := configureForge(ctx, host, b, opts.RemoteDir, address, opts.Quarantine)
