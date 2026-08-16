@@ -32,8 +32,15 @@ func RunnerSecretPath(remoteDir string) string {
 	return path.Join(remoteDir, runnerHostDir, forge.RunnerSecretFilename)
 }
 
+// RunnerConfigPath is the host-side path `up` writes the runner's
+// configuration file to. It sits next to the secret in the mounted data
+// directory so the daemon's -c flag finds it without a second mount.
+func RunnerConfigPath(remoteDir string) string {
+	return path.Join(remoteDir, runnerHostDir, forge.RunnerConfigFilename)
+}
+
 // RunnerHostPath is the host-side directory mounted into the runner as its
-// data directory. RunnerSecretPath sits inside it.
+// data directory. RunnerSecretPath and RunnerConfigPath sit inside it.
 func RunnerHostPath(remoteDir string) string {
 	return path.Join(remoteDir, runnerHostDir)
 }
@@ -45,10 +52,11 @@ func RunnerHostPath(remoteDir string) string {
 //
 // When the bundle wants the runner (bundle.Manifest.ColocatedRunnerEnabled),
 // it resolves the runner secret from the keystore, ships it to the host
-// 0600, and layers onto the rendered service: the host directory holding
-// that secret, the host's Docker socket, DOCKER_HOST, the user to run as,
-// and the command that derives credentials from the secret and starts the
-// daemon.
+// 0600 alongside the runner configuration that declares its labels, and
+// layers onto the rendered service: the host directory holding those
+// files, the host's Docker socket, DOCKER_HOST, the user to run as, and
+// the command that derives credentials from the secret and starts the
+// daemon against that configuration.
 //
 // Mounting the Docker socket is what lets the runner start job containers,
 // and is the trade spec.md "CI trust boundary" > "The colocated runner holds
@@ -107,6 +115,9 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 	secretPath := RunnerSecretPath(remoteDir)
 	if err := host.WriteFile(ctx, secretPath, []byte(secret), 0o600); err != nil {
 		return nil, false, fmt.Errorf("ship runner secret: %w", err)
+	}
+	if err := host.WriteFile(ctx, RunnerConfigPath(remoteDir), forge.RenderRunnerConfig(), 0o644); err != nil {
+		return nil, false, fmt.Errorf("ship runner config: %w", err)
 	}
 
 	compose, err = orchestrate.WithBindMount(compose, forge.RunnerService, RunnerHostPath(remoteDir), forge.RunnerDataDir)
