@@ -69,11 +69,18 @@ func Down(ctx context.Context, host Host, b *bundle.Bundle, remoteDir string) er
 	// that never got as far as Converge would fail on the missing files and
 	// report a teardown failure where there was nothing to tear down.
 	//
-	// Addressing the project through ComposeCommand — the same project name
-	// and the same file list Converge started it with — rather than by
-	// project name alone is what makes `--remove-orphans` mean what it says
-	// here: every container of that project, including any left by a
-	// definition since removed from the manifest.
+	// Addressing the project through ComposeCommand is what keeps this
+	// teardown to this deployment. Compose resolves a project's containers
+	// by the project name and by nothing else — not by the directory it is
+	// run from, and not by the file list it is given — so `down` reaches
+	// every container carrying that name and `--remove-orphans` widens it
+	// further, to the ones the given files no longer define. Both are what
+	// this teardown wants against its own deployment, and neither may reach
+	// another: a drill runs on a scratch target that may be the machine
+	// hosting the live instance, and the live instance is exactly a set of
+	// containers this file list does not define. ComposeCommand reads the
+	// project name the host recorded for this remote directory, so the two
+	// deployments are two projects and this removes only its own.
 	shipped := path.Join(remoteDir, bundle.ComposeDir)
 	down := fmt.Sprintf(
 		"if [ -d %s ]; then %s docker compose down --volumes --remove-orphans --timeout %d; fi",
