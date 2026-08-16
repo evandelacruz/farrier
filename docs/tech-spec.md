@@ -111,6 +111,25 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
                            under; one line, not mounted
 ```
 
+Two records sit beside the state rather than inside it, because they describe the deployment rather than the forge:
+
+```
+<RemoteDir>/compose        the rendered Compose files this deployment was
+                           converged from; replaced wholesale on every
+                           converge
+<RemoteDir>/compose-project
+                           the Docker Compose project this deployment's
+                           containers belong to; one line, written once
+```
+
+`compose-project` is what keeps two deployments on one host apart. Compose resolves a project's containers by the project name and by nothing else — not by the directory it runs in, and not by the file list it is given — so a single name shared by every deployment made every deployment on a host one project, and `docker compose down --remove-orphans` from any of them a teardown of all of them. A drill on the machine hosting the live instance removed the live instance.
+
+The name is derived from the bundle's domain and the remote directory together. Both matter: the directory is the only thing separating a drill from the live instance whose snapshot and bundle it is rehearsing, and the domain is what separates two different bundles that happen to have picked the same directory. It is sanitized into the character set Compose accepts, since the domain is operator input.
+
+It is derived once and then read, never re-derived. `orchestrate.Converge` writes the record before it ships anything, and every command that addresses a deployment resolves the name out of the record in the same shell as the command it prefixes, so nothing that edits a manifest under a running instance can rename the project away from its own containers — `attach` (UP-007) is exactly that case. An absent or empty record resolves to `farrier`, the one name every deployment used before this record existed, so an instance deployed by an older binary stays reachable by `status`, `backup`, and `upgrade` and is never orphaned; its next converge pins that same name rather than renaming it. A remote directory with no shipped Compose files in it is a deployment that does not exist yet, and takes the derived name.
+
+`orchestrate.ProjectPath` is this record's single spelling, the same way `deploy.StateVersionPath` is for the one below it.
+
 These directories have to be usable by the uid the Forgejo container runs as, and how they get that way is not the same on every host: a Linux bind mount passes real uids through, so ownership must actually be set, while a macOS container runtime maps ownership across the mount boundary, where setting it is both unnecessary and refused to any user who is not root. So `up` sets ownership best-effort and then verifies the outcome rather than the mechanism — it runs the pinned Forgejo image as that uid, over these same mounts, and reads and writes a probe file in each directory, plus the SSH host key under `state/gitea`, which is shipped `0600` and useless if the container cannot read it. Ownership that could not be set is reported and not fatal; a forge that cannot use its state fails `up` at that step, naming the directory and the fix. Nothing detects the host's operating system or whether the target is local — that is the locality-dependent behavior ORCH-003 exists to rule out.
 
 Each command verifies the state it placed, over the paths it placed. `up` creates the two directories above and checks those. `restore` writes a directory per repository under `state/git` and the database under `state/gitea` before `up` runs at all, and checks those, the same way and in the same image. Neither stands in for the other: on a target whose state directories already exist and are already forge-owned — a restore re-run, an unfinished drill teardown, recovery onto a provisioned host — a top-level check passes while freshly restored content underneath is unusable, and a restore that cannot be used is a restore that failed.

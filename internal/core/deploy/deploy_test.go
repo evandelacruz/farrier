@@ -354,8 +354,8 @@ func TestUpSucceeds(t *testing.T) {
 			sawCheckHost = true
 		case strings.Contains(cmd, "docker compose up -d"):
 			sawComposeUp = true
-			if !strings.Contains(cmd, "COMPOSE_PROJECT_NAME=farrier") {
-				t.Errorf("compose up command missing project name: %q", cmd)
+			if !strings.Contains(cmd, orchestrate.ProjectPath("/opt/farrier")) {
+				t.Errorf("compose up command does not resolve this deployment's project: %q", cmd)
 			}
 		case strings.Contains(cmd, "exec -T forgejo true"):
 			sawExecForgejoReady = true
@@ -365,8 +365,8 @@ func TestUpSucceeds(t *testing.T) {
 			sawExecCaddyReady = true
 		case strings.Contains(cmd, "admin user create"):
 			sawAdminCreate = true
-			if !strings.Contains(cmd, "COMPOSE_PROJECT_NAME=farrier") {
-				t.Errorf("admin create command missing project name: %q", cmd)
+			if !strings.Contains(cmd, orchestrate.ProjectPath("/opt/farrier")) {
+				t.Errorf("admin create command does not resolve this deployment's project: %q", cmd)
 			}
 		}
 	}

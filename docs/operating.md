@@ -114,7 +114,9 @@ Restores your latest snapshot onto a scratch target, boots the full stack, runs 
 
 The drilled instance is quarantined, because it carries your production identity: outbound webhooks, email, and mirrors are disabled, DNS is untouched, and it publishes no routable port — you reach it through an SSH tunnel. The rehearsal happens with the outside world hearing nothing.
 
-The scratch target can be any Docker host, including your own machine.
+The scratch target can be any Docker host, including your own machine — but not the machine already running the instance you are drilling, and not a directory that instance is deployed into. A drill boots a second copy of your forge, with the same containers under the same names, so it needs a host where those are not already running: a second machine, a VM, or a separate Docker host. Point `-target` there, and give `-remote-dir` a directory of its own if the scratch target has ever held a deployment.
+
+Sharing a host is a rehearsal that cannot boot rather than a live instance that goes down: the drill runs in its own container namespace, so its teardown removes only what the drill started and never touches a live instance beside it. It fails at the boot step instead, and reports that step.
 
 This is the difference between having backups and knowing they restore. Run it on a schedule that matches how much you would mind being wrong.
 
