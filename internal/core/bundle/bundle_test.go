@@ -49,6 +49,17 @@ func TestManifestValidate(t *testing.T) {
 		{"nameless", func(m *Manifest) { m.Domain = ""; m.ACME = ACMEConfig{} }, false},
 		{"nameless with an acme provider", func(m *Manifest) { m.Domain = "" }, true},
 		{"nameless with an acme email", func(m *Manifest) { m.Domain = ""; m.ACME = ACMEConfig{Email: "ops@example.com"} }, true},
+		{"nameless with an acme directory", func(m *Manifest) {
+			m.Domain = ""
+			m.ACME = ACMEConfig{DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+		}, true},
+		// The CA is optional on a named bundle: absent is a manifest
+		// written before the bundle recorded which server issued its
+		// certificate, and readers take Let's Encrypt production.
+		{"named with no acme directory", func(m *Manifest) { m.ACME.DirectoryURL = "" }, false},
+		{"named with an acme directory", func(m *Manifest) {
+			m.ACME.DirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+		}, false},
 		{"no images", func(m *Manifest) { m.Images = nil }, true},
 		{"tag-pinned image", func(m *Manifest) { m.Images["forgejo"] = "forgejo/forgejo:11" }, true},
 		{"missing keystore driver", func(m *Manifest) { m.Drivers.Keystore.Driver = "" }, true},
@@ -639,5 +650,74 @@ func TestGitSSHCloneURL(t *testing.T) {
 	}
 	if got, want := m.GitSSHKnownHostsHost(), "git.example.com"; got != want {
 		t.Errorf("GitSSHKnownHostsHost() on 22 = %q, want %q", got, want)
+	}
+}
+
+// The ACME server a bundle's certificates are issued against survives Save
+// and Load under a stable manifest key, because renewal reads it back on
+// every later `up` — a value that did not round-trip would send a bundle
+// rehearsed against staging to production the next time its certificate
+// came due.
+func TestACMEDirectoryURLSurvivesSaveAndLoad(t *testing.T) {
+	const staging = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	b.Manifest.ACME.DirectoryURL = staging
+
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Manifest.ACME.DirectoryURL != staging {
+		t.Errorf("loaded acme directory = %q, want %q", loaded.Manifest.ACME.DirectoryURL, staging)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var parsed struct {
+		ACME map[string]any `yaml:"acme"`
+	}
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	if got := parsed.ACME["directoryUrl"]; got != staging {
+		t.Errorf("manifest acme.directoryUrl = %v, want %q:\n%s", got, staging, raw)
+	}
+}
+
+// A bundle written before the manifest recorded a CA still loads, still
+// validates, and still reports no CA — this repository has live bundles on
+// disk, and adding a field must not turn one of them into a bundle that no
+// longer loads.
+func TestManifestWithoutACMEDirectoryURLStillLoads(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	b.Manifest.ACME = ACMEConfig{DNSProvider: "cloudflare", Email: "ops@example.com"}
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	if strings.Contains(string(raw), "directoryUrl") {
+		t.Errorf("manifest carries an empty directoryUrl key:\n%s", raw)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := loaded.Manifest.Validate(); err != nil {
+		t.Errorf("Validate on a manifest with no acme directory: %v", err)
+	}
+	if loaded.Manifest.ACME.DirectoryURL != "" {
+		t.Errorf("acme directory = %q, want it empty", loaded.Manifest.ACME.DirectoryURL)
 	}
 }

@@ -58,8 +58,8 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 
 ## ACME — certificates
 
-- **ACME-001** · The system must issue TLS certificates via ACME DNS-01, in-process, and must fail with the reason when the challenge fails.
-- **ACME-002** · Certificates must renew automatically before expiry, and `status` must warn when a certificate is within 14 days of expiring.
+- **ACME-001** · The system must issue TLS certificates via ACME DNS-01, in-process, and must fail with the reason when the challenge fails. The operator must be able to choose the ACME server at `init` — Let's Encrypt production by default, its staging environment, or any other ACME directory — so a first named deployment can be rehearsed without spending production's rate limits, and a malformed choice must be refused before an exchange is attempted.
+- **ACME-002** · Certificates must renew automatically before expiry, against the ACME server the bundle was issued by, and `status` must warn when a certificate is within 14 days of expiring.
 
 ## DNS — DNS drivers
 

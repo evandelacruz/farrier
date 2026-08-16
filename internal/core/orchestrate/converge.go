@@ -55,6 +55,15 @@ func Converge(ctx context.Context, t Transport, remoteDir string, b *bundle.Bund
 		return fmt.Errorf("orchestrate: converge: stage %s: %w", staging, err)
 	}
 
+	// Pinned here, after the staging directory has created remoteDir and
+	// before the swap installs remoteDir/compose. PinProjectName decides
+	// what to write by whether shipped Compose files are already there, and
+	// that question has to be asked about the previous converge's files,
+	// not this one's.
+	if err := PinProjectName(ctx, t, remoteDir, b); err != nil {
+		return fmt.Errorf("orchestrate: converge: %w", err)
+	}
+
 	names := make([]string, 0, len(b.Compose))
 	for name := range b.Compose {
 		names = append(names, name)

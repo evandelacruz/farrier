@@ -118,6 +118,7 @@ func TestHandleInitStartsJobAndReturnsID(t *testing.T) {
 		"blob": {"driver": "local", "config": {"path": "/tmp/blobs"}},
 		"acmeDnsProvider": "manual",
 		"acmeEmail": "ops@example.com",
+		"acmeDirectory": "staging",
 		"images": {"forgejo": "codeberg.org/forgejo/forgejo:latest"}
 	}`)
 
@@ -157,6 +158,12 @@ func TestHandleInitStartsJobAndReturnsID(t *testing.T) {
 	}
 	if gotParams.ACMEDNSProvider != "manual" || gotParams.ACMEEmail != "ops@example.com" {
 		t.Errorf("ACMEDNSProvider/ACMEEmail = %q/%q", gotParams.ACMEDNSProvider, gotParams.ACMEEmail)
+	}
+	// Passed through verbatim: expanding the shorthand and refusing a
+	// malformed URL are the core's calls, so both frontends get the same
+	// answer.
+	if gotParams.ACMEDirectory != "staging" {
+		t.Errorf("ACMEDirectory = %q, want it carried through to the core", gotParams.ACMEDirectory)
 	}
 	if gotParams.Images["forgejo"] != "codeberg.org/forgejo/forgejo:latest" {
 		t.Errorf("Images = %+v", gotParams.Images)

@@ -62,6 +62,7 @@ compose/              rendered Docker Compose definitions
 - Manifest format: YAML.
 - Versions are pinned by image digest, not tag.
 - `domain` is optional, and absent is what makes a bundle nameless (INIT-005, spec.md "Instances without a name"). A nameless manifest carries no `acme` section either, and the two must agree: a named bundle states the DNS-01 provider its zone was proven through, a nameless one states nothing.
+- `acme.directoryUrl` is the ACME server the bundle's certificates are issued and renewed against. `init` resolves the operator's choice — nothing, the shorthand `staging`, or a URL — to an absolute directory URL and writes that, so the manifest carries no shorthand to interpret. Absent is a manifest written before the field existed and means Let's Encrypt production. Every path that issues or renews reads it: a certificate issued by one CA must not be renewed by another (spec.md "The domain").
 - `webPort` is the host port `up` publishes Caddy on. Absent takes the tier's default: 443 for a named bundle, 8222 for a nameless one. Only the host side of the mapping moves; Caddy's container port is fixed.
 - `publicWebPort` is the port clients connect on when something already on the host holds the standard port and forwards to Farrier. Absent means Caddy is the edge, and the public URL uses `webPort`. A named bundle whose `webPort` is not 443 must set it — see spec.md "Reaching the forge" for why, and for the constraint that any such forwarder passes TCP through rather than terminating TLS.
 - `actions.colocatedRunner` is the CI runner config: `false` keeps the bundled Actions runner off the forge host, and the operator registers a remote runner against the bundle domain instead (spec.md "CI trust boundary"). Absent means enabled.
@@ -111,6 +112,25 @@ Forge state lives on the host, under `<RemoteDir>/state`, bind-mounted into the 
                            under; one line, not mounted
 ```
 
+Two records sit beside the state rather than inside it, because they describe the deployment rather than the forge:
+
+```
+<RemoteDir>/compose        the rendered Compose files this deployment was
+                           converged from; replaced wholesale on every
+                           converge
+<RemoteDir>/compose-project
+                           the Docker Compose project this deployment's
+                           containers belong to; one line, written once
+```
+
+`compose-project` is what keeps two deployments on one host apart. Compose resolves a project's containers by the project name and by nothing else — not by the directory it runs in, and not by the file list it is given — so a single name shared by every deployment made every deployment on a host one project, and `docker compose down --remove-orphans` from any of them a teardown of all of them. A drill on the machine hosting the live instance removed the live instance.
+
+The name is derived from the bundle's domain and the remote directory together. Both matter: the directory is the only thing separating a drill from the live instance whose snapshot and bundle it is rehearsing, and the domain is what separates two different bundles that happen to have picked the same directory. It is sanitized into the character set Compose accepts, since the domain is operator input.
+
+It is derived once and then read, never re-derived. `orchestrate.Converge` writes the record before it ships anything, and every command that addresses a deployment resolves the name out of the record in the same shell as the command it prefixes, so nothing that edits a manifest under a running instance can rename the project away from its own containers — `attach` (UP-007) is exactly that case. An absent or empty record resolves to `farrier`, the one name every deployment used before this record existed, so an instance deployed by an older binary stays reachable by `status`, `backup`, and `upgrade` and is never orphaned; its next converge pins that same name rather than renaming it. A remote directory with no shipped Compose files in it is a deployment that does not exist yet, and takes the derived name.
+
+`orchestrate.ProjectPath` is this record's single spelling, the same way `deploy.StateVersionPath` is for the one below it.
+
 These directories have to be usable by the uid the Forgejo container runs as, and how they get that way is not the same on every host: a Linux bind mount passes real uids through, so ownership must actually be set, while a macOS container runtime maps ownership across the mount boundary, where setting it is both unnecessary and refused to any user who is not root. So `up` sets ownership best-effort and then verifies the outcome rather than the mechanism — it runs the pinned Forgejo image as that uid, over these same mounts, and reads and writes a probe file in each directory, plus the SSH host key under `state/gitea`, which is shipped `0600` and useless if the container cannot read it. Ownership that could not be set is reported and not fatal; a forge that cannot use its state fails `up` at that step, naming the directory and the fix. Nothing detects the host's operating system or whether the target is local — that is the locality-dependent behavior ORCH-003 exists to rule out.
 
 Each command verifies the state it placed, over the paths it placed. `up` creates the two directories above and checks those. `restore` writes a directory per repository under `state/git` and the database under `state/gitea` before `up` runs at all, and checks those, the same way and in the same image. Neither stands in for the other: on a target whose state directories already exist and are already forge-owned — a restore re-run, an unfinished drill teardown, recovery onto a provisioned host — a top-level check passes while freshly restored content underneath is unusable, and a restore that cannot be used is a restore that failed.
@@ -145,7 +165,7 @@ All three follow one posture: a Go interface for in-tree drivers, plus an exec-b
 - **Keystore:** `Resolve(keyName) → secret` on every driver; `Store(keyName, secret)` on the optional `Writer` side, which `init` requires; `DescribeTarget(keyName) → string` on the optional `Describer` side, which names where key material lands so `init` can report it (INIT-006). A driver that cannot say — `command` hands storage to an operator's command, and the exec protocol has no `describe` method — returns nothing and is reported by driver name alone. Shipped: `file`, `command`.
 - **Blob:** `List`, `Get`, `Put`, streaming. Shipped: `local`, `s3`. Every `List` result carries `Modified`, the time an object was last written; an exec adapter written before that field existed omits it, which decodes as the zero time meaning *unknown* — never "very old".
 
-ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface.
+ACME DNS-01 uses lego's own provider set and is independent of the DNS driver interface. The ACME server itself is a manifest field rather than a driver: the protocol is one standard, so reaching Let's Encrypt staging, an internal CA, or any other issuer is a directory URL, not a second implementation.
 
 ### The rotation guard
 

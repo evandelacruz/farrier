@@ -26,6 +26,7 @@ type attachRequest struct {
 	Domain          string `json:"domain"`
 	ACMEDNSProvider string `json:"acmeDnsProvider"`
 	ACMEEmail       string `json:"acmeEmail,omitempty"`
+	ACMEDirectory   string `json:"acmeDirectory,omitempty"`
 	Address         string `json:"address"`
 	SSHKeyFile      string `json:"sshKeyFile,omitempty"`
 	KnownHostsFile  string `json:"knownHostsFile,omitempty"`
@@ -104,6 +105,7 @@ func (s *Server) runAttach(job *events.Job, b *bundle.Bundle, remoteDir string, 
 		Domain:          req.Domain,
 		ACMEDNSProvider: req.ACMEDNSProvider,
 		ACMEEmail:       req.ACMEEmail,
+		ACMEDirectory:   req.ACMEDirectory,
 		Address:         req.Address,
 	})
 }

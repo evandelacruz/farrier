@@ -354,8 +354,8 @@ func TestUpSucceeds(t *testing.T) {
 			sawCheckHost = true
 		case strings.Contains(cmd, "docker compose up -d"):
 			sawComposeUp = true
-			if !strings.Contains(cmd, "COMPOSE_PROJECT_NAME=farrier") {
-				t.Errorf("compose up command missing project name: %q", cmd)
+			if !strings.Contains(cmd, orchestrate.ProjectPath("/opt/farrier")) {
+				t.Errorf("compose up command does not resolve this deployment's project: %q", cmd)
 			}
 		case strings.Contains(cmd, "exec -T forgejo true"):
 			sawExecForgejoReady = true
@@ -365,8 +365,8 @@ func TestUpSucceeds(t *testing.T) {
 			sawExecCaddyReady = true
 		case strings.Contains(cmd, "admin user create"):
 			sawAdminCreate = true
-			if !strings.Contains(cmd, "COMPOSE_PROJECT_NAME=farrier") {
-				t.Errorf("admin create command missing project name: %q", cmd)
+			if !strings.Contains(cmd, orchestrate.ProjectPath("/opt/farrier")) {
+				t.Errorf("admin create command does not resolve this deployment's project: %q", cmd)
 			}
 		}
 	}
@@ -901,4 +901,48 @@ func keysOf(m map[string]string) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// Issuance and renewal reach the CA the manifest names, never a default:
+// a bundle rehearsed against Let's Encrypt staging that renewed against
+// production would swap the instance's trust chain out from under the
+// operator on some later `up`, with no command having asked for it. Every
+// host-converging path — `up`, `attach`, `promote`, `restore`, `drill`,
+// `upgrade` — reaches the ACME server through configureTLS, so this is the
+// one place that has to be right.
+func TestUpIssuesAgainstTheManifestsACMEDirectory(t *testing.T) {
+	const staging = "https://acme-staging-v02.api.letsencrypt.org/directory"
+	issuer := &fakeCertIssuer{}
+	b := testBundle(t)
+	b.Manifest.ACME.DirectoryURL = staging
+
+	if err := Up(context.Background(), events.NewJob(), newFakeHost(), b, Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(issuer.calls) != 1 {
+		t.Fatalf("cert issuer calls = %d, want 1", len(issuer.calls))
+	}
+	if got := issuer.calls[0].DirectoryURL; got != staging {
+		t.Errorf("issued against %q, want the manifest's %q", got, staging)
+	}
+}
+
+// A bundle written before the manifest recorded a CA names none, and that
+// is passed through untouched — acme.Config turns an empty directory into
+// Let's Encrypt production, so bundles already on disk keep issuing exactly
+// where they always did.
+func TestUpPassesThroughAnUnsetACMEDirectory(t *testing.T) {
+	issuer := &fakeCertIssuer{}
+	b := testBundle(t)
+	b.Manifest.ACME.DirectoryURL = ""
+
+	if err := Up(context.Background(), events.NewJob(), newFakeHost(), b, Options{RemoteDir: "/opt/farrier", CertIssuer: issuer}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(issuer.calls) != 1 {
+		t.Fatalf("cert issuer calls = %d, want 1", len(issuer.calls))
+	}
+	if got := issuer.calls[0].DirectoryURL; got != "" {
+		t.Errorf("issued against %q, want the manifest's empty value passed through", got)
+	}
 }
