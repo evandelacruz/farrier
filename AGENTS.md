@@ -63,10 +63,12 @@ shipped. Plan from a fresh `origin/main` worktree — see the conductor skill.
 ## Cloud environment notes
 
 - The repo lives at `github.com/evandelacruz/farrier`. GitHub hosts the build
-  for now; "Farrier hosts Farrier" is a later milestone, and docs/spec.md holds
-  its cutover sequence and what counts as met — landing one pull request end to
-  end on the new instance, then `backup` and `drill`. `import` is step 2 of that
-  sequence, not the test.
+  for now. "Farrier hosts a real project" is the dogfooding milestone — a
+  private project, not this repository — and docs/spec.md holds its cutover
+  sequence and what counts as met: landing one pull request end to end on the
+  new instance, then `backup` and `drill`. `import` is step 2 of that sequence,
+  not the test. "Farrier hosts Farrier" is a later milestone, gated on porting
+  this fleet off the GitHub API.
 - Open PRs **ready for review, not draft.** If the tooling defaults to draft,
   set `draft: false` or run `gh pr ready` before finishing.
 - Never merge. Evan merges.

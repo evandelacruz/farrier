@@ -449,9 +449,11 @@ stop — do not poll for the workers, they notify on completion.
 
 ## When this moves to Forgejo
 
-"Farrier hosts Farrier" moves this fleet off GitHub's API onto Forgejo's, and
-these are the findings from checking that surface — recorded here so the port
-is an edit rather than a re-derivation. None of it is in effect yet.
+"Farrier hosts Farrier" moves this fleet off GitHub's API onto Forgejo's. That
+port is the gate on the milestone, not a consequence of it (docs/spec.md,
+"Farrier hosts Farrier"). These are the findings from checking that surface —
+recorded here so the port is an edit rather than a re-derivation. None of it is
+in effect yet.
 
 **The good news is what does not change.** The two things this skill leans on
 hardest already avoid the parts that differ. Verdict labels carry review state,

@@ -265,19 +265,21 @@ The full lifecycle — create, deploy, publish, import, name, protect, relocate,
 
 Quarantine exists because a drill instance carries production's identity. In drill mode: outbound notifications (webhooks, email) are disabled by config override, DNS stays untouched, and the operator reaches the instance through an SSH tunnel. The drill proves the backup restores and CI runs while the outside world hears nothing.
 
-## Farrier hosts Farrier
+## Farrier hosts a real project
 
-The project moves its own development onto an instance it deploys. This is the acceptance test for the whole system: every command runs against real work, on a repository whose loss would matter, operated by the person who wrote it.
+A private project moves its development onto an instance Farrier deploys. This is the acceptance test for the whole system: every command runs against real work, on a repository whose loss would matter, with real pull-request and CI traffic, operated by the person who wrote the tool.
+
+The subject is a private project rather than this repository. Farrier is built for private repositories ("Scope" in the README), so the acceptance test runs against the user profile the project claims.
 
 The cutover, in order:
 
 1. `init` a bundle for the project's domain, then `up` it on a host.
-2. `import` this repository from GitHub — code, full history, LFS objects, default branch.
+2. `import` the project from its current host — code, full history, LFS objects, default branch.
 3. Re-enter CI secrets and re-create branch protection on the new instance. Neither travels with an import, and neither is Farrier's to carry: they are Forgejo configuration the operator owns.
 4. Land one pull request end to end — branch, push over SSH, review, green CI on a Forgejo Actions runner, merge.
-5. `backup`, then `drill`, before the GitHub copy stops being the working one.
+5. `backup`, then `drill`, before the old copy stops being the working one.
 
-**Milestone met** when step 4 lands and step 5 passes. Issue and pull-request history stay on GitHub; the repository moves, its GitHub metadata does not.
+**Milestone met** when step 4 lands and step 5 passes. Pull requests, review comments, and CI history stay on the old host; the repository moves, its metadata does not.
 
 ### A copy of the bundle must survive the instance
 
@@ -286,6 +288,12 @@ The bundle lives at `.farrier/` in the project, and the project is hosted on the
 Ordinary git already breaks the loop — every developer clone carries `.farrier/`, so a working copy on any machine is a complete bundle. The rule is that at least one such copy must exist somewhere the instance does not serve, and that the operator knows which one it is. A single-developer instance whose only clone is on a laptop that dies has lost its bundle as surely as one that kept it nowhere.
 
 This is operator discipline rather than an enforced constraint. Secrets are unaffected: none of them lives in the bundle, and their custody is the keystore driver's ("Key custody").
+
+## Farrier hosts Farrier
+
+A later milestone: this repository moves onto an instance it deploys, by the same cutover.
+
+It is gated on porting the agent fleet that develops this project off the GitHub API. The fleet runs as GitHub webhooks against GitHub's API, and Forgejo's surface differs — no GraphQL, no review-thread objects, commit statuses in place of check runs — so moving this repository before the port breaks the development loop. The porting notes live in `.claude/skills/farrier-conductor/SKILL.md` under "When this moves to Forgejo".
 
 ## Distribution and licensing
 
