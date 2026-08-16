@@ -134,7 +134,7 @@ func runUp(args []string) int {
 	bundleDir := fs.String("bundle", "", "path to the bundle directory (required)")
 	target := fs.String("target", "", "ssh://user@host[:port] of the deployment target (required)")
 	remoteDir := fs.String("remote-dir", orchestrate.DefaultRemoteDir, "directory on the host to deploy into")
-	address := fs.String("address", "", "IP or hostname to serve a nameless bundle's web UI at over plain HTTP (nameless bundles only)")
+	address := fs.String("address", "", "IP or hostname to serve a nameless bundle's web UI at over plain HTTP (nameless bundles only); must be reachable from a container when the bundle deploys CI, so not a loopback address")
 	keyFile := fs.String("ssh-key", "", "SSH private key file (default: the operator's SSH agent)")
 	knownHosts := fs.String("known-hosts", "", "known_hosts file (default: ~/.ssh/known_hosts)")
 	timeout := fs.Duration("ssh-timeout", 0, "SSH dial and handshake timeout (default: orchestrate.DefaultTimeout)")
