@@ -48,7 +48,7 @@ Foundation first (CORE, KEY, ORCH), then the state layer, then the commands buil
 ## FORGE — forge configuration
 
 - **FORGE-001** · Forgejo `app.ini` must be rendered fully from the manifest, so the install wizard is pre-answered and never presented.
-- **FORGE-002** · The first admin account must be created during deployment, with credentials emitted exactly once through the event stream.
+- **FORGE-002** · The first admin account must be created during deployment, with credentials emitted exactly once through the event stream. Those credentials include an access token, minted for that account and scoped to exactly what publishing a project needs, so the operator reaches `publish` (IMPT-004) without leaving the terminal for the forge's web UI. A deployment that finds the account already there issues neither, and says where a replacement token is created.
 - **FORGE-003** · Fork pull requests on public repositories must require maintainer approval before CI runs, by default.
 - **FORGE-004** · CI reconciliation must reset `running` jobs to `queued` so they re-dispatch without operator action.
 - **FORGE-005** · `up` must deploy a colocated Forgejo Actions runner, registered against the instance without operator action, so a workflow pushed to a fresh deployment runs. The runner reaches the host's Docker socket to start job containers; an operator who does not want that on the forge host must be able to disable the colocated runner and register a remote one instead.

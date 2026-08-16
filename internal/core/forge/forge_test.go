@@ -85,8 +85,8 @@ func TestSmokeRepositoryOwnerIsTheAdminAccount(t *testing.T) {
 	if owner != a.Username {
 		t.Errorf("smoke repository owner = %q, admin username = %q — they must be the same account", owner, a.Username)
 	}
-	if !strings.Contains(runner.gotCommand, "owner="+a.Username) {
-		t.Errorf("smoke script does not set owner=%s: %q", a.Username, runner.gotCommand)
+	if !strings.Contains(runner.lastCmd(), "owner="+a.Username) {
+		t.Errorf("smoke script does not set owner=%s: %q", a.Username, runner.lastCmd())
 	}
 }
 
@@ -113,26 +113,75 @@ func TestNewAdminAccountRequiresDomain(t *testing.T) {
 	}
 }
 
-// fakeRunner records the command it was asked to run and plays back a
+// fakeRunner records every command it was asked to run and plays back a
 // canned result, standing in for orchestrate.Client in tests. It writes to
 // both streams because the real command does: Forgejo's CLI puts some fatal
 // errors on stdout.
+//
+// fakeRunner answers the two commands Bootstrap issues — `admin user
+// create` and `admin user generate-access-token` — independently, since
+// every interesting case has one of them succeeding and the other not.
+// stdout/stderr/err are the create command's; the token* fields are the
+// mint's.
 type fakeRunner struct {
-	gotCommand string
-	stdout     string
-	stderr     string
-	err        error
+	commands []string
+
+	stdout string
+	stderr string
+	err    error
+
+	tokenStdout string
+	tokenStderr string
+	tokenErr    error
 }
 
+// mintMarker is the substring that tells Bootstrap's mint apart from every
+// other command a test may put through this fake. It is the token's name
+// rather than the CLI subcommand, because the drill's smoke script mints a
+// token of its own and would otherwise match too.
+const mintMarker = "--token-name '" + publishTokenName + "'"
+
 func (f *fakeRunner) Run(ctx context.Context, command string, stdout, stderr io.Writer) error {
-	f.gotCommand = command
-	if f.stdout != "" && stdout != nil {
-		stdout.Write([]byte(f.stdout))
+	f.commands = append(f.commands, command)
+
+	out, errOut, err := f.stdout, f.stderr, f.err
+	if strings.Contains(command, mintMarker) {
+		out, errOut, err = f.tokenStdout, f.tokenStderr, f.tokenErr
 	}
-	if f.stderr != "" && stderr != nil {
-		stderr.Write([]byte(f.stderr))
+	if out != "" && stdout != nil {
+		stdout.Write([]byte(out))
 	}
-	return f.err
+	if errOut != "" && stderr != nil {
+		stderr.Write([]byte(errOut))
+	}
+	return err
+}
+
+// createCmd is the `admin user create` invocation the runner saw, or "".
+func (f *fakeRunner) createCmd() string {
+	return f.commandContaining("admin user create")
+}
+
+// mintCmd is the `generate-access-token` invocation the runner saw, or "".
+func (f *fakeRunner) mintCmd() string {
+	return f.commandContaining(mintMarker)
+}
+
+// lastCmd is the most recent command the runner saw, or "".
+func (f *fakeRunner) lastCmd() string {
+	if len(f.commands) == 0 {
+		return ""
+	}
+	return f.commands[len(f.commands)-1]
+}
+
+func (f *fakeRunner) commandContaining(substr string) string {
+	for _, c := range f.commands {
+		if strings.Contains(c, substr) {
+			return c
+		}
+	}
+	return ""
 }
 
 func TestBootstrapRunsAdminUserCreate(t *testing.T) {
@@ -145,8 +194,8 @@ func TestBootstrapRunsAdminUserCreate(t *testing.T) {
 	}
 
 	want := "docker compose exec -T -u git forgejo forgejo admin user create --username 'admin' --email 'admin@forge.example.com' --password 's3cret-pw' --admin --must-change-password=false"
-	if runner.gotCommand != want {
-		t.Errorf("command =\n%s\nwant\n%s", runner.gotCommand, want)
+	if runner.createCmd() != want {
+		t.Errorf("command =\n%s\nwant\n%s", runner.createCmd(), want)
 	}
 }
 
@@ -161,8 +210,10 @@ func TestBootstrapRunsAsTheGitUser(t *testing.T) {
 	if err := Bootstrap(context.Background(), runner, events.NewJob(), account); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	if want := "-u " + runUser + " "; !strings.Contains(runner.gotCommand, want) {
-		t.Errorf("command %q does not run as the %s user (want %q)", runner.gotCommand, runUser, want)
+	for _, got := range runner.commands {
+		if want := "-u " + runUser + " "; !strings.Contains(got, want) {
+			t.Errorf("command %q does not run as the %s user (want %q)", got, runUser, want)
+		}
 	}
 }
 
@@ -271,7 +322,7 @@ func TestBootstrapSkipsWhenAlreadyExistsArrivesOnStdout(t *testing.T) {
 
 func TestBootstrapEmitsCredentialsExactlyOnce(t *testing.T) {
 	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
-	runner := &fakeRunner{}
+	runner := &fakeRunner{tokenStdout: "mintedtoken0001\n"}
 	job := events.NewJob()
 
 	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
@@ -419,7 +470,296 @@ func TestAdminAccountWithEmbeddedShellMetacharactersStaysQuoted(t *testing.T) {
 		t.Fatalf("Bootstrap: %v", err)
 	}
 	want := fmt.Sprintf("--password %s", quote(account.Password.Reveal()))
-	if !strings.Contains(runner.gotCommand, want) {
-		t.Errorf("command = %q, want it to contain %q", runner.gotCommand, want)
+	if !strings.Contains(runner.createCmd(), want) {
+		t.Errorf("command = %q, want it to contain %q", runner.createCmd(), want)
+	}
+}
+
+// mintedToken stands in for what `admin user generate-access-token --raw`
+// prints: the token on its own line, nothing else.
+const mintedToken = "6f1c0aab6e9d4b2f9a3d5c7e8b0f2a4d6c8e0a1b"
+
+// TestBootstrapMintsThePublishToken pins the whole mint invocation. It is
+// the command that keeps the quick start inside the terminal, and every
+// piece of it is load-bearing: `-u git` because `docker compose exec`
+// defaults to root and Forgejo refuses to run as root, `--raw` because
+// anything else wraps the token in a sentence, and the scopes because a
+// token that cannot create a repository does not let `publish` finish.
+func TestBootstrapMintsThePublishToken(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{tokenStdout: mintedToken + "\n"}
+
+	if err := Bootstrap(context.Background(), runner, events.NewJob(), account); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	want := "docker compose exec -T -u git forgejo forgejo admin user generate-access-token " +
+		"--username 'admin' --token-name 'farrier-publish' --scopes 'write:repository,write:user' --raw"
+	if runner.mintCmd() != want {
+		t.Errorf("mint command =\n%s\nwant\n%s", runner.mintCmd(), want)
+	}
+}
+
+// TestBootstrapMintsAfterTheAccountExists: the token is minted for an
+// account, so the order is not negotiable — a mint issued before the create
+// lands has no user to issue against.
+func TestBootstrapMintsAfterTheAccountExists(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{tokenStdout: mintedToken}
+
+	if err := Bootstrap(context.Background(), runner, events.NewJob(), account); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("ran %d commands, want 2 (create, mint): %q", len(runner.commands), runner.commands)
+	}
+	if !strings.Contains(runner.commands[0], "admin user create") {
+		t.Errorf("command 0 = %q, want the create", runner.commands[0])
+	}
+	if !strings.Contains(runner.commands[1], mintMarker) {
+		t.Errorf("command 1 = %q, want the mint", runner.commands[1])
+	}
+}
+
+// TestBootstrapEmitsTheMintedToken is what the operator's terminal has to
+// carry for `farrier publish` to work without a trip to the web UI: the
+// token, in the same one event the credentials arrive in, and named so it
+// can be found and revoked on the account later.
+func TestBootstrapEmitsTheMintedToken(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{tokenStdout: mintedToken + "\n"}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	got := job.Events()
+	if len(got) != 2 {
+		t.Fatalf("got %d events, want 2 (started, succeeded): %+v", len(got), got)
+	}
+	last := got[len(got)-1]
+	if last.State != events.StateSucceeded {
+		t.Fatalf("event state = %v, want succeeded", last.State)
+	}
+	if !strings.Contains(last.Detail, mintedToken) {
+		t.Errorf("succeeded detail %q does not carry the minted token", last.Detail)
+	}
+	if !strings.Contains(last.Detail, publishTokenName) {
+		t.Errorf("succeeded detail %q does not name the token on the account, so the operator cannot find it to revoke", last.Detail)
+	}
+	if !strings.Contains(last.Detail, account.Password.Reveal()) {
+		t.Errorf("succeeded detail %q dropped the password when it gained the token", last.Detail)
+	}
+
+	occurrences := 0
+	for _, ev := range got {
+		occurrences += strings.Count(ev.Detail, mintedToken)
+	}
+	if occurrences != 1 {
+		t.Errorf("token appears %d times across the event stream, want exactly 1", occurrences)
+	}
+}
+
+// TestPublishTokenScopesAreExactlyWhatPublishUses pins the scope string
+// against the calls internal/core/publish makes. Forgejo takes the level
+// from the HTTP method — anything but GET needs write, and write implies
+// read — so two write scopes cover all five calls: /user and /user/keys are
+// the user category, /user/repos and /repos/{owner}/{repo} the repository
+// one. Anything added here is a permission an operator did not ask for.
+func TestPublishTokenScopesAreExactlyWhatPublishUses(t *testing.T) {
+	want := []string{"write:repository", "write:user"}
+	got := strings.Split(publishTokenScopes, ",")
+	if len(got) != len(want) {
+		t.Fatalf("scopes = %q, want exactly %q", publishTokenScopes, want)
+	}
+	for i, scope := range got {
+		if scope != want[i] {
+			t.Errorf("scope %d = %q, want %q", i, scope, want[i])
+		}
+	}
+	for _, unwanted := range []string{"all", "write:admin", "write:organization", "public-only"} {
+		if strings.Contains(publishTokenScopes, unwanted) {
+			t.Errorf("scopes %q include %q, which publish never uses", publishTokenScopes, unwanted)
+		}
+	}
+}
+
+// TestBootstrapMintsNothingWhenTheAccountAlreadyExists is the repeat-`up`
+// case. A token per deployment would pile dead credentials onto the account
+// forever, and the token this run would emit is not one the operator's
+// earlier run has — so the path mints nothing, emits no credentials, and
+// says where to get a new token instead.
+func TestBootstrapMintsNothingWhenTheAccountAlreadyExists(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{
+		stderr:      "Command error: user already exists [name: admin]",
+		err:         errors.New("exit status 1"),
+		tokenStdout: mintedToken,
+	}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil (already-bootstrapped host is not a failure)", err)
+	}
+
+	if runner.mintCmd() != "" {
+		t.Errorf("already-exists path minted a token: %q", runner.mintCmd())
+	}
+	if len(runner.commands) != 1 {
+		t.Errorf("ran %d commands, want 1 (the create attempt alone): %q", len(runner.commands), runner.commands)
+	}
+	for _, ev := range job.Events() {
+		if strings.Contains(ev.Detail, mintedToken) {
+			t.Errorf("already-exists event %+v emitted a token the account does not have", ev)
+		}
+	}
+	last := job.Events()[len(job.Events())-1]
+	if !strings.Contains(last.Detail, "web UI") {
+		t.Errorf("already-exists detail %q does not tell the operator where to create a new token", last.Detail)
+	}
+}
+
+// TestBootstrapReportsAFailingMintFromBothStreams: the mint is a Forgejo
+// CLI command through `docker compose exec`, so it fails the same two ways
+// `admin user create` does — its own error on stderr, the run-as-root abort
+// on stdout — and the operator gets whichever one carries the message.
+func TestBootstrapReportsAFailingMintFromBothStreams(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{
+		tokenStdout: "Forgejo is not supposed to be run as root. Sorry.",
+		tokenStderr: "Command error: access token name has been used already",
+		tokenErr:    errors.New("exit status 1"),
+	}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil (the account exists; only its token is missing)", err)
+	}
+
+	last := job.Events()[len(job.Events())-1]
+	for _, want := range []string{"not supposed to be run as root", "access token name has been used already"} {
+		if !strings.Contains(last.Detail, want) {
+			t.Errorf("detail %q missing %q", last.Detail, want)
+		}
+	}
+	if !strings.Contains(last.Detail, "web UI") {
+		t.Errorf("detail %q does not tell the operator where to create the token by hand", last.Detail)
+	}
+}
+
+// TestBootstrapStillEmitsCredentialsWhenTheMintFails is why a failing mint
+// is not a failing step. The password in account was generated for this
+// call and exists nowhere else; a second `up` takes the already-exists path
+// and never emits it. Losing the token costs a visit to the web UI, losing
+// the password costs the account — so the credentials go out either way.
+func TestBootstrapStillEmitsCredentialsWhenTheMintFails(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{tokenStderr: "database is locked", tokenErr: errors.New("exit status 1")}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil", err)
+	}
+
+	got := job.Events()
+	if len(got) != 2 {
+		t.Fatalf("got %d events, want 2 (started, succeeded): %+v", len(got), got)
+	}
+	last := got[len(got)-1]
+	if last.State != events.StateSucceeded {
+		t.Errorf("event state = %v, want succeeded — the account was created", last.State)
+	}
+	if !strings.Contains(last.Detail, account.Password.Reveal()) {
+		t.Fatalf("detail %q dropped the password on a failing mint, stranding the operator", last.Detail)
+	}
+	if !strings.Contains(last.Detail, "database is locked") {
+		t.Errorf("detail %q does not say why the token is missing", last.Detail)
+	}
+}
+
+// TestBootstrapDoesNotLeakTheTokenOnAFailingMint mirrors the password's own
+// redaction test for the token: a command that prints the token and then
+// exits non-zero must not have it reported back. The token is read out of
+// stdout before anything is reported, precisely so it can be removed from
+// what is.
+func TestBootstrapDoesNotLeakTheTokenOnAFailingMint(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{
+		tokenStdout: mintedToken,
+		tokenStderr: "Command error: writing token " + mintedToken + " to the database failed",
+		tokenErr:    errors.New("exit status 1"),
+	}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil", err)
+	}
+
+	for _, ev := range job.Events() {
+		if strings.Contains(ev.Detail, mintedToken) {
+			t.Errorf("event %+v leaked a token that was never issued", ev)
+		}
+	}
+	last := job.Events()[len(job.Events())-1]
+	if !strings.Contains(last.Detail, redactedValue) {
+		t.Errorf("detail %q does not mark where the token was removed", last.Detail)
+	}
+	if !strings.Contains(last.Detail, "to the database failed") {
+		t.Errorf("detail %q lost the rest of the message to redaction", last.Detail)
+	}
+}
+
+// TestBootstrapMintFailureWithNoOutputDoesNotLeak: the transport's error
+// text embeds the whole command it ran, so the mint path may no more use
+// err.Error() than the create path may. Nothing but the command's own
+// output — redacted — reaches the operator.
+func TestBootstrapMintFailureWithNoOutputDoesNotLeak(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	runner := &fakeRunner{tokenErr: fmt.Errorf("orchestrate: run %q: context canceled", tokenCommand(account))}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), runner, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v, want nil", err)
+	}
+	last := job.Events()[len(job.Events())-1]
+	if strings.Contains(last.Detail, "context canceled") {
+		t.Errorf("detail %q reports the transport's error text, which embeds the command", last.Detail)
+	}
+	if !strings.Contains(last.Detail, "no output") {
+		t.Errorf("detail %q does not say the command explained nothing", last.Detail)
+	}
+}
+
+// TestBootstrapTreatsASilentMintAsNoToken: `--raw` prints the token and
+// nothing else, so an exit-zero mint with an empty stdout has produced no
+// token to hand over. Emitting the empty string as one would send the
+// operator off to debug a token that does not exist.
+func TestBootstrapTreatsASilentMintAsNoToken(t *testing.T) {
+	account := AdminAccount{Username: "admin", Email: "admin@forge.example.com", Password: keystore.NewSecret("s3cret-pw")}
+	job := events.NewJob()
+
+	if err := Bootstrap(context.Background(), &fakeRunner{}, job, account); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	last := job.Events()[len(job.Events())-1]
+	if !strings.Contains(last.Detail, "no token") {
+		t.Errorf("detail %q does not say the command produced no token", last.Detail)
+	}
+	if !strings.Contains(last.Detail, "web UI") {
+		t.Errorf("detail %q does not tell the operator where to create one", last.Detail)
+	}
+}
+
+// TestRedactRemovesEveryValue: redact grew a second secret when the token
+// arrived, and a loop that stops after the first one leaks the rest.
+func TestRedactRemovesEveryValue(t *testing.T) {
+	got := redact("password pw and token tk and pw again", "pw", "tk")
+	want := "password " + redactedValue + " and token " + redactedValue + " and " + redactedValue + " again"
+	if got != want {
+		t.Errorf("redact = %q, want %q", got, want)
+	}
+	if got := redact("nothing to remove", "", ""); got != "nothing to remove" {
+		t.Errorf("redact with empty secrets = %q, want the input unchanged", got)
 	}
 }

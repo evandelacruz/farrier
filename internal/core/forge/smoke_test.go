@@ -23,7 +23,7 @@ func TestSmokeCICreatesARepositoryCommitsAWorkflowAndWaitsForTheRun(t *testing.T
 		t.Errorf("Repository = %q, want %q", result.Repository, want)
 	}
 
-	cmd := runner.gotCommand
+	cmd := runner.lastCmd()
 	for _, want := range []string{
 		// Driven from inside the forgejo container, over the same
 		// `docker compose exec` path the rest of the package uses.
@@ -58,8 +58,8 @@ func TestSmokeCICommitsATrivialWorkflow(t *testing.T) {
 	}
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(smokeWorkflow()))
-	if !strings.Contains(runner.gotCommand, encoded) {
-		t.Fatalf("command does not carry the base64-encoded workflow:\n%s", runner.gotCommand)
+	if !strings.Contains(runner.lastCmd(), encoded) {
+		t.Fatalf("command does not carry the base64-encoded workflow:\n%s", runner.lastCmd())
 	}
 
 	workflow := smokeWorkflow()
@@ -83,11 +83,11 @@ func TestSmokeCIMintsItsTokenInsideTheContainer(t *testing.T) {
 		t.Fatalf("SmokeCI: %v", err)
 	}
 
-	if !strings.Contains(runner.gotCommand, "token=$(forgejo admin user generate-access-token") {
-		t.Errorf("command does not mint its own token in-container:\n%s", runner.gotCommand)
+	if !strings.Contains(runner.lastCmd(), "token=$(forgejo admin user generate-access-token") {
+		t.Errorf("command does not mint its own token in-container:\n%s", runner.lastCmd())
 	}
-	if !strings.Contains(runner.gotCommand, `auth="Authorization: token $token"`) {
-		t.Errorf("command does not use the minted token by reference:\n%s", runner.gotCommand)
+	if !strings.Contains(runner.lastCmd(), `auth="Authorization: token $token"`) {
+		t.Errorf("command does not use the minted token by reference:\n%s", runner.lastCmd())
 	}
 }
 
@@ -238,8 +238,8 @@ func TestSmokeScriptUsesTheConfiguredWait(t *testing.T) {
 	}
 
 	for _, want := range []string{"+ 90))", "sleep 3"} {
-		if !strings.Contains(runner.gotCommand, want) {
-			t.Errorf("command missing %q:\n%s", want, runner.gotCommand)
+		if !strings.Contains(runner.lastCmd(), want) {
+			t.Errorf("command missing %q:\n%s", want, runner.lastCmd())
 		}
 	}
 }

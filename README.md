@@ -150,16 +150,11 @@ Two things about that path:
 
 Whatever you choose, pass the same `-remote-dir` to every later command against that host — `backup`, `status`, `drill`, `upgrade` all default to `/opt/farrier` too.
 
-`up` prints the first admin account's credentials exactly once, through the event stream. Save them.
+`up` prints the first admin account's credentials exactly once, through the event stream — its password, and an access token for the next step. Save them.
 
 ### 5. Push your project to it
 
-Create an access token in the forge's web UI, under **Settings → Applications → Access Tokens** (`/user/settings/applications` on the instance). Give it two permissions, both **Read and Write**:
-
-- **repository** — `publish` creates the project's repository on the instance.
-- **user** — it reads which account the token belongs to, and registers your SSH key on that account.
-
-Then:
+Export the token `up` printed:
 
 ```bash
 export FARRIER_TARGET_TOKEN=...        # never passed as a flag
