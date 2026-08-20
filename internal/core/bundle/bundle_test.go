@@ -297,6 +297,76 @@ func TestColocatedRunnerSurvivesSaveAndLoad(t *testing.T) {
 	}
 }
 
+// FORGE-005: the job image is a manifest field with the lean default the
+// constant used to hold. A manifest that names none — one written before the
+// field existed — resolves to it rather than to nothing.
+func TestActionsJobImageDefaultsToTheLeanImage(t *testing.T) {
+	m := validManifest()
+	if m.Actions.JobImage != "" {
+		t.Error("NewManifest wrote a job image; that is init's call")
+	}
+	if got := m.ActionsJobImageOrDefault(); got != DefaultActionsJobImage {
+		t.Errorf("ActionsJobImageOrDefault() = %q, want %q", got, DefaultActionsJobImage)
+	}
+
+	const chosen = "ghcr.io/catthehacker/ubuntu:act-22.04"
+	m.Actions.JobImage = chosen
+	if got := m.ActionsJobImageOrDefault(); got != chosen {
+		t.Errorf("ActionsJobImageOrDefault() = %q, want the manifest's %q", got, chosen)
+	}
+
+	m.Actions.JobImage = "   "
+	if got := m.ActionsJobImageOrDefault(); got != DefaultActionsJobImage {
+		t.Errorf("a blank job image resolved to %q, want the default", got)
+	}
+}
+
+// Unlike Images, the job image is not digest-pinned: it is what future jobs
+// run in rather than what this instance is, so a plain tag is valid and an
+// operator can move it without re-running init.
+func TestValidateAcceptsAnUnpinnedJobImage(t *testing.T) {
+	m := validManifest()
+	m.Actions.JobImage = "ghcr.io/catthehacker/ubuntu:act-22.04"
+	if err := m.Validate(); err != nil {
+		t.Errorf("Validate rejected an unpinned job image: %v", err)
+	}
+}
+
+// It is written into the runner's configuration file once per label, so a
+// value carrying whitespace is either a broken reference or configuration
+// smuggled in through the manifest.
+func TestValidateRejectsAJobImageWithWhitespace(t *testing.T) {
+	for _, image := range []string{
+		"node:22 --privileged",
+		"node:22\nprivileged: true",
+		"node:22\ttrailing",
+	} {
+		m := validManifest()
+		m.Actions.JobImage = image
+		if err := m.Validate(); err == nil {
+			t.Errorf("Validate accepted job image %q", image)
+		}
+	}
+}
+
+func TestActionsJobImageSurvivesSaveAndLoad(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b := validBundle()
+	const chosen = "ghcr.io/catthehacker/ubuntu:act-22.04"
+	b.Manifest.Actions.JobImage = chosen
+
+	if err := b.Save(dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Manifest.ActionsJobImageOrDefault(); got != chosen {
+		t.Errorf("job image loaded as %q, want %q", got, chosen)
+	}
+}
+
 // INIT-005: a nameless bundle survives Save and Load like any other, and the
 // manifest it writes omits the domain key rather than writing an empty one.
 func TestNamelessBundleSurvivesSaveAndLoad(t *testing.T) {

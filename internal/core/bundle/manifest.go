@@ -63,6 +63,17 @@ const (
 	DefaultNamelessWebPort = 8222
 )
 
+// DefaultActionsJobImage is the container image workflow steps run in when
+// the manifest names none (ActionsConfig.JobImage). Every label the
+// colocated runner answers to points at it, so a workflow written for
+// GitHub's `runs-on: ubuntu-latest` schedules on a fresh instance without
+// rewriting the file.
+//
+// It is a plain Node image, not a rebuild of GitHub's runner VM. That keeps
+// a first `up` to a small pull, at the cost of a workflow assuming GitHub's
+// preinstalled toolbox having to install what it uses (docs/using.md).
+const DefaultActionsJobImage = "docker.io/library/node:22-bookworm"
+
 // standardHTTPSPort and standardHTTPPort are the ports a URL of each scheme
 // implies, and therefore the ports WebURL leaves out of the URL it renders.
 const (
@@ -175,6 +186,33 @@ type ActionsConfig struct {
 	// Forgejo database either way, so nothing else about the instance
 	// changes (FAIL-005).
 	ColocatedRunner *bool `yaml:"colocatedRunner,omitempty"`
+
+	// JobImage is the container image every workflow step runs in when it
+	// does not name one of its own — the image behind each label the
+	// colocated runner answers to (FORGE-005). Empty resolves to
+	// DefaultActionsJobImage; see ActionsJobImageOrDefault.
+	//
+	// It is a field rather than a constant because the right answer is a
+	// trade only the operator can make. The default is a plain Node image,
+	// small enough that a first `up` is quick and honest about carrying
+	// nothing else. An operator who wants closer parity with GitHub's
+	// ubuntu-latest — its preinstalled toolbox, so a ported workflow finds
+	// what it expects — points this at an image built for that and accepts a
+	// pull measured in gigabytes. Neither answer is right for everyone, so
+	// the lean one is the default and the fat one is a line of YAML.
+	//
+	// Unlike Images, it is deliberately *not* pinned by digest and not
+	// frozen at `init`. Images holds the components `up` deploys, which are
+	// the instance: a restore has to bring back the same forge at the same
+	// version, so those are resolved to digests once and never move
+	// (spec.md "Version pinning"). This image is not part of the instance —
+	// nothing in a snapshot depends on it, no state was written by it, and
+	// it is pulled by the host's Docker daemon when a job starts rather than
+	// by any Farrier command. It is closer to a workflow's own `container:`
+	// than to the Forgejo image, and freezing it would mean an operator
+	// could not move CI's toolchain without re-running `init` on a bundle
+	// whose identity must not change.
+	JobImage string `yaml:"jobImage,omitempty"`
 }
 
 // Manifest is the bundle's farrier.yaml: domain, published web port and the
@@ -611,6 +649,40 @@ func (m *Manifest) ColocatedRunnerDeclared() bool {
 	return m.Actions.ColocatedRunner != nil
 }
 
+// ActionsJobImageOrDefault reports the container image workflow steps run in
+// on this bundle's colocated runner: the manifest's own Actions.JobImage, or
+// DefaultActionsJobImage when it names none. Every caller reads it through
+// here — the same way GitSSHPortOrDefault is the one answer for git over SSH
+// — so the image the runner declares per label and the image an operator
+// reads about cannot disagree, and a manifest written before the field
+// existed resolves to what the constant always held.
+func (m *Manifest) ActionsJobImageOrDefault() string {
+	if strings.TrimSpace(m.Actions.JobImage) == "" {
+		return DefaultActionsJobImage
+	}
+	return m.Actions.JobImage
+}
+
+// ValidateActionsJobImage checks that a job image is something a runner
+// configuration can carry. Empty is fine — that is the default — but a value
+// with whitespace in it is not: it is written into the runner's own
+// configuration file, once per label, and a reference carrying a newline or
+// a space is either a broken image name or a line of configuration the
+// manifest smuggled in.
+//
+// The check stops there on purpose. Whether the image exists, and whether it
+// holds what a workflow needs, is answered by the host's Docker daemon when
+// a job starts, and nothing here can know it earlier.
+func ValidateActionsJobImage(image string) error {
+	if strings.TrimSpace(image) == "" {
+		return nil
+	}
+	if strings.ContainsAny(image, " \t\r\n") {
+		return fmt.Errorf("bundle: actions job image %q must not contain whitespace", image)
+	}
+	return nil
+}
+
 // NewManifest builds a manifest with all four state kinds declared and the
 // default checksum algorithm set. An empty domain with a zero acmeCfg builds
 // a nameless bundle (INIT-005); the two go together, and Validate rejects
@@ -665,6 +737,9 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	if err := ValidateGitSSHPort(m.GitSSHPort); err != nil {
+		return err
+	}
+	if err := ValidateActionsJobImage(m.Actions.JobImage); err != nil {
 		return err
 	}
 	if err := m.ValidateWebPorts(); err != nil {

@@ -18,12 +18,41 @@ import (
 //
 // It sits alongside hostConfigDir rather than under stateDir on purpose: it
 // holds the runner's secret, which is bundle key material resolved fresh on
-// every deploy, and the credentials file the runner derives from it, which
-// is reproducible from that secret alone. Nothing precious lands here, so
+// every deploy, the credentials file the runner derives from it, which is
+// reproducible from that secret alone, and the tool cache
+// (runnerToolCacheDir), which is rebuildable from the network. Nothing
+// precious lands here, so
 // the four-kind state model (spec.md "The four kinds of state") gains no
 // fifth member and backup captures nothing new — the registration itself
 // lives in Forgejo's database (FAIL-005).
 const runnerHostDir = "runner"
+
+// runnerToolCacheDir is the directory under runnerHostDir holding the
+// runner tool cache — the toolchains `actions/setup-node` and its siblings
+// download, kept across jobs instead of re-fetched by every one
+// (forge.RunnerToolCacheDir).
+//
+// It sits here, beside the runner's other deploy-time content, rather than
+// under stateDir, and that placement is the point rather than an accident.
+// Backup captures git out of <RemoteDir>/state/git, the database through
+// the forgejo container, blobs through the blob driver, and key material
+// through the keystore — nothing walks the remote directory looking for
+// files — so a cache under this directory is captured by no exporter. That
+// is what it deserves: it is rebuildable from the network, it grows without
+// bound, and a snapshot is for the state that cannot be rebuilt (spec.md
+// "The four kinds of state"). Putting it under stateDir would have grown
+// every snapshot by a toolchain.
+//
+// Down removes the whole remote directory, so tearing a deployment down —
+// or finishing a drill — discards the cache with it. That is correct: the
+// next deployment rebuilds it on its first job, at the cost the first job
+// on any fresh instance already pays.
+//
+// Nothing prunes it. A cache that keeps every toolchain version a workflow
+// has ever asked for is the trade for never re-downloading one, and
+// docs/using.md tells the operator so, since the disk it grows on is
+// theirs.
+const runnerToolCacheDir = "toolcache"
 
 // RunnerSecretPath is the host-side path `up` writes the runner secret to,
 // 0600. Exported for the same reason GitStatePath and friends are: it is a
@@ -45,6 +74,21 @@ func RunnerHostPath(remoteDir string) string {
 	return path.Join(remoteDir, runnerHostDir)
 }
 
+// RunnerToolCachePath is the host-side directory job containers mount at
+// forge.RunnerToolCacheDir.
+//
+// It is a host path and has to be: the runner reaches the host's Docker
+// daemon over the mounted socket, so the daemon creating a job container
+// resolves this source in the host's filesystem. The runner's own view of
+// the same directory — inside RunnerDataDir, which this sits under — is a
+// container path the daemon has never heard of, and handing it over
+// produces a mount of the wrong directory rather than an error. Exported
+// for the same reason GitStatePath and friends are: one spelling of a
+// layout decision beats several.
+func RunnerToolCachePath(remoteDir string) string {
+	return path.Join(remoteDir, runnerHostDir, runnerToolCacheDir)
+}
+
 // configureRunner shapes the colocated Forgejo Actions runner's Compose
 // service (FORGE-005) and returns compose with the change, plus whether the
 // runner is being deployed at all — which is what tells the caller whether
@@ -52,11 +96,17 @@ func RunnerHostPath(remoteDir string) string {
 //
 // When the bundle wants the runner (bundle.Manifest.ColocatedRunnerEnabled),
 // it resolves the runner secret from the keystore, ships it to the host
-// 0600 alongside the runner configuration that declares its labels, and
+// 0600 alongside the runner configuration that declares its labels and the
+// tool cache its job containers mount, creates that cache directory, and
 // layers onto the rendered service: the host directory holding those
 // files, the host's Docker socket, DOCKER_HOST, the user to run as, and
 // the command that derives credentials from the secret and starts the
 // daemon against that configuration.
+//
+// The job image and the tool cache path are the two things that
+// configuration is not free to invent: the image is the manifest's
+// (ActionsJobImageOrDefault) and the path is the host's, since the job
+// containers that mount it are started on the host's Docker daemon.
 //
 // Mounting the Docker socket is what lets the runner start job containers,
 // and is the trade spec.md "CI trust boundary" > "The colocated runner holds
@@ -116,7 +166,12 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 	if err := host.WriteFile(ctx, secretPath, []byte(secret), 0o600); err != nil {
 		return nil, false, fmt.Errorf("ship runner secret: %w", err)
 	}
-	if err := host.WriteFile(ctx, RunnerConfigPath(remoteDir), forge.RenderRunnerConfig(), 0o644); err != nil {
+	toolCachePath := RunnerToolCachePath(remoteDir)
+	if err := ensureToolCacheDir(ctx, host, toolCachePath); err != nil {
+		return nil, false, fmt.Errorf("create runner tool cache directory: %w", err)
+	}
+	config := forge.RenderRunnerConfig(b.Manifest.ActionsJobImageOrDefault(), toolCachePath)
+	if err := host.WriteFile(ctx, RunnerConfigPath(remoteDir), config, 0o644); err != nil {
 		return nil, false, fmt.Errorf("ship runner config: %w", err)
 	}
 
@@ -141,6 +196,33 @@ func configureRunner(ctx context.Context, host Host, b *bundle.Bundle, remoteDir
 		return nil, false, fmt.Errorf("set runner command: %w", err)
 	}
 	return compose, true, nil
+}
+
+// ensureToolCacheDir creates the runner tool cache directory on the host
+// and makes it writable by whoever a job container turns out to run as.
+//
+// It has to exist before the first job: Docker creates a missing bind
+// source itself, but as root and owned by root, which is the one case a job
+// image running as a non-root user cannot then write to — and a tool cache
+// nobody can write to is the slow path this whole directory exists to end,
+// arriving silently as "setup-node downloaded again."
+//
+// The mode is deliberately permissive, for the same reason. Job containers
+// run as whatever their image declares, Farrier does not choose the image
+// (bundle.ActionsConfig.JobImage) and cannot know the uid, and the cache is
+// worthless unless every one of them can write it. It concedes nothing:
+// reaching this directory at all means running a job on this runner, and a
+// job on this runner already holds the host's Docker socket — the whole
+// host, not one rebuildable directory (spec.md "CI trust boundary").
+//
+// Creating it is idempotent, so a repeated `up` leaves an existing cache
+// and its contents untouched (UP-003).
+func ensureToolCacheDir(ctx context.Context, host Host, toolCachePath string) error {
+	if err := ensureDirs(ctx, host, toolCachePath); err != nil {
+		return err
+	}
+	_, err := host.Output(ctx, fmt.Sprintf("chmod 0777 %s", stateShQuote(toolCachePath)))
+	return err
 }
 
 // colocatedRunnerPlanned reports whether this deployment will carry a

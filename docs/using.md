@@ -6,7 +6,7 @@ Day-two work: your instance is up, your code is on it, and now you use it. Stand
 
 ## CI
 
-Farrier deploys Forgejo Actions with a runner already registered, so a workflow runs on a fresh instance with nothing to install. Four things decide whether your first one works.
+Farrier deploys Forgejo Actions with a runner already registered, so a workflow runs on a fresh instance with nothing to install. Four things decide whether your first one works; two more decide how long it takes and what it runs in.
 
 ### Put workflows in `.github/workflows`
 
@@ -43,6 +43,27 @@ Name a full URL for an action that lives elsewhere:
 ### The runner can take the forge host
 
 Jobs run on the host's Docker socket, which is the same host holding your git data and database. Read [security.md](security.md), "CI can take the forge host" — it states the trade and what to do instead.
+
+### Your first job is the slow one
+
+`actions/setup-node` and its siblings — `setup-python`, `setup-go`, `setup-java` — do not use whatever is already in the job image. They keep their own tool cache and download into it. Farrier keeps that cache on the forge host, so it outlives the container each job runs in.
+
+The first job that asks for a toolchain downloads it and can spend minutes there. Every later job asking for the same version finds it, and the step is near-instant. Moving a workflow to a new version pays the download once more, and then that one is cached too.
+
+Two consequences. The cache lives on the forge host and **nothing prunes it** — every toolchain version any workflow has ever asked for stays until you delete it, so an instance whose workflows keep moving between versions is worth a look at disk. And it is deliberately **not in your snapshots**: it is rebuildable from the network, and a snapshot is for what is not. A restored or promoted instance starts with an empty cache, and its first job pays the download again. So does a drill, which discards the cache along with the rest of the rehearsal.
+
+### Choosing what jobs run in
+
+The image behind both labels is a manifest field:
+
+```yaml
+actions:
+  jobImage: docker.io/library/node:22-bookworm
+```
+
+The default is small, which is why a first `up` is quick and why a ported workflow has to install its own tools. Pointing it at an image built for GitHub parity — the `catthehacker/ubuntu` family is the usual choice — gets you much more of GitHub's preinstalled toolbox, for a pull measured in gigabytes on the first job that needs it.
+
+Unlike the entries under `images:`, this one is not pinned to a digest and not frozen at `init`. Edit it, run `up` again, and jobs from then on use it; nothing about the instance itself changes. A workflow naming its own `container:` ignores it entirely.
 
 ## Secrets
 
