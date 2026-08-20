@@ -229,16 +229,14 @@ Apache 2.0 — use it, fork it, ship it commercially. It requires attribution: k
 
 ## Status
 
-**All twelve commands ship; three known gaps are open; real use is just starting.**
+**All twelve commands ship; one known gap is open; real use is just starting.**
 
-73 of 76 requirements are implemented, reviewed, and tested — the twelve commands, the project-folder on-ramp, the nameless tier, and the whole portability layer. Delivery state, one line per requirement: [docs/status.json](docs/status.json).
+75 of 76 requirements are implemented, reviewed, and tested — the twelve commands, the project-folder on-ramp, the nameless tier, and the whole portability layer. Delivery state, one line per requirement: [docs/status.json](docs/status.json).
 
-The three open ones came out of the first end-to-end runs against real hosts:
+The open one came out of the first end-to-end runs against real hosts:
 
-- `up` does not yet refuse to deploy a bundle onto host state belonging to a different bundle, so keep one instance per host directory until it does.
-- Some failures do not say what to do about them.
 - CI does not yet run `init`, `up`, and `publish` against a real Docker daemon.
 
-Those runs are also turning up what unit tests structurally cannot: a default directory an ordinary user cannot write, an image tag that did not exist, a `chown` that is mandatory on Linux and impossible on macOS. Expect to hit rough edges on a first deployment, and expect them in the seams between components rather than inside them.
+Those runs are also turning up what unit tests structurally cannot: a default directory an ordinary user cannot write, an image tag that did not exist, a `chown` that is mandatory on Linux and impossible on macOS, a CI runner that registered with no labels and so matched no workflow. Expect to hit rough edges on a first deployment, and expect them in the seams between components rather than inside them.
 
 Nothing here is abandoned or speculative — it is young. Design reference: [docs/spec.md](docs/spec.md).
